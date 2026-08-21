@@ -126,17 +126,27 @@ describe("como se lee una referencia a un tracker", () => {
 });
 
 describe("nombres de fila", () => {
-  it("traduce R2/R3 a motorizada/esclava con lo que declara el perfil", () => {
-    const naming = profile.topology.rowNaming;
-    expect(canonRow("R2", naming)).toBe("motorizada");
-    expect(canonRow("R1", naming)).toBe("motorizada");
-    expect(canonRow("R3", naming)).toBe("esclava");
-    expect(canonRow("R5", naming)).toBe("esclava");
+  // Sigue sirviendo para un parque donde las etiquetas SI se repiten en cada
+  // tracker y una lista fija las une. En Edenvale no es el caso: la numeracion
+  // corre de corrido por bloque, y por eso ese perfil no lleva estas listas.
+  const listas = { motorized: ["R1", "R2", "R4"], slave: ["R3", "R5"] };
+
+  it("traduce R2/R3 a motorizada/esclava cuando el perfil declara las listas", () => {
+    expect(canonRow("R2", listas)).toBe("motorizada");
+    expect(canonRow("R1", listas)).toBe("motorizada");
+    expect(canonRow("R3", listas)).toBe("esclava");
+    expect(canonRow("R5", listas)).toBe("esclava");
   });
 
   it("deja pasar lo que ya viene en el vocabulario de la geometria", () => {
-    expect(canonRow("motorizada", profile.topology.rowNaming)).toBe("motorizada");
+    expect(canonRow("motorizada", listas)).toBe("motorizada");
     expect(canonRow("Esclava")).toBe("esclava");
+  });
+
+  // Edenvale no puede usar listas: R2 es del tracker 34 y R4 del 35.
+  it("el perfil de Edenvale declara el orden, no listas de R", () => {
+    expect(profile.topology.rowNaming?.motorized).toBeUndefined();
+    expect(profile.topology.rowNaming?.orderWithinTracker).toBe("lowest-first");
   });
 
   it("sin perfil que lo declare, no inventa la equivalencia", () => {
@@ -177,6 +187,7 @@ describe("matcheo contra la geometria", () => {
 
   // El caso real de Edenvale, de punta a punta.
   it("cruza la lista compuesta contra la geometria de bandera si/no", () => {
+    const listas = { motorized: ["R1", "R2", "R4"], slave: ["R3", "R5"] };
     const edenvale: TrackerRow[] = [
       { block: "1", tracker: "34", row: "motorizada" },
       { block: "1", tracker: "34", row: "esclava" },
@@ -200,7 +211,7 @@ describe("matcheo contra la geometria", () => {
       { label: "S-1.1.2.1.1", tracker: "01-035-R4", dcBox: "DCB-1.1.2" },
     ];
 
-    const { byRow, report } = matchEntries(entries, edenvale, { naming: profile.topology.rowNaming });
+    const { byRow, report } = matchEntries(entries, edenvale, { naming: listas });
 
     expect(report.matched).toBe(4);
     expect(report.strategy).toBe("bloque + tracker + fila");
@@ -305,7 +316,7 @@ describe("matcheo contra la geometria", () => {
     const { report } = matchEntries(
       [{ label: "S-1.1.1.2.1", tracker: "01-034-R2" }],
       rows2,
-      { naming: profile.topology.rowNaming },
+      { naming: { motorized: ["R2"], slave: ["R3"] } },
     );
     expect(report.preview[0]!.entendido).toContain("tracker 34");
     expect(report.preview[0]!.entendido).toContain("motorizada");

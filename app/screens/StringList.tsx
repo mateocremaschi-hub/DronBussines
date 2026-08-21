@@ -264,10 +264,26 @@ export function StringList({ farm, onDone, onCancel }: {
                 <option value="highest-first">La de numero mas alto (R3 de R2/R3)</option>
               </select>
               <span className="help">
-                Si no estas seguro, dejalo como esta, aplicalo, y verificalo en el campo: parate en
-                un tracker, mira cual de las dos filas tiene el motor, y localiza un modulo de esa
-                fila. Si te devuelve la otra, volve aca y dalo vuelta.
+                Esto NO se puede deducir de las coordenadas: las dos opciones dan una geometria
+                igual de consistente, con todas las motorizadas del mismo lado de su par, solo que
+                del otro lado. Hay que declararlo. En un parque nuevo: parate en un tracker, mira
+                cual de las dos filas tiene el motor, y fijate como la numera la lista de strings.
+                Es una sola vez por parque.
               </span>
+
+              {match.report.pairing && match.report.pairing.length > 0 && (
+                <>
+                  <p className="help">Asi quedaron asignadas las filas con lo que esta elegido:</p>
+                  <ul className="pairs">
+                    {match.report.pairing.map((p) => (
+                      <li key={p.tracker}>
+                        <span className="muted">{p.tracker}</span>{" "}
+                        {p.pares.map((x) => (<code key={x}>{x}</code>))}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
             </div>
           )}
 

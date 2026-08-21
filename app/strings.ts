@@ -213,6 +213,15 @@ export interface MatchReport {
   unmatchedExamples: string[];
   /** Como quedo entendida una referencia de cada lado, para ver por que no cruza. */
   preview: Array<{ desde: string; entendido: string; geometria: string }>;
+  /**
+   * Que fila del archivo quedo asignada a que fila de la geometria.
+   *
+   * Es lo unico que hace verificable el emparejamiento por orden: el criterio
+   * no se puede deducir de las coordenadas —las dos opciones dan una geometria
+   * igual de consistente— asi que en vez de esconderlo se muestra la decision
+   * concreta para que se pueda mirar y desmentir.
+   */
+  pairing?: Array<{ tracker: string; pares: string[] }>;
 }
 
 export interface MatchResult {
@@ -257,7 +266,7 @@ function pairByOrder(
   geo: Lado[],
   strings: Fuente[],
   opts: MatchOptions,
-): Map<string, TrackerRow> {
+): { mapa: Map<string, TrackerRow>; ejemplos: Array<{ tracker: string; pares: string[] }> } {
   const orden = opts.geometryOrder ?? ORDEN_GEOMETRIA;
   const desc = opts.naming?.orderWithinTracker === "highest-first";
 
@@ -278,6 +287,7 @@ function pairByOrder(
 
   // Clave "bloque|tracker|fila del archivo" → la fila de la geometria.
   const mapa = new Map<string, TrackerRow>();
+  const ejemplos: Array<{ tracker: string; pares: string[] }> = [];
 
   for (const [k, lados] of geoPorTracker) {
     const etiquetas = [...(filasPorTracker.get(k) ?? [])].sort((a, b) =>
@@ -292,9 +302,18 @@ function pairByOrder(
     });
 
     etiquetas.forEach((fila, i) => mapa.set(`${k}|${fila}`, geoOrdenado[i]!.row));
+
+    // Los que tienen mas de una fila son los unicos donde la decision se juega.
+    if (lados.length > 1 && ejemplos.length < 4) {
+      const [bloque, tracker] = k.split("|");
+      ejemplos.push({
+        tracker: `bloque ${bloque} · tracker ${tracker}`,
+        pares: etiquetas.map((fila, i) => `${fila} → ${geoOrdenado[i]!.ref.row ?? "sin fila"}`),
+      });
+    }
   }
 
-  return mapa;
+  return { mapa, ejemplos };
 }
 
 export function matchEntries(
@@ -385,7 +404,7 @@ export function matchEntries(
   // Ultimo recurso, y el que salva el caso de Edenvale: emparejar por orden
   // adentro del tracker. Va al final a proposito — si cruzar por nombre ya
   // funciono, eso manda.
-  const mapa = pairByOrder(geo, strings, opts);
+  const { mapa, ejemplos } = pairByOrder(geo, strings, opts);
   if (mapa.size) {
     const byRow = new Map<string, { labels: string[]; dcBox?: string }>();
     const sinMatch: string[] = [];
@@ -417,6 +436,7 @@ export function matchEntries(
         rowsWithStrings: byRow.size,
         unmatchedExamples: sinMatch,
         preview,
+        pairing: ejemplos,
       },
     };
     if (!best || result.report.matched > best.report.matched) best = result;

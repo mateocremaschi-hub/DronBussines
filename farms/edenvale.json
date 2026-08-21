@@ -19,15 +19,8 @@
     "stringsPerRow": 2,
     "rowNaming": {
       "pattern": "R{n}",
-      "motorized": [
-        "R1",
-        "R2",
-        "R4"
-      ],
-      "slave": [
-        "R3",
-        "R5"
-      ]
+      "orderWithinTracker": "lowest-first",
+      "_nota": "Verificado en campo por Mateo: R1 lleva motor; R2 con motor y R3 esclava; R4 con motor y R5 esclava. La numeracion corre de corrido por bloque, asi que no hay lista de R que valga — lo que se mantiene es que la mas baja del par es la motorizada. En otra farm puede ser al reves: es un dato a declarar, no a deducir."
     },
     "stringGapMm": 3713,
     "_nota": "stringGapMm es la bahia del motor entre los dos strings de la fila. Despejado de: 2 x 32180 mm de strings + hueco - 2 x 1464 mm de voladizo = 65145 mm, el largo que miden las 3182 filas del Excel de picas. Falta medirlo con cinta para confirmar."
@@ -64,12 +57,14 @@
       "piercing-chain: tracker aislado o ultimo de linea, sin invertir (bloque 4)",
       "piercing-chain: tracker no-ultimo, string lejano invertido (bloque 5, tracker 05-042 R1)",
       "numeros de string no correlativos desde 1 (bloque 7, strings 5 y 6)",
-      "bloque y tracker correctos con coordenada real de celular (bloque 4, tracker 18)"
+      "bloque y tracker correctos con coordenada real de celular (bloque 4, tracker 18)",
+      "modulo correcto en campo con la lista de strings aplicada (bloque 4). Es la primera vez que cierra el circuito entero: geometria con bahia de motor + voladizo negativo + lado deducido + numero de string real + sentido del conteo",
+      "orderWithinTracker = lowest-first: R1 con motor; R2 motor + R3 esclava; R4 motor + R5 esclava. Observado en campo"
     ],
     "unverified": [
       "stringGapMm = 3713 mm esta DESPEJADO, no medido. Medir con cinta el hueco entre el ultimo modulo de un string y el primero del otro",
-      "dc-box-end: falta la columna `side` en el Excel de picas — esta en los planos CAD, ya extraida en el Panel Manager",
-      "piercing-chain: falta `pos` y `posTotal` por la misma razon"
+      "verificado un solo punto del bloque 4. Falta un punto del otro lado de la calle, uno en un string lejano invertido, y uno en un tracker que NO sea el ultimo de su linea electrica",
+      "16 strings de 13496 sin cruzar: revisar si son trackers donde no coinciden las cantidades de filas"
     ],
     "notes": "OJO con la referencia al medir: el pilote de la punta (el poste con el rodamiento) NO es la pica. Y OJO con asumir que los modulos van parejos de punta a punta: hay una bahia de motor en el medio que vale mas de tres posiciones de modulo. Ignorarla corre el string lejano 3.7 m enteros."
   }
