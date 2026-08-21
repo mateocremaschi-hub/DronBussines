@@ -1,0 +1,61 @@
+{
+  "id": "edenvale",
+  "name": "Edenvale Solar Farm",
+  "profileVersion": 1,
+  "timezone": "Australia/Brisbane",
+  "crs": { "type": "utm", "zone": 56, "hemisphere": "S" },
+
+  "module": {
+    "widthMm": 1130,
+    "gapMm": 20,
+    "orientation": "portrait",
+    "pitchMm": null
+  },
+
+  "topology": {
+    "modulesPerString": 28,
+    "stringsPerRow": 2,
+    "rowNaming": {
+      "pattern": "R{n}",
+      "motorized": ["R1", "R2", "R4"],
+      "slave": ["R3", "R5"]
+    }
+  },
+
+  "geometry": {
+    "source": "survey-stakes",
+    "endpointOffsetMm": 1400,
+    "endpointOffsetMode": "both",
+    "lengthToleranceMmPerModule": 15
+  },
+
+  "addressing": {
+    "originStrategy": "dc-box-end",
+    "dcBoxPlacement": "center-road",
+    "inversionStrategy": "piercing-chain",
+    "sideRule": { "type": "tracker-number-ascending", "firstSide": "north" }
+  },
+
+  "matching": {
+    "maxDistanceM": 30,
+    "neighborhood": 2,
+    "maxRowCandidates": 3,
+    "defaultAccuracyM": 3
+  },
+
+  "calibration": {
+    "status": "partial",
+    "verifiedCases": [
+      "piercing-chain: tracker aislado o ultimo de linea, sin invertir (bloque 4)",
+      "piercing-chain: tracker no-ultimo, string lejano invertido (bloque 5, tracker 05-042 R1)",
+      "numeros de string no correlativos desde 1 (bloque 7, strings 5 y 6)",
+      "paso real medido a mano: modulo 1130 mm + hueco 20 mm",
+      "offset de pica al primer modulo: 1400 mm"
+    ],
+    "unverified": [
+      "offset de pica en bloques de trazado disperso (5, 15, 16, 17, 24, 27)",
+      "dc-box-end en bloques con cajas fuera de la calle del medio"
+    ],
+    "notes": "Las coordenadas reales de los puntos verificados van en fixtures/edenvale/. Este perfil describe las reglas; los fixtures las congelan."
+  }
+}

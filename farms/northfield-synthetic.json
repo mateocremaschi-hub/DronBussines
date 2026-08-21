@@ -1,0 +1,51 @@
+{
+  "id": "northfield-synthetic",
+  "name": "Northfield (parque sintetico de control)",
+  "profileVersion": 1,
+  "timezone": "Australia/Brisbane",
+  "crs": { "type": "wgs84" },
+
+  "_comment": [
+    "Este parque no existe. Esta deliberadamente construido para NO parecerse a",
+    "Edenvale en ninguna de las decisiones que podrian estar hardcodeadas:",
+    "modulos apaisados en vez de verticales, 30 modulos por string en vez de 28,",
+    "un solo string por fila en vez de dos, conteo siempre desde el extremo norte",
+    "en vez de desde la caja DC, sin inversion, y sin offset de pica.",
+    "Si el motor lo resuelve bien, no le quedo nada de Edenvale adentro."
+  ],
+
+  "module": {
+    "widthMm": 2280,
+    "gapMm": 25,
+    "orientation": "landscape",
+    "pitchMm": null
+  },
+
+  "topology": {
+    "modulesPerString": 30,
+    "stringsPerRow": 1
+  },
+
+  "geometry": {
+    "source": "orthomosaic",
+    "endpointOffsetMm": 0,
+    "endpointOffsetMode": "none"
+  },
+
+  "addressing": {
+    "originStrategy": "fixed-end",
+    "fixedEnd": "north",
+    "inversionStrategy": "none"
+  },
+
+  "matching": {
+    "maxDistanceM": 20,
+    "neighborhood": 1,
+    "defaultAccuracyM": 1
+  },
+
+  "calibration": {
+    "status": "unverified",
+    "notes": "Parque de control para los tests. No representa ninguna planta real."
+  }
+}

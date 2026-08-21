@@ -1,0 +1,33 @@
+{
+  "status": "pending",
+  "farm": "edenvale",
+  "description": "Bloque 7, tracker 28. Los dos strings de la fila se numeran 5 y 6, no 1 y 2. El motor tiene que elegir el menor de los dos como el cercano a la caja DC, sin buscar un numero fijo.",
+  "covers": ["numeros de string no correlativos desde 1"],
+  "verifiedBy": "Mateo",
+  "verifiedOn": "",
+  "method": "lectura del Excel de strings + verificacion en el mapa",
+  "mode": "within-candidates",
+
+  "_pendiente": "Faltan las coordenadas de las picas y del punto medido.",
+
+  "row": {
+    "id": "07-028-R2",
+    "block": "07",
+    "tracker": "07-028",
+    "row": "R2",
+    "start": { "lat": 0, "lon": 0 },
+    "end": { "lat": 0, "lon": 0 },
+    "side": "north",
+    "pos": 1,
+    "posTotal": 3,
+    "stringNumbers": [6, 5]
+  },
+
+  "fix": { "lat": 0, "lon": 0, "accuracyM": 4 },
+
+  "expect": {
+    "stringNumber": 5,
+    "module": 1,
+    "countedFrom": "near-dc"
+  }
+}

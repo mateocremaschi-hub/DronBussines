@@ -1,0 +1,309 @@
+/**
+ * Tipos publicos del motor.
+ *
+ * Regla estructural: este archivo no importa nada. El motor entero es una
+ * funcion pura sobre estos tipos — sin red, sin base de datos, sin UI.
+ */
+
+// ---------------------------------------------------------------------------
+// Entrada
+// ---------------------------------------------------------------------------
+
+/** Un punto medido: foto del dron, GPS del celular, o coordenada pegada a mano. */
+export interface Fix {
+  lat: number;
+  lon: number;
+  /** Radio de error 1-sigma en metros. Sin RTK ronda 2-5 m. Default: `matching.defaultAccuracyM`. */
+  accuracyM?: number;
+  /** ISO 8601. Solo se arrastra al diagnostico; no afecta el calculo. */
+  takenAt?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Geometria de entrada (lo que produce la capa de ingesta)
+// ---------------------------------------------------------------------------
+
+export type EndRef = "start" | "end";
+export type Cardinal = "north" | "south" | "east" | "west";
+
+/**
+ * Una fila de modulos: el segmento fisico entre las dos picas.
+ *
+ * Es la unidad atomica de geometria. Una farm de 400.000 modulos son unos
+ * 6.000 de estos — unos pocos MB, que entran enteros en un celular.
+ */
+export interface TrackerRow {
+  /** Identificador estable. Sugerido: `${block}-${tracker}-${row}`. */
+  id: string;
+  block: string;
+  tracker: string;
+  /** Etiqueta de fila dentro del tracker: "R1", "R4"... Ausente si el parque no las usa. */
+  row?: string;
+
+  /** Pica A. El orden de los extremos es arbitrario: lo normaliza el motor. */
+  start: { lat: number; lon: number };
+  /** Pica B. */
+  end: { lat: number; lon: number };
+
+  /** Lado de la calle donde esta el tracker. Lo usa la estrategia `dc-box-end`. */
+  side?: Cardinal;
+
+  /** Posicion del tracker dentro de su linea electrica, 1-based. Lo usa `piercing-chain`. */
+  pos?: number;
+  /** Cantidad total de trackers en esa linea. Lo usa `piercing-chain`. */
+  posTotal?: number;
+
+  /** Numeros de string presentes en esta fila, en cualquier orden. Ej: [5, 6]. */
+  stringNumbers?: number[];
+
+  /** Salida de emergencia de `per-row-flag`: que extremo del segmento es el origen. */
+  originEnd?: EndRef;
+  /**
+   * Salida de emergencia de `per-string-flag`: por cada chunk de la fila
+   * (0 = el mas cercano al origen), si cuenta invertido.
+   */
+  stringInverted?: boolean[];
+
+  /** Paso a medida real de esta fila, si difiere del perfil. En milimetros. */
+  pitchMmOverride?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Perfil de parque
+// ---------------------------------------------------------------------------
+
+export type OriginStrategyName = "fixed-end" | "dc-box-end" | "per-row-flag";
+export type InversionStrategyName = "none" | "piercing-chain" | "per-string-flag";
+
+export interface FarmProfile {
+  id: string;
+  name: string;
+  profileVersion: number;
+  timezone?: string;
+
+  crs?:
+    | { type: "wgs84" }
+    | { type: "utm"; zone: number; hemisphere: "N" | "S" };
+
+  module: {
+    /** Medida del modulo a lo largo del eje del tracker, en mm. */
+    widthMm: number;
+    /** Hueco entre modulos consecutivos, en mm. */
+    gapMm: number;
+    /** Solo informativo: cual lado del modulo va sobre el eje. */
+    orientation?: "portrait" | "landscape";
+    /**
+     * Paso explicito en mm. `null` = widthMm + gapMm.
+     * `"derive"` = calcularlo del largo real de cada segmento.
+     */
+    pitchMm?: number | null | "derive";
+  };
+
+  topology: {
+    modulesPerString: number;
+    stringsPerRow: number;
+    rowNaming?: {
+      pattern?: string;
+      motorized?: string[];
+      slave?: string[];
+    };
+  };
+
+  geometry: {
+    source?: "survey-stakes" | "cad" | "orthomosaic" | "manual";
+    /** Distancia de la pica al borde del primer modulo, en mm. */
+    endpointOffsetMm: number;
+    /**
+     * A que extremos se aplica el offset:
+     * `both` en las dos picas, `origin` solo en el extremo de conteo,
+     * `none` si los modulos arrancan pegados a la pica.
+     */
+    endpointOffsetMode?: "both" | "origin" | "none";
+    /**
+     * Tolerancia al comparar el largo predicho por el paso contra el largo
+     * real del segmento, en mm por modulo. Arriba de esto se emite un warning.
+     */
+    lengthToleranceMmPerModule?: number;
+  };
+
+  addressing: {
+    originStrategy: OriginStrategyName;
+    /** Config de `fixed-end`: que extremo geografico es el origen. */
+    fixedEnd?: Cardinal;
+    /**
+     * Config de `dc-box-end`: donde estan las cajas DC respecto de los dos
+     * lados. `"center-road"` = en la calle del medio, asi que el extremo de
+     * conteo es el opuesto al lado del tracker.
+     */
+    dcBoxPlacement?: "center-road" | "outer-edge";
+
+    inversionStrategy: InversionStrategyName;
+
+    /** Como se deduce el lado del tracker si la ingesta no lo trae. Informativo. */
+    sideRule?: { type: string; firstSide?: Cardinal };
+  };
+
+  matching?: {
+    /** Distancia maxima plausible al eje de una fila. Arriba de esto no se responde. */
+    maxDistanceM?: number;
+    /** Cuantos modulos vecinos devolver a cada lado del mejor resultado. */
+    neighborhood?: number;
+    /** Cuantas filas candidatas evaluar ademas de la mejor. */
+    maxRowCandidates?: number;
+    /** Precision asumida cuando el Fix no la trae, en metros. */
+    defaultAccuracyM?: number;
+  };
+
+  calibration?: {
+    status?: "unverified" | "partial" | "field-verified";
+    verifiedCases?: string[];
+    unverified?: string[];
+    notes?: string;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Salida
+// ---------------------------------------------------------------------------
+
+/** Desde que extremo del string se contaron los modulos hasta llegar a este. */
+export type CountedFrom = "near-dc" | "far-end";
+
+export interface Address {
+  rowId: string;
+  block: string;
+  tracker: string;
+  row?: string;
+
+  /** Indice del chunk dentro de la fila: 0 = el mas cercano al origen. */
+  chunkIndex: number;
+  /** Numero de string real, si la ingesta lo trajo. Si no, `chunkIndex + 1`. */
+  stringNumber: number;
+  /** Etiqueta completa del string, solo si hay lista de strings importada. */
+  stringLabel?: string;
+  /** Serial, solo si hay lista de paneles importada. */
+  serial?: string;
+
+  /** 1 … modulesPerString. */
+  module: number;
+  countedFrom: CountedFrom;
+
+  /** Posicion cruda dentro de la fila, 1 … modulesPerString * stringsPerRow. */
+  positionInRow: number;
+
+  /** Centro estimado del modulo. */
+  center: { lat: number; lon: number };
+  /** Distancia del Fix al centro del modulo, en metros. */
+  distanceM: number;
+  /** Distancia del Fix al eje de la fila, en metros. */
+  offAxisM: number;
+  /** 0 … 1, normalizada sobre el conjunto de candidatos. */
+  confidence: number;
+}
+
+export type WarningCode =
+  | "no-row-within-range"
+  | "outside-row-extent"
+  | "length-mismatch"
+  | "low-confidence"
+  | "ambiguous"
+  | "missing-side"
+  | "missing-chain-position"
+  | "missing-flag";
+
+export interface Warning {
+  code: WarningCode;
+  message: string;
+  rowId?: string;
+}
+
+export interface Diagnostics {
+  farmId: string;
+  profileVersion: number;
+  /** Marco local usado para proyectar. */
+  origin: { lat: number; lon: number };
+  /** Punto del Fix en metros dentro del marco local. */
+  local: { x: number; y: number };
+  /** Filas evaluadas tras el descarte por caja envolvente. */
+  rowsConsidered: number;
+  /** Detalle del calculo sobre la fila ganadora. */
+  winner?: {
+    rowId: string;
+    /** Parametro normalizado 0-1 a lo largo del segmento, desde `start`. */
+    t: number;
+    /** Distancia recorrida desde el origen de conteo, en metros. */
+    alongFromOriginM: number;
+    /** Largo del segmento pica a pica, en metros. */
+    segmentLengthM: number;
+    /** Paso efectivamente usado, en metros. */
+    pitchM: number;
+    /** Offset de pica aplicado en el extremo de origen, en metros. */
+    originOffsetM: number;
+    /** Que extremo del segmento resulto ser el origen de conteo. */
+    originEnd: EndRef;
+    originStrategy: OriginStrategyName;
+    inversionStrategy: InversionStrategyName;
+    inverted: boolean;
+    /** Residuo entre el largo predicho y el real, en mm por modulo. */
+    lengthResidualMmPerModule: number;
+  };
+}
+
+export interface LocateResult {
+  best: Address | null;
+  candidates: Address[];
+  diagnostics: Diagnostics;
+  warnings: Warning[];
+}
+
+// ---------------------------------------------------------------------------
+// Perfil compilado
+// ---------------------------------------------------------------------------
+
+export interface CompiledRow {
+  source: TrackerRow;
+  /** Extremos en el marco local, en metros. */
+  a: { x: number; y: number };
+  b: { x: number; y: number };
+  lengthM: number;
+  /** Vector unitario de a hacia b. */
+  ux: number;
+  uy: number;
+  /** Caja envolvente en el marco local, ya expandida por maxDistanceM. */
+  bbox: { minX: number; minY: number; maxX: number; maxY: number };
+  /** Paso resuelto para esta fila, en metros. */
+  pitchM: number;
+  originOffsetM: number;
+  farOffsetM: number;
+  /** Numeros de string ordenados ascendente: el menor es el mas cercano al origen. */
+  stringNumbers: number[];
+  lengthResidualMmPerModule: number;
+
+  /**
+   * Extremo de conteo ya resuelto. La capa de estrategias corre entera al
+   * compilar, no al consultar: si a una fila le falta un dato, te enteras al
+   * cargar el parque y no con el tecnico parado en el campo.
+   */
+  originEnd: EndRef;
+  /** Por cada chunk (0 = el mas cercano al origen), si cuenta invertido. */
+  inverted: boolean[];
+  /** Lo que dijo la capa de estrategias al resolver esta fila. */
+  strategyWarnings: Warning[];
+}
+
+export interface CompiledFarm {
+  profile: Required<Pick<FarmProfile, "id" | "name" | "profileVersion">> & FarmProfile;
+  rows: CompiledRow[];
+  origin: { lat: number; lon: number };
+  /** Escalas del marco local equirectangular, en metros por radian. */
+  scale: { east: number; north: number };
+  modulesPerRow: number;
+  /** Medida del modulo a lo largo del eje, en metros. */
+  moduleWidthM: number;
+  maxDistanceM: number;
+  neighborhood: number;
+  maxRowCandidates: number;
+  defaultAccuracyM: number;
+  /** Warnings detectados al compilar, no al consultar. */
+  buildWarnings: Warning[];
+}

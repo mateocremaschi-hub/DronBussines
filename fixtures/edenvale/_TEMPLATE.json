@@ -1,0 +1,31 @@
+{
+  "status": "pending",
+  "farm": "edenvale",
+  "description": "Describi en una linea donde te paraste y que contaste.",
+  "covers": ["que regla del perfil queda verificada con este punto"],
+  "verifiedBy": "",
+  "verifiedOn": "",
+  "method": "conteo fisico desde la caja DC / serial leido en el modulo",
+  "mode": "within-candidates",
+
+  "row": {
+    "id": "BB-TTT-Rn",
+    "block": "BB",
+    "tracker": "BB-TTT",
+    "row": "Rn",
+    "start": { "lat": 0, "lon": 0 },
+    "end": { "lat": 0, "lon": 0 },
+    "side": "north",
+    "pos": 1,
+    "posTotal": 1,
+    "stringNumbers": [1, 2]
+  },
+
+  "fix": { "lat": 0, "lon": 0, "accuracyM": 4 },
+
+  "expect": {
+    "stringNumber": 1,
+    "module": 1,
+    "countedFrom": "near-dc"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "status": "pending",
+  "farm": "edenvale",
+  "description": "Bloque 4, tracker 016. Tracker aislado / ultimo de su linea: no hay piercing connector propio en la punta, asi que los dos strings cuentan en el mismo sentido.",
+  "covers": ["piercing-chain: tracker aislado o ultimo de linea, sin invertir"],
+  "verifiedBy": "Mateo",
+  "verifiedOn": "",
+  "method": "prueba de campo con coordenada real",
+  "mode": "within-candidates",
+
+  "_pendiente": "Faltan las coordenadas de las picas y del punto medido. Confirma tambien pos/posTotal reales de este tracker contra los planos.",
+
+  "row": {
+    "id": "04-016-R2",
+    "block": "04",
+    "tracker": "04-016",
+    "row": "R2",
+    "start": { "lat": 0, "lon": 0 },
+    "end": { "lat": 0, "lon": 0 },
+    "side": "north",
+    "pos": 1,
+    "posTotal": 1,
+    "stringNumbers": [1, 2]
+  },
+
+  "fix": { "lat": 0, "lon": 0, "accuracyM": 4 },
+
+  "expect": {
+    "stringNumber": 1,
+    "module": 2,
+    "countedFrom": "near-dc"
+  }
+}
