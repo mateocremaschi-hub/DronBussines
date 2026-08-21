@@ -157,25 +157,36 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
     return buildRows(sheet, mapping, crs);
   }, [sheet, mapping, crs]);
 
+  // Primero se fusiona con lo que el parque ya tiene, y RECIEN AHI se deduce el
+  // lado de la calle. Al reves, un bloque partido entre dos archivos se deduce
+  // con la mitad de sus filas — y la mitad de un bloque parece un solo lado.
+  const rawMerge = useMemo(
+    () => (rawBuilt ? mergeRows(existing?.rows ?? [], rawBuilt.rows) : null),
+    [rawBuilt, existing],
+  );
+
   // Si el archivo no trae el lado de la calle, se puede sacar de la geometria:
   // las cajas DC estan en la calle del medio, asi que las filas caen en dos
   // grupos separados por ella. Es opcional y se muestra lo que dedujo.
   const derivation = useMemo(
-    () => (deriveSide && rawBuilt?.rows.length ? deriveSides(rawBuilt.rows) : null),
-    [deriveSide, rawBuilt],
+    () => (deriveSide && rawMerge?.rows.length ? deriveSides(rawMerge.rows) : null),
+    [deriveSide, rawMerge],
   );
 
-  const built = useMemo(() => {
-    if (!rawBuilt) return null;
-    if (!derivation) return rawBuilt;
+  const merge = useMemo(() => {
+    if (!rawMerge) return null;
+    if (!derivation) return rawMerge;
     return {
-      ...rawBuilt,
-      rows: rawBuilt.rows.map((r) => {
+      ...rawMerge,
+      rows: rawMerge.rows.map((r) => {
         const side = derivation.sides.get(r.id);
         return side ? { ...r, side } : r;
       }),
     };
-  }, [rawBuilt, derivation]);
+  }, [rawMerge, derivation]);
+
+  // Lo que se muestra en el paso de columnas es siempre lo que entro del archivo.
+  const built = rawBuilt;
 
   // El largo real de las filas despeja el offset de pica: las tres cantidades
   // (modulos, paso, offset) estan atadas, asi que conociendo dos sale la tercera.
@@ -207,12 +218,6 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
       },
     }),
     [name, crs, profileDraft, existing],
-  );
-
-  /** Que pasa al fusionar: cuantas filas son nuevas y cuantas pisan a una vieja. */
-  const merge = useMemo(
-    () => (built ? mergeRows(existing?.rows ?? [], built.rows) : null),
-    [built, existing],
   );
 
   const compiled: { farm: CompiledFarm } | { err: string } | null = useMemo(() => {
@@ -445,8 +450,7 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
                           <strong>{s.count}</strong> filas: {s.reason}.{" "}
                           {contiguo ? (
                             <>
-                              Van seguidas, de la {s.firstRow} a la {s.lastRow} — si estan al final
-                              del archivo suele ser una tabla de totales y no te falta nada.
+                              Van seguidas, de la {s.firstRow} a la {s.lastRow}.
                             </>
                           ) : (
                             <>
@@ -454,6 +458,16 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
                               datos incompletos y conviene mirarlas en el Excel.
                             </>
                           )}
+                          <ul className="muestra">
+                            {s.sample.map((m) => (
+                              <li key={m.row}>
+                                <span className="mono">fila {m.row}</span> {m.cells}
+                              </li>
+                            ))}
+                          </ul>
+                          <span className="muted small">
+                            Si ahi no hay ningun tracker de verdad, no te falta nada.
+                          </span>
                         </li>
                       );
                     })}
@@ -666,6 +680,28 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
 
           {farm && merge && (
             <>
+              {existing && merge.colisiones.length > 0 && (
+                <div className="warnbox">
+                  <h3>{merge.colisiones.length} filas se pisan entre archivos</h3>
+                  <p>
+                    Tienen el mismo identificador que una que ya estaba, pero estan a cientos de
+                    metros de distancia. Casi siempre significa que los dos archivos numeran
+                    bloques distintos con el mismo numero.
+                  </p>
+                  <ul>
+                    {merge.colisiones.slice(0, 5).map((c) => (
+                      <li key={c.id}>
+                        <code>{c.id}</code> — la version nueva esta a{" "}
+                        <strong>{c.distanciaM.toFixed(0)} m</strong> de la vieja
+                      </li>
+                    ))}
+                  </ul>
+                  <p>
+                    Si segues, la geometria vieja de esas filas se pierde. Conviene renombrar los
+                    bloques de uno de los dos archivos antes de cargarlo.
+                  </p>
+                </div>
+              )}
               {existing && (
                 <p className="note ok">
                   {merge.nuevas} filas nuevas

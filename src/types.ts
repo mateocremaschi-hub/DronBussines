@@ -55,6 +55,8 @@ export interface TrackerRow {
 
   /** Numeros de string presentes en esta fila, en cualquier orden. Ej: [5, 6]. */
   stringNumbers?: number[];
+  /** Etiquetas completas de esos strings, en el MISMO orden. Ej: ["S-1.2.15.1", …]. */
+  stringLabels?: string[];
 
   /** Salida de emergencia de `per-row-flag`: que extremo del segmento es el origen. */
   originEnd?: EndRef;
@@ -296,6 +298,8 @@ export interface CompiledRow {
   periodM: number;
   /** Numeros de string ordenados ascendente: el menor es el mas cercano al origen. */
   stringNumbers: number[];
+  /** Etiquetas completas, reordenadas junto con los numeros. */
+  stringLabels?: string[];
   lengthResidualMmPerModule: number;
 
   /**

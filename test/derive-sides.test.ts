@@ -118,3 +118,52 @@ describe("deriveSides", () => {
     expect(codes).toContain("missing-chain-position");
   });
 });
+
+// ---------------------------------------------------------------------------
+// El caso que aparece cuando los datos llegan en dos archivos.
+// ---------------------------------------------------------------------------
+
+describe("un bloque partido entre dos archivos", () => {
+  /** Bloque con `n` filas de cada lado de la calle, pero repartido en dos mitades. */
+  function partido(block: string, n: number) {
+    const todas: TrackerRow[] = [];
+    for (const side of ["north", "south"] as const) {
+      for (let i = 0; i < n; i++) {
+        const topOffset = side === "north" ? 0 : -(LEN + ROAD);
+        todas.push(
+          makeRow(
+            {
+              id: `${block}-${side}-${i}`, block, tracker: `${block}-${side}-${i}`,
+              anchor: { lat: -27.4 + topOffset / M_PER_DEG_LAT, lon: 152.7 + i * 0.00006 },
+              azimuthDeg: 180,
+            },
+            profile,
+          ),
+        );
+      }
+    }
+    // El primer archivo trae solo el lado norte; el segundo, solo el sur.
+    return {
+      archivo1: todas.filter((r) => r.id.includes("north")),
+      archivo2: todas.filter((r) => r.id.includes("south")),
+      todas,
+    };
+  }
+
+  // Esta es la trampa: media calle no se parece a una calle. Deduciendo sobre
+  // el archivo suelto, cada mitad se ve como un bloque de un solo lado.
+  it("cada archivo por separado no alcanza para deducir el lado", () => {
+    const { archivo1, archivo2 } = partido("04", 5);
+    expect(deriveSides(archivo1).blocks[0]!.status).toBe("un-solo-lado");
+    expect(deriveSides(archivo2).blocks[0]!.status).toBe("un-solo-lado");
+  });
+
+  it("fusionados primero, el bloque se parte bien", () => {
+    const { todas } = partido("04", 5);
+    const { sides, blocks } = deriveSides(todas);
+    expect(blocks[0]!.status).toBe("dos-lados");
+    for (const r of todas) {
+      expect(sides.get(r.id), r.id).toBe(r.id.includes("north") ? "north" : "south");
+    }
+  });
+});

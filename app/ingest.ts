@@ -27,7 +27,11 @@ export interface Sheet {
  * Node sin navegador, y la libreria de Excel se carga solo cuando de verdad
  * hay un archivo — son 400 kB que la app de campo no tiene por que bajar.
  */
-export async function readWorkbook(buf: ArrayBuffer): Promise<Sheet[]> {
+export async function readWorkbook(
+  buf: ArrayBuffer,
+  /** Fila donde estan los encabezados, 1-based. Algunas planillas traen dos filas de titulo. */
+  headerRow = 1,
+): Promise<Sheet[]> {
   const XLSX = await import("xlsx");
   const wb = XLSX.read(buf, { cellDates: false });
 
@@ -40,6 +44,7 @@ export async function readWorkbook(buf: ArrayBuffer): Promise<Sheet[]> {
     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, {
       defval: null,
       raw: true,
+      ...(headerRow > 1 ? { range: headerRow - 1 } : {}),
     });
     const headers = new Set<string>();
     for (const r of rows.slice(0, 200)) for (const k of Object.keys(r)) headers.add(k);
@@ -297,7 +302,14 @@ export interface BuildResult {
   rows: TrackerRow[];
   skipped: Array<{ index: number; reason: string }>;
   /** Las razones de descarte agrupadas, con el rango de filas de cada una. */
-  skippedSummary: Array<{ reason: string; count: number; firstRow: number; lastRow: number }>;
+  skippedSummary: Array<{
+    reason: string;
+    count: number;
+    firstRow: number;
+    lastRow: number;
+    /** Que decia de verdad alguna de esas filas, para no tener que abrir el Excel. */
+    sample: Array<{ row: number; cells: string }>;
+  }>;
   bounds: { minLat: number; maxLat: number; minLon: number; maxLon: number } | null;
 }
 
@@ -435,12 +447,27 @@ export function buildRows(sheet: Sheet, mapping: Mapping, crs: Crs): BuildResult
   // faltan de verdad. Son dos problemas distintos.
   const byReason = new Map<string, number[]>();
   for (const s of skipped) byReason.set(s.reason, [...(byReason.get(s.reason) ?? []), s.index]);
+
+  /** Como se ve una fila del Excel, en pocas palabras. */
+  const describir = (index: number): string => {
+    const raw = sheet.rows[index - 2];
+    if (!raw) return "(fila vacia)";
+    const partes = Object.entries(raw)
+      .filter(([, v]) => v != null && v !== "")
+      .slice(0, 5)
+      .map(([k, v]) => `${k}: ${String(v).slice(0, 22)}`);
+    return partes.length ? partes.join("  ·  ") : "(todas las celdas vacias)";
+  };
+
   const skippedSummary = [...byReason.entries()]
     .map(([reason, idx]) => ({
       reason,
       count: idx.length,
       firstRow: Math.min(...idx),
       lastRow: Math.max(...idx),
+      // La primera, una del medio y la ultima: alcanza para ver de que se trata.
+      sample: [...new Set([idx[0]!, idx[Math.floor(idx.length / 2)]!, idx[idx.length - 1]!])]
+        .map((row) => ({ row, cells: describir(row) })),
     }))
     .sort((a, b) => b.count - a.count);
 
@@ -695,7 +722,16 @@ export interface MergeResult {
   rows: TrackerRow[];
   nuevas: number;
   repetidas: number;
+  /**
+   * Filas con el mismo identificador pero en otro lugar del mundo. Casi siempre
+   * significa que los dos archivos numeran bloques distintos con el mismo
+   * numero — y fusionarlas asi pisaria geometria buena en silencio.
+   */
+  colisiones: Array<{ id: string; distanciaM: number }>;
 }
+
+/** A partir de aca, dos filas con el mismo id no pueden ser la misma fila. */
+const DISTANCIA_SOSPECHOSA_M = 50;
 
 /**
  * Suma geometria nueva a la que un parque ya tiene.
@@ -710,11 +746,23 @@ export interface MergeResult {
  */
 export function mergeRows(previas: TrackerRow[], entrantes: TrackerRow[]): MergeResult {
   const entrantesPorId = new Set(entrantes.map((r) => r.id));
-  const previasPorId = new Set(previas.map((r) => r.id));
+  const previaPorId = new Map(previas.map((r) => [r.id, r]));
+
+  const colisiones: MergeResult["colisiones"] = [];
+  if (previas.length && entrantes.length) {
+    const frame = makeFrame(previas[0]!.start.lat, previas[0]!.start.lon);
+    for (const nueva of entrantes) {
+      const vieja = previaPorId.get(nueva.id);
+      if (!vieja) continue;
+      const d = distanceM(frame, vieja.start, nueva.start);
+      if (d > DISTANCIA_SOSPECHOSA_M) colisiones.push({ id: nueva.id, distanciaM: d });
+    }
+  }
 
   return {
     rows: [...previas.filter((r) => !entrantesPorId.has(r.id)), ...entrantes],
-    nuevas: entrantes.filter((r) => !previasPorId.has(r.id)).length,
-    repetidas: entrantes.filter((r) => previasPorId.has(r.id)).length,
+    nuevas: entrantes.filter((r) => !previaPorId.has(r.id)).length,
+    repetidas: entrantes.filter((r) => previaPorId.has(r.id)).length,
+    colisiones,
   };
 }

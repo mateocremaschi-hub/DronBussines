@@ -296,5 +296,7 @@ function makeAddress(
     confidence: 0,
   };
   if (row.source.row !== undefined) address.row = row.source.row;
+  const label = row.stringLabels?.[chunkIndex];
+  if (label) address.stringLabel = label;
   return address;
 }

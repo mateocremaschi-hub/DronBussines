@@ -8,10 +8,11 @@ interface Props {
   onOpen: (farm: StoredFarm) => void;
   onInspect: (farm: StoredFarm) => void;
   onAddGeometry: (farm: StoredFarm) => void;
+  onStrings: (farm: StoredFarm) => void;
   onChanged: () => void;
 }
 
-export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onChanged }: Props) {
+export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onStrings, onChanged }: Props) {
   async function importFarm(file: File) {
     const text = await file.text();
     const farm = JSON.parse(text) as StoredFarm;
@@ -43,6 +44,9 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onChange
         <ul className="farms">
           {farms.map((f) => {
             const verified = f.profile.calibration?.status === "field-verified";
+            const conStrings = f.rows.filter((r) => r.stringNumbers?.length).length;
+            const conLinea = f.rows.filter((r) => r.pos != null && r.posTotal != null).length;
+            const pct = (n: number) => Math.round((n / Math.max(1, f.rows.length)) * 100);
             return (
               <li key={f.profile.id}>
                 <button className="farm-open" onClick={() => onOpen(f)}>
@@ -56,6 +60,9 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onChange
                     {f.profile.topology.stringGapMm ?? 0} mm · offset{" "}
                     {f.profile.geometry.endpointOffsetMm} mm
                   </span>
+                  <span className="mono muted">
+                    {pct(conStrings)} % con numero de string · {pct(conLinea)} % con posicion en la linea
+                  </span>
                   <span className={verified ? "chip ver" : "chip asm"}>
                     {verified ? "verificado en campo" : "sin verificar"}
                   </span>
@@ -63,6 +70,7 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onChange
                 <div className="farm-actions">
                   <button className="link" onClick={() => onInspect(f)}>Inspecciones</button>
                   <button className="link" onClick={() => onAddGeometry(f)}>Agregar geometria</button>
+                  <button className="link" onClick={() => onStrings(f)}>Lista de strings</button>
                   <button className="link" onClick={() => downloadFarm(f)}>Exportar</button>
                   <button
                     className="link danger"

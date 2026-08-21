@@ -380,3 +380,70 @@ describe("fusion de geometria", () => {
     expect(m.rows.map((r) => r.id)).toEqual(["01-a", "01-b", "02-a"]);
   });
 });
+
+describe("diagnostico de las filas salteadas", () => {
+  const sheet = {
+    name: "DATA",
+    headers: ["BLOQUE", "TRACKER", "y1", "x1", "y2", "x2"],
+    rows: [
+      { BLOQUE: "01", TRACKER: "T1", y1: -27.4, x1: 152.7, y2: -27.4006, x2: 152.7 },
+      { BLOQUE: "01", TRACKER: "T2", y1: -27.4, x1: 152.7, y2: -27.4006, x2: 152.7 },
+      { BLOQUE: "TOTAL", TRACKER: null, y1: null, x1: null, y2: null, x2: null },
+      { BLOQUE: null, TRACKER: null, y1: null, x1: null, y2: null, x2: null },
+    ],
+  };
+  const mapping = {
+    block: "BLOQUE", tracker: "TRACKER",
+    startY: "y1", startX: "x1", endY: "y2", endX: "x2",
+  };
+
+  // Sin ver que dicen esas filas, "384 salteadas" no se puede interpretar.
+  it("muestra que decia de verdad cada fila salteada", () => {
+    const built = buildRows(sheet, mapping, { type: "wgs84" });
+    expect(built.rows).toHaveLength(2);
+
+    const resumen = built.skippedSummary[0]!;
+    expect(resumen.count).toBe(2);
+    expect(resumen.sample.length).toBeGreaterThan(0);
+    // La fila de totales se reconoce por su contenido.
+    expect(resumen.sample.map((s) => s.cells).join(" ")).toMatch(/TOTAL/);
+  });
+
+  it("dice cuando la fila estaba completamente vacia", () => {
+    const built = buildRows(
+      { ...sheet, rows: [sheet.rows[0]!, sheet.rows[3]!] },
+      mapping,
+      { type: "wgs84" },
+    );
+    expect(built.skippedSummary[0]!.sample[0]!.cells).toMatch(/vacias/);
+  });
+});
+
+describe("colisiones al fusionar dos archivos", () => {
+  const fila = (id: string, lat: number, lon: number) => ({
+    id, block: id.slice(0, 2), tracker: id,
+    start: { lat, lon }, end: { lat: lat - 0.0006, lon },
+  });
+
+  // El riesgo real: dos archivos que numeran bloques distintos con el mismo
+  // numero. Fusionarlos pisa geometria buena sin que nadie se entere.
+  it("avisa cuando una fila repetida esta en otro lugar del mundo", () => {
+    const m = mergeRows([fila("05-001", -27.4, 152.7)], [fila("05-001", -27.41, 152.71)]);
+    expect(m.colisiones).toHaveLength(1);
+    expect(m.colisiones[0]!.id).toBe("05-001");
+    expect(m.colisiones[0]!.distanciaM).toBeGreaterThan(500);
+  });
+
+  it("no avisa por una correccion chica de coordenada", () => {
+    // Un metro de diferencia es un replanteo corregido, no otro bloque.
+    const m = mergeRows([fila("05-001", -27.4, 152.7)], [fila("05-001", -27.400009, 152.7)]);
+    expect(m.repetidas).toBe(1);
+    expect(m.colisiones).toEqual([]);
+  });
+
+  it("no avisa cuando los bloques no se solapan", () => {
+    const m = mergeRows([fila("05-001", -27.4, 152.7)], [fila("06-001", -27.41, 152.71)]);
+    expect(m.nuevas).toBe(1);
+    expect(m.colisiones).toEqual([]);
+  });
+});

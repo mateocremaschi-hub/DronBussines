@@ -95,3 +95,33 @@ const wb2 = XLSX.utils.book_new();
 XLSX.utils.book_append_sheet(wb2, XLSX.utils.json_to_sheet(rows2), "DATA");
 XLSX.writeFile(wb2, "public/ejemplo-picas-bloque2.xlsx");
 console.log(`Escrito public/ejemplo-picas-bloque2.xlsx con ${rows2.length} trackers (bloque 06).`);
+
+
+// ---------------------------------------------------------------------------
+// Lista de strings de ejemplo, con la forma de las planillas reales:
+// dos filas de titulo antes de los encabezados, y la caja DC combinada.
+// ---------------------------------------------------------------------------
+
+const filas = [["Planilla de strings — ejemplo"], []];
+filas.push(["STRING", "TRACKER", "FILA", "DC BOX No."]);
+
+let caja = 0;
+rows.forEach((r, i) => {
+  // Cada caja DC alimenta 4 trackers vecinos (en paralelo, uno al lado del otro).
+  if (i % 4 === 0) caja += 1;
+  const primeroDeLaCaja = i % 4 === 0;
+  for (const s of [1, 2]) {
+    filas.push([
+      `S-5.1.${caja}.${(i % 4) * 2 + s}`,
+      r.TRACKER,
+      "R1",
+      // Combinada: solo aparece en la primera fila de cada bloque.
+      primeroDeLaCaja && s === 1 ? `DCB-5.1.${caja}` : null,
+    ]);
+  }
+});
+
+const wb3 = XLSX.utils.book_new();
+XLSX.utils.book_append_sheet(wb3, XLSX.utils.aoa_to_sheet(filas), "STRINGS");
+XLSX.writeFile(wb3, "public/ejemplo-strings.xlsx");
+console.log(`Escrito public/ejemplo-strings.xlsx con ${filas.length - 3} strings.`);

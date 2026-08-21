@@ -231,8 +231,15 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
   // relativamente, y nunca contra un numero fijo: hay filas cuyos dos strings
   // se numeran 5 y 6 en vez de 1 y 2.
   let stringNumbers: number[];
+  let stringLabels: string[] | undefined;
   if (row.stringNumbers && row.stringNumbers.length > 0) {
-    stringNumbers = [...row.stringNumbers].sort((x, y) => x - y);
+    // Las etiquetas viajan junto con su numero, no por separado: separarlas es
+    // como se termina mostrando la etiqueta de un string sobre otro.
+    const pares = row.stringNumbers
+      .map((n, i) => ({ n, label: row.stringLabels?.[i] }))
+      .sort((x, y) => x.n - y.n);
+    stringNumbers = pares.map((q) => q.n);
+    if (row.stringLabels?.length) stringLabels = pares.map((q) => q.label ?? "");
     if (stringNumbers.length !== ctx.stringsPerRow) {
       ctx.buildWarnings.push({
         code: "missing-flag",
@@ -270,6 +277,7 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
     stringSpanM: layout.stringSpanM,
     periodM: layout.periodM,
     stringNumbers,
+    ...(stringLabels ? { stringLabels } : {}),
     lengthResidualMmPerModule,
     originEnd: originRes.end,
     inverted,
