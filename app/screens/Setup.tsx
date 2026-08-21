@@ -14,6 +14,7 @@ import {
   deriveSides,
   FIELDS,
   guessCrs,
+  mergeRows,
   readWorkbook,
   suggestEndpointOffsetMm,
   suggestMapping,
@@ -71,7 +72,14 @@ const slug = (s: string) =>
 
 // ---------------------------------------------------------------------------
 
-export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
+interface SetupProps {
+  onDone: () => void;
+  onCancel: () => void;
+  /** Si viene, en vez de crear un parque se le agrega geometria a este. */
+  existing?: StoredFarm;
+}
+
+export function Setup({ onDone, onCancel, existing }: SetupProps) {
   const [step, setStep] = useState(1);
   const [error, setError] = useState<string | null>(null);
 
@@ -82,9 +90,22 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
   const [crs, setCrs] = useState<Crs>({ type: "wgs84" });
 
   const [deriveSide, setDeriveSide] = useState(false);
-  const [name, setName] = useState("");
+  const [name, setName] = useState(existing?.profile.name ?? "");
   const [presetId, setPresetId] = useState(PRESETS[0]!.id);
-  const [profileDraft, setProfileDraft] = useState(PRESETS[0]!.profile);
+  // Al agregarle geometria a un parque que ya existe se arranca de SU perfil,
+  // no de un preset: ese perfil ya esta calibrado y pisarlo con los valores por
+  // defecto seria tirar a la basura las medidas de campo.
+  const [profileDraft, setProfileDraft] = useState(
+    existing
+      ? {
+          module: existing.profile.module,
+          topology: existing.profile.topology,
+          geometry: existing.profile.geometry,
+          addressing: existing.profile.addressing,
+          matching: existing.profile.matching,
+        }
+      : PRESETS[0]!.profile,
+  );
 
   const sheet = sheets[sheetIndex];
 
@@ -107,7 +128,7 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
       setSheetIndex(idx);
       setFileName(file.name);
       applySheet(usable, idx);
-      if (!name) setName(file.name.replace(/\.[^.]+$/, ""));
+      if (!name && !existing) setName(file.name.replace(/\.[^.]+$/, ""));
       setStep(2);
     } catch (e) {
       setError(`No pude leer el archivo: ${e instanceof Error ? e.message : String(e)}`);
@@ -175,38 +196,44 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
 
   const profile: FarmProfile = useMemo(
     () => ({
-      id: slug(name),
+      id: existing?.profile.id ?? slug(name),
       name: name || "Parque sin nombre",
-      profileVersion: 1,
+      profileVersion: (existing?.profile.profileVersion ?? 0) + 1,
       crs: crs.type === "utm" ? { type: "utm", zone: crs.zone, hemisphere: crs.hemisphere } : { type: "wgs84" },
       ...profileDraft,
-      calibration: {
+      calibration: existing?.profile.calibration ?? {
         status: "unverified",
         notes: "Perfil creado desde el asistente. Ninguna regla verificada en campo todavia.",
       },
     }),
-    [name, crs, profileDraft],
+    [name, crs, profileDraft, existing],
+  );
+
+  /** Que pasa al fusionar: cuantas filas son nuevas y cuantas pisan a una vieja. */
+  const merge = useMemo(
+    () => (built ? mergeRows(existing?.rows ?? [], built.rows) : null),
+    [built, existing],
   );
 
   const compiled: { farm: CompiledFarm } | { err: string } | null = useMemo(() => {
-    if (!built || !built.rows.length) return null;
+    if (!built || !built.rows.length || !merge) return null;
     try {
-      return { farm: compileFarm(profile, built.rows) };
+      return { farm: compileFarm(profile, merge.rows) };
     } catch (e) {
       if (e instanceof ProfileError) return { err: e.issues.join(" · ") };
       return { err: e instanceof Error ? e.message : String(e) };
     }
-  }, [built, profile]);
+  }, [merge, built, profile]);
 
   const farm = compiled && "farm" in compiled ? compiled.farm : null;
 
   async function save() {
-    if (!farm || !built) return;
+    if (!farm || !built || !merge) return;
     const stored: StoredFarm = {
       profile,
-      rows: built.rows,
+      rows: merge.rows,
       savedAt: new Date().toISOString(),
-      source: { fileName, sheetName: sheet?.name ?? "", rowCount: built.rows.length },
+      source: { fileName, sheetName: sheet?.name ?? "", rowCount: merge.rows.length },
     };
     await saveFarm(stored);
     onDone();
@@ -218,8 +245,8 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
     <div className="screen">
       <header className="screen-head">
         <div>
-          <p className="eyebrow">Nuevo parque</p>
-          <h1>Cargar los datos que tengas</h1>
+          <p className="eyebrow">{existing ? existing.profile.name : "Nuevo parque"}</p>
+          <h1>{existing ? "Agregar mas geometria" : "Cargar los datos que tengas"}</h1>
         </div>
         <button className="ghost" onClick={onCancel}>Cancelar</button>
       </header>
@@ -239,6 +266,13 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
       {step === 1 && (
         <section className="card">
           <h2>1 · El archivo de coordenadas</h2>
+          {existing && (
+            <p className="note ok">
+              Este parque ya tiene <strong>{existing.rows.length} filas</strong>. Lo que cargues se
+              suma a eso: las filas nuevas se agregan y las que ya existan se actualizan. Los
+              parametros de geometria que ya calibraste no se tocan.
+            </p>
+          )}
           <p>
             Un Excel o CSV donde cada fila sea un tracker con las coordenadas de sus dos picas.
             Sirven grados decimales o UTM: la app se da cuenta sola y despues te lo muestra para
@@ -442,13 +476,20 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
         <section className="card">
           <h2>3 · Como esta armado el parque</h2>
 
-          <div className="field">
-            <label>Nombre del parque</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej: Edenvale Solar Farm" />
-            <span className="help">El identificador interno va a ser <code>{slug(name)}</code>.</span>
-          </div>
+          {!existing && (
+            <div className="field">
+              <label htmlFor="farm-name">Nombre del parque</label>
+              <input
+                id="farm-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Ej: Edenvale Solar Farm"
+              />
+              <span className="help">El identificador interno va a ser <code>{slug(name)}</code>.</span>
+            </div>
+          )}
 
-          <div className="field">
+          <div className="field" hidden={!!existing}>
             <label>Punto de partida</label>
             <select
               value={presetId}
@@ -623,8 +664,15 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
 
           {compiled && "err" in compiled && <p className="alert">{compiled.err}</p>}
 
-          {farm && (
+          {farm && merge && (
             <>
+              {existing && (
+                <p className="note ok">
+                  {merge.nuevas} filas nuevas
+                  {merge.repetidas > 0 && `, ${merge.repetidas} que ya estaban y se actualizan`}
+                  {" "}· el parque queda con <strong>{merge.rows.length}</strong> filas en total.
+                </p>
+              )}
               <GeometryPlot farm={farm} />
 
               {farm.buildWarnings.length > 0 && (
@@ -641,7 +689,7 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
 
               <h3>Que vas a poder decir con estos datos</h3>
               <ul className="caps">
-                {capabilityReport(built!.rows, profile).map((c) => (
+                {capabilityReport(merge.rows, profile).map((c) => (
                   <li key={c.label} className={c.available ? "yes" : "no"}>
                     <strong>{c.label}</strong>
                     <span>{c.detail}</span>
@@ -651,7 +699,9 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
 
               <div className="actions">
                 <button className="ghost" onClick={() => setStep(3)}>Atras</button>
-                <button onClick={() => void save()}>Guardar el parque</button>
+                <button onClick={() => void save()}>
+                  {existing ? "Agregar al parque" : "Guardar el parque"}
+                </button>
               </div>
             </>
           )}

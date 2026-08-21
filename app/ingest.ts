@@ -686,3 +686,35 @@ export function deriveSides(rows: TrackerRow[]): SideDerivation {
 
   return { sides, blocks };
 }
+
+// ---------------------------------------------------------------------------
+// Fusion de geometria
+// ---------------------------------------------------------------------------
+
+export interface MergeResult {
+  rows: TrackerRow[];
+  nuevas: number;
+  repetidas: number;
+}
+
+/**
+ * Suma geometria nueva a la que un parque ya tiene.
+ *
+ * En una planta grande los datos llegan de a pedazos: un Excel por transformador,
+ * o por etapa de obra. Cargar el segundo no puede significar ni perder el primero
+ * ni terminar con dos parques a medias.
+ *
+ * Una fila que ya existia se actualiza con la version nueva en vez de duplicarse,
+ * asi que volver a cargar el mismo archivo no cambia nada — que es justo lo que
+ * uno espera cuando no se acuerda si ya lo habia cargado.
+ */
+export function mergeRows(previas: TrackerRow[], entrantes: TrackerRow[]): MergeResult {
+  const entrantesPorId = new Set(entrantes.map((r) => r.id));
+  const previasPorId = new Set(previas.map((r) => r.id));
+
+  return {
+    rows: [...previas.filter((r) => !entrantesPorId.has(r.id)), ...entrantes],
+    nuevas: entrantes.filter((r) => !previasPorId.has(r.id)).length,
+    repetidas: entrantes.filter((r) => previasPorId.has(r.id)).length,
+  };
+}

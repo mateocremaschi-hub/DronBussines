@@ -7,10 +7,11 @@ interface Props {
   onNew: () => void;
   onOpen: (farm: StoredFarm) => void;
   onInspect: (farm: StoredFarm) => void;
+  onAddGeometry: (farm: StoredFarm) => void;
   onChanged: () => void;
 }
 
-export function Farms({ farms, onNew, onOpen, onInspect, onChanged }: Props) {
+export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onChanged }: Props) {
   async function importFarm(file: File) {
     const text = await file.text();
     const farm = JSON.parse(text) as StoredFarm;
@@ -47,8 +48,8 @@ export function Farms({ farms, onNew, onOpen, onInspect, onChanged }: Props) {
                 <button className="farm-open" onClick={() => onOpen(f)}>
                   <strong>{f.profile.name}</strong>
                   <span className="mono">
-                    {f.rows.length} filas · {f.profile.topology.modulesPerString} ×{" "}
-                    {f.profile.topology.stringsPerRow} modulos por fila
+                    {f.rows.length} filas en {new Set(f.rows.map((r) => r.block)).size} bloques ·{" "}
+                    {f.profile.topology.modulesPerString} × {f.profile.topology.stringsPerRow} modulos por fila
                   </span>
                   <span className="mono muted">
                     paso {f.profile.module.widthMm + f.profile.module.gapMm} mm · bahia{" "}
@@ -61,6 +62,7 @@ export function Farms({ farms, onNew, onOpen, onInspect, onChanged }: Props) {
                 </button>
                 <div className="farm-actions">
                   <button className="link" onClick={() => onInspect(f)}>Inspecciones</button>
+                  <button className="link" onClick={() => onAddGeometry(f)}>Agregar geometria</button>
                   <button className="link" onClick={() => downloadFarm(f)}>Exportar</button>
                   <button
                     className="link danger"

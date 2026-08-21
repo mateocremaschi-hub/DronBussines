@@ -15,6 +15,7 @@ import {
   buildRows,
   capabilityReport,
   guessCrs,
+  mergeRows,
   readWorkbook,
   suggestEndpointOffsetMm,
   suggestMapping,
@@ -335,5 +336,47 @@ describe("agrupacion de filas salteadas", () => {
     );
     const d = disperso.skippedSummary[0]!;
     expect(d.lastRow - d.firstRow + 1).toBeGreaterThan(d.count);
+  });
+});
+
+describe("fusion de geometria", () => {
+  const fila = (id: string, lat = -27.4) => ({
+    id, block: id.slice(0, 2), tracker: id,
+    start: { lat, lon: 152.7 }, end: { lat: lat - 0.0006, lon: 152.7 },
+  });
+
+  it("suma las filas nuevas y conserva las que ya estaban", () => {
+    const m = mergeRows([fila("01-a"), fila("01-b")], [fila("02-a"), fila("02-b"), fila("02-c")]);
+    expect(m.rows).toHaveLength(5);
+    expect(m.nuevas).toBe(3);
+    expect(m.repetidas).toBe(0);
+    expect(m.rows.map((r) => r.id)).toContain("01-a");
+  });
+
+  // Volver a cargar el mismo archivo no tiene que cambiar nada: es lo que uno
+  // hace cuando no se acuerda si ya lo habia cargado.
+  it("cargar dos veces el mismo archivo deja el parque igual", () => {
+    const previas = [fila("01-a"), fila("01-b")];
+    const m = mergeRows(previas, [fila("01-a"), fila("01-b")]);
+    expect(m.rows).toHaveLength(2);
+    expect(m.nuevas).toBe(0);
+    expect(m.repetidas).toBe(2);
+  });
+
+  it("una fila repetida se actualiza con la version nueva, no se duplica", () => {
+    const m = mergeRows([fila("01-a", -27.4)], [fila("01-a", -27.5)]);
+    expect(m.rows).toHaveLength(1);
+    expect(m.rows[0]!.start.lat).toBe(-27.5);
+  });
+
+  it("sobre un parque vacio es simplemente cargar", () => {
+    const m = mergeRows([], [fila("01-a")]);
+    expect(m.rows).toHaveLength(1);
+    expect(m.nuevas).toBe(1);
+  });
+
+  it("mantiene el orden: primero lo viejo que sigue, despues lo que entra", () => {
+    const m = mergeRows([fila("01-a"), fila("01-b")], [fila("01-b"), fila("02-a")]);
+    expect(m.rows.map((r) => r.id)).toEqual(["01-a", "01-b", "02-a"]);
   });
 });

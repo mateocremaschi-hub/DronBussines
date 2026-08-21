@@ -78,4 +78,20 @@ const wb = XLSX.utils.book_new();
 XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Planilla de replanteo — portada"]]), "PORTADA");
 XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "DATA");
 XLSX.writeFile(wb, "public/ejemplo-picas.xlsx");
-console.log(`Escrito public/ejemplo-picas.xlsx con ${rows.length} trackers.`);
+console.log(`Escrito public/ejemplo-picas.xlsx con ${rows.length} trackers (bloque 05).`);
+
+// Un segundo archivo con OTRO bloque, como llega en las plantas grandes:
+// un Excel por transformador o por etapa de obra.
+const rows2 = rows.map((r, i) => ({
+  ...r,
+  BLOQUE: "06",
+  TRACKER: `06-${String((i % 12) + 1).padStart(3, "0")}`,
+  // Corrido 200 m al este, para que se vea como un bloque aparte en el mapa.
+  "PICA 1 ESTE (E)": Math.round((r["PICA 1 ESTE (E)"] + 200) * 100) / 100,
+  "PICA 2 ESTE (E)": Math.round((r["PICA 2 ESTE (E)"] + 200) * 100) / 100,
+}));
+
+const wb2 = XLSX.utils.book_new();
+XLSX.utils.book_append_sheet(wb2, XLSX.utils.json_to_sheet(rows2), "DATA");
+XLSX.writeFile(wb2, "public/ejemplo-picas-bloque2.xlsx");
+console.log(`Escrito public/ejemplo-picas-bloque2.xlsx con ${rows2.length} trackers (bloque 06).`);
