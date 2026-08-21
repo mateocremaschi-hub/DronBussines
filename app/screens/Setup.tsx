@@ -37,11 +37,11 @@ const PRESETS: Preset[] = [
   {
     id: "pvh-28x2",
     label: "Racking tipo PVH — 28 × 2, modulos verticales",
-    note: "Las reglas verificadas en campo en Edenvale. Conteo desde la caja DC y regla del piercing connector.",
+    note: "Las reglas verificadas en campo en Edenvale: bahia de motor entre strings, la pica adentro del recorrido, conteo desde la caja DC y regla del piercing connector.",
     profile: {
       module: { widthMm: 1130, gapMm: 20, orientation: "portrait", pitchMm: null },
-      topology: { modulesPerString: 28, stringsPerRow: 2 },
-      geometry: { source: "survey-stakes", endpointOffsetMm: 1400, endpointOffsetMode: "both" },
+      topology: { modulesPerString: 28, stringsPerRow: 2, stringGapMm: 3713 },
+      geometry: { source: "survey-stakes", endpointOffsetMm: -1464, endpointOffsetMode: "both" },
       addressing: {
         originStrategy: "dc-box-end",
         dcBoxPlacement: "center-road",
@@ -56,7 +56,7 @@ const PRESETS: Preset[] = [
     note: "El punto de partida mas seguro cuando todavia no conoces las reglas del parque. No inventa nada.",
     profile: {
       module: { widthMm: 1130, gapMm: 20, orientation: "portrait", pitchMm: "derive" },
-      topology: { modulesPerString: 28, stringsPerRow: 1 },
+      topology: { modulesPerString: 28, stringsPerRow: 1, stringGapMm: 0 },
       geometry: { source: "survey-stakes", endpointOffsetMm: 0, endpointOffsetMode: "none" },
       addressing: { originStrategy: "fixed-end", fixedEnd: "north", inversionStrategy: "none" },
       matching: { maxDistanceM: 30, neighborhood: 2, maxRowCandidates: 3, defaultAccuracyM: 3 },
@@ -142,9 +142,13 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
   const offsetHint = useMemo(
     () =>
       built?.rows.length
-        ? suggestEndpointOffsetMm(built.rows, modulesPerRowDraft, nominalPitchMm)
+        ? suggestEndpointOffsetMm(built.rows, modulesPerRowDraft, nominalPitchMm, {
+            moduleGapMm: profileDraft.module.gapMm,
+            stringsPerRow: profileDraft.topology.stringsPerRow,
+            stringGapMm: profileDraft.topology.stringGapMm ?? 0,
+          })
         : null,
-    [built, modulesPerRowDraft, nominalPitchMm],
+    [built, modulesPerRowDraft, nominalPitchMm, profileDraft],
   );
 
   const profile: FarmProfile = useMemo(
@@ -432,6 +436,20 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
               <span className="help">Vertical ronda 1130 mm; apaisado ronda 2280 mm.</span>
             </div>
             <div className="field">
+              <label>Bahia entre strings (mm)</label>
+              <input
+                type="number" min={0} value={profileDraft.topology.stringGapMm ?? 0}
+                onChange={(e) => setProfileDraft((d) => ({
+                  ...d, topology: { ...d.topology, stringGapMm: Number(e.target.value) },
+                }))}
+              />
+              <span className="help">
+                El espacio libre donde va el motor, entre un string y el siguiente. No es el
+                huequito entre modulos. En Edenvale son 3713 mm — mas de tres posiciones de modulo
+                vacias, y olvidarlo corre el string lejano esa distancia entera.
+              </span>
+            </div>
+            <div className="field">
               <label>Hueco entre modulos (mm)</label>
               <input
                 type="number" min={0} value={profileDraft.module.gapMm}
@@ -443,7 +461,7 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
             <div className="field">
               <label>Distancia de la pica al primer modulo (mm)</label>
               <input
-                type="number" min={0} value={profileDraft.geometry.endpointOffsetMm}
+                type="number" value={profileDraft.geometry.endpointOffsetMm}
                 onChange={(e) => setProfileDraft((d) => ({
                   ...d, geometry: { ...d.geometry, endpointOffsetMm: Number(e.target.value) },
                 }))}
@@ -452,7 +470,8 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
                 <span className="help">
                   Tus filas miden <strong>{offsetHint.medianLengthM.toFixed(2)} m</strong> de pica a
                   pica. Con {modulesPerRowDraft} modulos de {nominalPitchMm} mm, eso deja{" "}
-                  <strong>{offsetHint.offsetMm.toFixed(0)} mm</strong> por punta.
+                  <strong>{offsetHint.offsetMm.toFixed(0)} mm</strong> por punta
+                  {offsetHint.offsetMm < 0 ? " (negativo: los modulos sobresalen mas alla de la pica)" : ""}.
                   {Math.abs(offsetHint.offsetMm - profileDraft.geometry.endpointOffsetMm) > 50 && (
                     <>
                       {" "}

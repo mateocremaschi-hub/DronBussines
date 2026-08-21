@@ -66,6 +66,9 @@ export function validateProfile(input: unknown): FarmProfile {
     if (!isPositiveInt(t.stringsPerRow)) {
       issues.push("`topology.stringsPerRow` tiene que ser un entero positivo.");
     }
+    if (t.stringGapMm != null && (!isFiniteNumber(t.stringGapMm) || t.stringGapMm < 0)) {
+      issues.push("`topology.stringGapMm` tiene que ser un numero >= 0 (mm).");
+    }
   }
 
   // --- geometry ------------------------------------------------------------
@@ -73,8 +76,11 @@ export function validateProfile(input: unknown): FarmProfile {
   if (!g || typeof g !== "object") {
     issues.push("Falta el bloque `geometry`.");
   } else {
-    if (!isFiniteNumber(g.endpointOffsetMm) || g.endpointOffsetMm < 0) {
-      issues.push("`geometry.endpointOffsetMm` tiene que ser un numero >= 0 (mm).");
+    // Puede ser negativo: los modulos pueden sobresalir mas alla de la pica.
+    if (!isFiniteNumber(g.endpointOffsetMm)) {
+      issues.push(
+        "`geometry.endpointOffsetMm` tiene que ser un numero (mm). Negativo si los modulos sobresalen mas alla de la pica.",
+      );
     }
     if (g.endpointOffsetMode && !["both", "origin", "none"].includes(g.endpointOffsetMode)) {
       issues.push('`geometry.endpointOffsetMode` tiene que ser "both", "origin" o "none".');

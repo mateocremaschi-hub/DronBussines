@@ -32,17 +32,26 @@ export interface RowSpec {
   lengthM?: number;
 }
 
+function pitchOf(profile: FarmProfile): number {
+  return typeof profile.module.pitchMm === "number"
+    ? profile.module.pitchMm / 1000
+    : (profile.module.widthMm + profile.module.gapMm) / 1000;
+}
+
+/** Largo de un string completo: n modulos con n-1 huequitos entre ellos. */
+function stringSpanM(profile: FarmProfile): number {
+  return profile.topology.modulesPerString * pitchOf(profile) - profile.module.gapMm / 1000;
+}
+
 /** Largo pica a pica que el perfil predice para una fila completa. */
 export function nominalLengthM(profile: FarmProfile): number {
-  const modulesPerRow = profile.topology.modulesPerString * profile.topology.stringsPerRow;
-  const pitchM =
-    typeof profile.module.pitchMm === "number"
-      ? profile.module.pitchMm / 1000
-      : (profile.module.widthMm + profile.module.gapMm) / 1000;
+  const { stringsPerRow, stringGapMm } = profile.topology;
   const offsetM = profile.geometry.endpointOffsetMm / 1000;
   const mode = profile.geometry.endpointOffsetMode ?? "both";
   const offsets = mode === "both" ? 2 * offsetM : mode === "origin" ? offsetM : 0;
-  return modulesPerRow * pitchM + offsets;
+  const extent =
+    stringsPerRow * stringSpanM(profile) + (stringsPerRow - 1) * ((stringGapMm ?? 0) / 1000);
+  return extent + offsets;
 }
 
 export function makeRow(spec: RowSpec, profile: FarmProfile): TrackerRow {
@@ -88,15 +97,19 @@ export function pointAtSlot(
   const ux = dx / len;
   const uy = dy / len;
 
-  const pitchM =
-    typeof profile.module.pitchMm === "number"
-      ? profile.module.pitchMm / 1000
-      : (profile.module.widthMm + profile.module.gapMm) / 1000;
+  const pitchM = pitchOf(profile);
   const widthM = profile.module.widthMm / 1000;
   const mode = profile.geometry.endpointOffsetMode ?? "both";
   const offsetM = mode === "none" ? 0 : profile.geometry.endpointOffsetMm / 1000;
 
-  const fromRef = offsetM + (slot - 1) * pitchM + widthM / 2;
+  // El hueco `slot` cuenta modulos fisicos: hay que saltear la bahia de motor
+  // que separa un string del siguiente.
+  const n = profile.topology.modulesPerString;
+  const gapM = (profile.topology.stringGapMm ?? 0) / 1000;
+  const stringIndex = Math.floor((slot - 1) / n);
+  const within = slot - stringIndex * n;
+  const fromRef =
+    offsetM + stringIndex * (stringSpanM(profile) + gapM) + (within - 1) * pitchM + widthM / 2;
   const fromStart = from === "start" ? fromRef : len - fromRef;
 
   const x = ux * fromStart - uy * offAxisM;

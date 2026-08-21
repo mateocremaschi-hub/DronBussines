@@ -102,6 +102,15 @@ export interface FarmProfile {
   topology: {
     modulesPerString: number;
     stringsPerRow: number;
+    /**
+     * Espacio libre entre un string y el siguiente de la misma fila, en mm.
+     *
+     * No es el huequito entre modulos: es el bahia donde va el motor que mueve
+     * el tracker. En Edenvale son 3.7 m — mas de tres posiciones de modulo
+     * vacias. Ignorarlo desplaza los modulos del string lejano por esa
+     * distancia entera.
+     */
+    stringGapMm?: number;
     rowNaming?: {
       pattern?: string;
       motorized?: string[];
@@ -111,7 +120,12 @@ export interface FarmProfile {
 
   geometry: {
     source?: "survey-stakes" | "cad" | "orthomosaic" | "manual";
-    /** Distancia de la pica al borde del primer modulo, en mm. */
+    /**
+     * Distancia de la pica al borde del primer modulo, en mm.
+     *
+     * NEGATIVO si los modulos sobresalen mas alla de la pica, que es el caso
+     * de Edenvale: la pica queda 1464 mm adentro, debajo del segundo modulo.
+     */
     endpointOffsetMm: number;
     /**
      * A que extremos se aplica el offset:
@@ -209,7 +223,8 @@ export type WarningCode =
   | "ambiguous"
   | "missing-side"
   | "missing-chain-position"
-  | "missing-flag";
+  | "missing-flag"
+  | "in-string-gap";
 
 export interface Warning {
   code: WarningCode;
@@ -275,6 +290,10 @@ export interface CompiledRow {
   pitchM: number;
   originOffsetM: number;
   farOffsetM: number;
+  /** Largo que ocupa un string completo, sin contar la bahia del motor. */
+  stringSpanM: number;
+  /** Distancia entre el arranque de un string y el del siguiente. */
+  periodM: number;
   /** Numeros de string ordenados ascendente: el menor es el mas cercano al origen. */
   stringNumbers: number[];
   lengthResidualMmPerModule: number;

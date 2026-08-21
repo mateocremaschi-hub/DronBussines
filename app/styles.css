@@ -289,3 +289,10 @@ tr:last-child td { border-bottom: none; }
 /* Un candidato en otro tracker se marca distinto: confundir el modulo de al
    lado es un error de un metro, confundir la fila es caminar al lugar equivocado. */
 .cand-row { color: var(--warn); font-family: Archivo, sans-serif; }
+
+/* El rango honesto cuando el GPS no alcanza para senalar un modulo solo. */
+.range {
+  background: var(--accent-soft); border-left: 3px solid var(--accent);
+  padding: 10px 14px; border-radius: 0 5px 5px 0; font-size: 14.5px;
+  color: var(--ink-2); margin: 4px 0 8px;
+}

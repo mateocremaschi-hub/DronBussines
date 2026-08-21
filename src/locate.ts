@@ -9,6 +9,11 @@
 
 import { makeFrame, toGeo, toLocal } from "./geo/frame.js";
 import { projectOnSegment } from "./geo/segment.js";
+import {
+  distanceAtPosition,
+  positionAtDistance,
+  type RowLayout,
+} from "./geo/rowLayout.js";
 import { chunkOf, splitPosition } from "./strategies/inversion.js";
 import type {
   Address,
@@ -19,6 +24,9 @@ import type {
   LocateResult,
   Warning,
 } from "./types.js";
+
+/** Tope de vecinos por fila: con GPS muy malo, la lista deja de ser util. */
+const MAX_NEIGHBOURHOOD = 12;
 
 export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
   const frame = makeFrame(farm.origin.lat, farm.origin.lon);
@@ -78,13 +86,24 @@ export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
 
   // --- 2. candidatos --------------------------------------------------------
   const sigma = fix.accuracyM && fix.accuracyM > 0 ? fix.accuracyM : farm.defaultAccuracyM;
+
+  // La cantidad de vecinos tiene que salir de la precision de la coordenada, no
+  // ser un numero fijo. Verificado en campo: con un celular a ~4 m de precision
+  // el error tipico son 7 modulos, y una lista de +-2 dejaba la respuesta
+  // correcta AFUERA. Una lista corta no es mas precisa; es mas confiada.
+  const spanFromAccuracy = Math.ceil((2 * sigma) / (chosen[0]?.row.pitchM ?? 1.15));
+  const neighborhood = Math.min(
+    MAX_NEIGHBOURHOOD,
+    Math.max(farm.neighborhood, spanFromAccuracy),
+  );
+
   const seen = new Set<string>();
   const candidates: Address[] = [];
 
   for (const entry of chosen) {
     const centre = positionAt(entry.row, entry.alongM, farm);
-    const lo = Math.max(1, centre.positionInRow - farm.neighborhood);
-    const hi = Math.min(farm.modulesPerRow, centre.positionInRow + farm.neighborhood);
+    const lo = Math.max(1, centre.positionInRow - neighborhood);
+    const hi = Math.min(farm.modulesPerRow, centre.positionInRow + neighborhood);
 
     for (let pos = lo; pos <= hi; pos++) {
       const key = `${entry.row.source.id}#${pos}`;
@@ -120,7 +139,8 @@ export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
   if (winnerEntry) {
     const row = winnerEntry.row;
     const alongFromOrigin = fromOrigin(row, winnerEntry.alongM);
-    const winnerPosition = clampPosition(row, alongFromOrigin, farm);
+    const winnerHit = positionAtDistance(layoutOf(row, farm), alongFromOrigin);
+    const winnerPosition = winnerHit.positionInRow;
     const winnerChunk = chunkOf(winnerPosition, farm.profile.topology.modulesPerString);
 
     diagnostics.winner = {
@@ -139,7 +159,17 @@ export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
 
     warnings.push(...row.strategyWarnings);
 
-    const raw = rawPosition(row, alongFromOrigin);
+    if (winnerHit.inGap) {
+      warnings.push({
+        code: "in-string-gap",
+        rowId: row.source.id,
+        message:
+          `La coordenada cae en la bahia del motor, entre dos strings — ahi no hay ningun modulo. ` +
+          `Te doy el modulo del borde mas cercano, pero conviene mirar la foto para ver de que lado esta.`,
+      });
+    }
+
+    const raw = winnerHit.raw;
     if (raw < 1 || raw > farm.modulesPerRow) {
       warnings.push({
         code: "outside-row-extent",
@@ -153,11 +183,15 @@ export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
   }
 
   if (best && best.confidence < 0.35) {
+    const sameRow = candidates.filter((c) => c.rowId === best.rowId);
+    const lo = Math.min(...sameRow.map((c) => c.positionInRow));
+    const hi = Math.max(...sameRow.map((c) => c.positionInRow));
     warnings.push({
       code: "low-confidence",
       message:
-        `Ninguna posicion se lleva mas del ${(best.confidence * 100).toFixed(0)} % de la probabilidad. ` +
-        `Confirma visualmente contra la foto termica usando la lista de vecinos.`,
+        `Con ±${sigma.toFixed(0)} m de precision no se puede senalar un modulo solo: la coordenada ` +
+        `cae en cualquier lugar entre las posiciones ${lo} y ${hi} de la fila. ` +
+        `El tracker y la fila si son confiables — el modulo hay que confirmarlo contra la foto termica.`,
     });
   }
 
@@ -198,14 +232,21 @@ function fromOrigin(row: CompiledRow, alongFromStartM: number): number {
   return row.originEnd === "start" ? alongFromStartM : row.lengthM - alongFromStartM;
 }
 
-/** Posicion continua dentro de la fila (puede caer fuera del rango valido). */
-function rawPosition(row: CompiledRow, alongFromOriginM: number): number {
-  return (alongFromOriginM - row.originOffsetM) / row.pitchM + 1;
-}
-
-function clampPosition(row: CompiledRow, alongFromOriginM: number, farm: CompiledFarm): number {
-  const idx = Math.floor((alongFromOriginM - row.originOffsetM) / row.pitchM) + 1;
-  return Math.min(Math.max(idx, 1), farm.modulesPerRow);
+/**
+ * Reconstruye el reparto de modulos de la fila. Se arma desde los valores que
+ * ya calculo el compilador, nunca recalculando la geometria por separado: si
+ * esta funcion y la del compilador se desincronizan, el error es de metros.
+ */
+function layoutOf(row: CompiledRow, farm: CompiledFarm): RowLayout {
+  return {
+    modulesPerString: farm.profile.topology.modulesPerString,
+    stringsPerRow: farm.profile.topology.stringsPerRow,
+    pitchM: row.pitchM,
+    moduleWidthM: farm.moduleWidthM,
+    stringSpanM: row.stringSpanM,
+    periodM: row.periodM,
+    originOffsetM: row.originOffsetM,
+  };
 }
 
 function positionAt(
@@ -213,7 +254,8 @@ function positionAt(
   alongFromStartM: number,
   farm: CompiledFarm,
 ): { positionInRow: number } {
-  return { positionInRow: clampPosition(row, fromOrigin(row, alongFromStartM), farm) };
+  const hit = positionAtDistance(layoutOf(row, farm), fromOrigin(row, alongFromStartM));
+  return { positionInRow: hit.positionInRow };
 }
 
 function makeAddress(
@@ -229,9 +271,9 @@ function makeAddress(
   const inverted = row.inverted[chunkIndex] ?? false;
   const { module } = splitPosition(positionInRow, modulesPerString, inverted);
 
-  // Centro del modulo, medido desde el extremo de conteo.
-  const centreFromOrigin =
-    row.originOffsetM + (positionInRow - 1) * row.pitchM + farm.moduleWidthM / 2;
+  // Centro del modulo, medido desde el extremo de conteo. Sale de la misma
+  // funcion que interpreta las distancias, para que no puedan discrepar.
+  const centreFromOrigin = distanceAtPosition(layoutOf(row, farm), positionInRow);
   const centreFromStart =
     row.originEnd === "start" ? centreFromOrigin : row.lengthM - centreFromOrigin;
 

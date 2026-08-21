@@ -73,6 +73,28 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
 
   const best = result?.best;
 
+  /** El rango de modulos que cubre el 85 % de la probabilidad, dentro de la fila ganadora. */
+  const range = useMemo(() => {
+    if (!result?.best) return null;
+    const bestRow = result.best.rowId;
+    const sameRow = result.candidates.filter((c) => c.rowId === bestRow);
+    let mass = 0;
+    const kept: typeof sameRow = [];
+    for (const c of sameRow) {
+      kept.push(c);
+      mass += c.confidence;
+      if (mass >= 0.85) break;
+    }
+    const modules = kept.map((c) => c.module);
+    const strings = new Set(kept.map((c) => c.stringNumber));
+    return {
+      lo: Math.min(...modules),
+      hi: Math.max(...modules),
+      singleString: strings.size === 1,
+      stringNumber: result.best.stringNumber,
+    };
+  }, [result]);
+
   return (
     <div className="screen">
       <header className="screen-head">
@@ -121,9 +143,20 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
                 {" "}{best.offAxisM.toFixed(1)} m del eje de la fila
               </p>
 
+              {range && range.lo !== range.hi && (
+                // Lo honesto cuando el GPS no da para senalar un modulo solo:
+                // un rango acotado dentro de una fila que si es confiable.
+                <p className="range">
+                  Con la precision de esta coordenada, el modulo esta entre el{" "}
+                  <strong>{range.lo}</strong> y el <strong>{range.hi}</strong> del{" "}
+                  {range.singleString ? `string ${range.stringNumber}` : "tracker"}.
+                  El tracker y la fila si son confiables.
+                </p>
+              )}
+
               <h3>Vecinos, para confirmar contra la foto</h3>
               <ul className="cands">
-                {result.candidates.slice(0, 7).map((c) => {
+                {result.candidates.slice(0, 12).map((c) => {
                   // Si el candidato esta en otro tracker hay que decirlo: es la
                   // diferencia entre confirmar el panel de al lado y caminar
                   // hasta la fila equivocada.

@@ -397,6 +397,7 @@ export function suggestEndpointOffsetMm(
   rows: TrackerRow[],
   modulesPerRow: number,
   pitchMm: number,
+  opts: { moduleGapMm?: number; stringsPerRow?: number; stringGapMm?: number } = {},
 ): { medianLengthM: number; offsetMm: number; spreadMm: number } | null {
   if (!rows.length) return null;
 
@@ -412,9 +413,17 @@ export function suggestEndpointOffsetMm(
   const p10 = lengths[Math.floor(lengths.length * 0.1)]!;
   const p90 = lengths[Math.floor(lengths.length * 0.9)]!;
 
+  // Lo que ocupan los modulos: los tramos de cada string mas las bahias de
+  // motor que los separan. Olvidarse de las bahias fue exactamente el error
+  // que hizo despejar un offset equivocado la primera vez.
+  const strings = opts.stringsPerRow ?? 1;
+  const moduleGapMm = opts.moduleGapMm ?? 0;
+  const stringSpanMm = (modulesPerRow / strings) * pitchMm - moduleGapMm;
+  const extentMm = strings * stringSpanMm + (strings - 1) * (opts.stringGapMm ?? 0);
+
   return {
     medianLengthM: median,
-    offsetMm: ((median - (modulesPerRow * pitchMm) / 1000) / 2) * 1000,
+    offsetMm: (median * 1000 - extentMm) / 2,
     spreadMm: (p90 - p10) * 1000,
   };
 }

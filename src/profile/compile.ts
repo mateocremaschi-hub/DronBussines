@@ -12,6 +12,7 @@
  */
 
 import { makeFrame, toLocal, type LocalFrame } from "../geo/frame.js";
+import { makeRowLayout, moduleExtentM } from "../geo/rowLayout.js";
 import { resolveInversion } from "../strategies/inversion.js";
 import { resolveOriginEnd } from "../strategies/origin.js";
 import type { CompiledFarm, CompiledRow, FarmProfile, TrackerRow, Warning } from "../types.js";
@@ -49,6 +50,8 @@ export function compileFarm(
   const modulesPerRow = modulesPerString * stringsPerRow;
 
   const moduleWidthM = profile.module.widthMm / 1000;
+  const moduleGapM = profile.module.gapMm / 1000;
+  const stringGapM = (profile.topology.stringGapMm ?? 0) / 1000;
   const nominalPitchM = (profile.module.widthMm + profile.module.gapMm) / 1000;
   const declaredPitch = profile.module.pitchMm;
 
@@ -67,6 +70,10 @@ export function compileFarm(
       frame,
       profile,
       modulesPerRow,
+      modulesPerString,
+      moduleWidthM,
+      moduleGapM,
+      stringGapM,
       nominalPitchM,
       declaredPitch,
       offsetM,
@@ -111,6 +118,10 @@ interface RowContext {
   frame: LocalFrame;
   profile: FarmProfile;
   modulesPerRow: number;
+  modulesPerString: number;
+  moduleWidthM: number;
+  moduleGapM: number;
+  stringGapM: number;
   nominalPitchM: number;
   declaredPitch: number | null | "derive" | undefined;
   offsetM: number;
@@ -154,18 +165,27 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
   }
 
   // --- offsets de pica ------------------------------------------------------
+  // Pueden ser negativos: en Edenvale los modulos sobresalen 1464 mm mas alla
+  // de la pica, que queda debajo del segundo modulo.
   const originOffsetM = ctx.offsetMode === "none" ? 0 : ctx.offsetM;
   const farOffsetM = ctx.offsetMode === "both" ? ctx.offsetM : 0;
-  const usableM = lengthM - originOffsetM - farOffsetM;
 
-  if (usableM <= 0) {
+  // Lo que ocupan los modulos, ya descontando (o sumando) los voladizos.
+  const extentM = lengthM - originOffsetM - farOffsetM;
+  if (extentM <= 0) {
     throw new Error(
-      `La fila "${row.id}" mide ${lengthM.toFixed(2)} m, menos que los offsets de pica configurados. Revisa geometry.endpointOffsetMm o la geometria importada.`,
+      `La fila "${row.id}" mide ${lengthM.toFixed(2)} m y los offsets de pica configurados no dejan lugar para ningun modulo. Revisa geometry.endpointOffsetMm o la geometria importada.`,
     );
   }
 
   // --- paso -----------------------------------------------------------------
-  const derivedPitchM = usableM / ctx.modulesPerRow;
+  // Al despejar el paso del largo real hay que sacar primero las bahias de
+  // motor: son espacio de la fila que no ocupa ningun modulo.
+  const totalStringGapsM = (ctx.stringsPerRow - 1) * ctx.stringGapM;
+  const moduleGapM = ctx.moduleGapM;
+  const derivedPitchM =
+    (extentM - totalStringGapsM + ctx.stringsPerRow * moduleGapM) / ctx.modulesPerRow;
+
   let pitchM: number;
   if (row.pitchMmOverride != null) {
     pitchM = row.pitchMmOverride / 1000;
@@ -177,20 +197,32 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
     pitchM = ctx.nominalPitchM;
   }
 
+  const layout = makeRowLayout({
+    modulesPerString: ctx.modulesPerString,
+    stringsPerRow: ctx.stringsPerRow,
+    pitchM,
+    moduleGapM,
+    moduleWidthM: ctx.moduleWidthM,
+    stringGapM: ctx.stringGapM,
+    originOffsetM,
+  });
+
   // Cuanto se aparta el paso declarado del que exige el largo real del
   // segmento. Es la senal mas barata de que la geometria importada esta mal:
   // un bloque con filas partidas o picas cruzadas salta aca, sin ir al campo.
   const lengthResidualMmPerModule = (derivedPitchM - pitchM) * 1000;
+  const predictedLengthM = originOffsetM + moduleExtentM(layout) + farOffsetM;
   if (Math.abs(lengthResidualMmPerModule) > ctx.tolerance) {
     ctx.buildWarnings.push({
       code: "length-mismatch",
       rowId: row.id,
       message:
-        `La fila "${row.id}" mide ${lengthM.toFixed(2)} m. Con ${ctx.modulesPerRow} modulos y ` +
-        `offsets de ${originOffsetM.toFixed(2)}/${farOffsetM.toFixed(2)} m, el paso deberia ser ` +
-        `${(derivedPitchM * 1000).toFixed(0)} mm, pero el perfil declara ${(pitchM * 1000).toFixed(0)} mm ` +
-        `(diferencia de ${lengthResidualMmPerModule.toFixed(0)} mm por modulo). ` +
-        `Revisa la geometria de esa fila o el paso del perfil.`,
+        `La fila "${row.id}" mide ${lengthM.toFixed(2)} m, pero el perfil predice ` +
+        `${predictedLengthM.toFixed(2)} m (${ctx.modulesPerRow} modulos de ${(pitchM * 1000).toFixed(0)} mm` +
+        (ctx.stringGapM ? `, ${(ctx.stringGapM * 1000).toFixed(0)} mm de bahia de motor` : "") +
+        `, offsets de ${(originOffsetM * 1000).toFixed(0)}/${(farOffsetM * 1000).toFixed(0)} mm). ` +
+        `Sobran ${lengthResidualMmPerModule.toFixed(0)} mm por modulo. ` +
+        `Revisa la geometria de esa fila, el paso, o el hueco entre strings.`,
     });
   }
 
@@ -235,6 +267,8 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
     pitchM,
     originOffsetM,
     farOffsetM,
+    stringSpanM: layout.stringSpanM,
+    periodM: layout.periodM,
     stringNumbers,
     lengthResidualMmPerModule,
     originEnd: originRes.end,

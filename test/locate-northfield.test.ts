@@ -54,7 +54,8 @@ describe("Northfield: reglas completamente distintas a Edenvale", () => {
   it("usa el paso apaisado, no el de Edenvale", () => {
     expect(farm.rows[0]?.pitchM).toBeCloseTo(2.305, 9);
     expect(farm.modulesPerRow).toBe(30);
-    expect(nominalLengthM(profile)).toBeCloseTo(69.15, 6);
+    // 30 modulos con 29 huequitos entre ellos, sin bahia de motor.
+    expect(nominalLengthM(profile)).toBeCloseTo(69.125, 6);
   });
 
   it("no aplica offset de pica", () => {

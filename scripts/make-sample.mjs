@@ -32,7 +32,12 @@ const M_PER_DEG_LAT = 110946;
 const mPerDegLon = (lat) => 111320 * Math.cos(lat * RAD);
 
 // Geometria del bloque
-const LEN = 56 * 1.15 + 2 * 1.4;          // 67.2 m de pica a pica
+// Geometria real de Edenvale: dos strings de 28 modulos, una bahia de motor
+// entre ellos, y las picas 1464 mm ADENTRO del recorrido de modulos.
+const STRING = 28 * 1.15 - 0.02;           // 32.18 m por string
+const MOTOR = 3.713;                       // bahia del motor
+const VOLADIZO = 1.464;                    // los modulos sobresalen de la pica
+const LEN = 2 * STRING + MOTOR - 2 * VOLADIZO;   // 65.145 m de pica a pica
 const ROAD = 8;                            // ancho de la calle del medio
 const SPACING = 6;                         // entre trackers vecinos
 const LAT0 = -27.4, LON0 = 152.7;          // esquina noroeste

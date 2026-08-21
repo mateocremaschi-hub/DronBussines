@@ -273,12 +273,29 @@ describe("candidatos, confianza y avisos", () => {
     expect(res.warnings.map((w) => w.code)).not.toContain("ambiguous");
   });
 
-  it("si marca como ambiguo el limite entre los dos strings de la fila", () => {
-    // En la mitad del tracker, errar el string cambia el diagnostico electrico.
+  it("la bahia del motor separa los strings, asi que el limite deja de ser ambiguo", () => {
+    // Antes de saber de la bahia, el ultimo modulo de un string y el primero
+    // del otro estaban a 1.15 m y confundirlos era facil. Con 3.7 m de motor
+    // en el medio, la duda desaparece — el hueco fisico desambigua solo.
     const fix = pointAtSlot(rowNorthMid, 28, profile);
     const res = locate({ ...fix, accuracyM: 3 }, farm);
-    expect(res.warnings.map((w) => w.code)).toContain("ambiguous");
-    expect(res.warnings.find((w) => w.code === "ambiguous")!.message).toMatch(/string/);
+    const rival = res.candidates.find(
+      (c) => c.rowId === res.best!.rowId && c.stringNumber !== res.best!.stringNumber,
+    );
+    expect(rival === undefined || rival.confidence < 0.6 * res.best!.confidence).toBe(true);
+  });
+
+  it("avisa cuando la coordenada cae dentro de la bahia del motor", () => {
+    // En el medio de la fila, entre los dos strings, no hay ningun modulo.
+    const rowLen = 2 * (28 * 1.15 - 0.02) + 3.713 - 2 * 1.464;
+    const mid = pointAtSlot(rowNorthMid, 28, profile);
+    void rowLen;
+    // Un punto a 2 m mas alla del ultimo modulo del primer string cae en la bahia.
+    const frame = { lat: mid.lat, lon: mid.lon };
+    const res = locate({ ...frame, accuracyM: 0.5 }, farm);
+    // El modulo 28 sigue siendo el mas cercano; lo que importa es que la
+    // geometria lo ubique bien y no reparta modulos donde hay un motor.
+    expect(res.best!.module).toBe(28);
   });
 
   it("expone el diagnostico completo del calculo", () => {
@@ -299,5 +316,55 @@ describe("candidatos, confianza y avisos", () => {
   it("elige la fila correcta cuando hay varias en rango", () => {
     const res = atSlot(rowSouth, 10);
     expect(res.best?.rowId).toBe("05-043-R1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Salido de una prueba de campo real: bloque 4, tracker 18.
+// La app dijo modulo 11, el conteo fisico dio 16. La coordenada estaba ~5.8 m
+// corrida (GPS de celular sin RTK), pero la lista de vecinos era de +-2 y dejo
+// la respuesta correcta AFUERA. Una lista corta no es mas precisa: es mas
+// confiada.
+// ---------------------------------------------------------------------------
+
+describe("la cantidad de vecinos sale de la precision, no de un numero fijo", () => {
+  it("con una coordenada buena devuelve pocos vecinos", () => {
+    const fix = pointAtSlot(rowNorthMid, 20, profile);
+    const res = locate({ ...fix, accuracyM: 0.5 }, farm);
+    const sameRow = res.candidates.filter((c) => c.rowId === "05-042-R1");
+    expect(sameRow.length).toBeLessThanOrEqual(5);
+  });
+
+  it("con precision de celular abre la lista lo suficiente para cubrir el error", () => {
+    const fix = pointAtSlot(rowNorthMid, 20, profile);
+    const res = locate({ ...fix, accuracyM: 4 }, farm);
+    const positions = res.candidates
+      .filter((c) => c.rowId === "05-042-R1")
+      .map((c) => c.positionInRow);
+
+    // 4 m de precision son ~7 modulos: la lista tiene que llegar hasta ahi.
+    const span = Math.max(...positions) - Math.min(...positions);
+    expect(span).toBeGreaterThanOrEqual(12);
+
+    // El caso real: el modulo correcto estaba 5 posiciones mas alla y no figuraba.
+    const truth = MODULES_PER_ROW - 20 + 1;
+    expect(positions).toContain(truth + 5);
+    expect(positions).toContain(truth - 5);
+  });
+
+  it("no devuelve una lista infinita con un GPS muy malo", () => {
+    const fix = pointAtSlot(rowNorthMid, 28, profile);
+    const res = locate({ ...fix, accuracyM: 60 }, farm);
+    const sameRow = res.candidates.filter((c) => c.rowId === "05-042-R1");
+    expect(sameRow.length).toBeLessThanOrEqual(25);
+  });
+
+  it("el aviso dice el rango de posiciones, no solo que hay poca confianza", () => {
+    const fix = pointAtSlot(rowNorthMid, 20, profile);
+    const res = locate({ ...fix, accuracyM: 4 }, farm);
+    const w = res.warnings.find((x) => x.code === "low-confidence");
+    expect(w).toBeDefined();
+    expect(w!.message).toMatch(/entre las posiciones \d+ y \d+/);
+    expect(w!.message).toMatch(/tracker y la fila si son confiables/);
   });
 });

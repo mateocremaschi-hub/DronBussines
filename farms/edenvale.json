@@ -1,61 +1,76 @@
 {
   "id": "edenvale",
   "name": "Edenvale Solar Farm",
-  "profileVersion": 1,
+  "profileVersion": 2,
   "timezone": "Australia/Brisbane",
-  "crs": { "type": "utm", "zone": 56, "hemisphere": "S" },
-
+  "crs": {
+    "type": "utm",
+    "zone": 56,
+    "hemisphere": "S"
+  },
   "module": {
     "widthMm": 1130,
     "gapMm": 20,
     "orientation": "portrait",
     "pitchMm": null
   },
-
   "topology": {
     "modulesPerString": 28,
     "stringsPerRow": 2,
     "rowNaming": {
       "pattern": "R{n}",
-      "motorized": ["R1", "R2", "R4"],
-      "slave": ["R3", "R5"]
-    }
+      "motorized": [
+        "R1",
+        "R2",
+        "R4"
+      ],
+      "slave": [
+        "R3",
+        "R5"
+      ]
+    },
+    "stringGapMm": 3713,
+    "_nota": "stringGapMm es la bahia del motor entre los dos strings de la fila. Despejado de: 2 x 32180 mm de strings + hueco - 2 x 1464 mm de voladizo = 65145 mm, el largo que miden las 3182 filas del Excel de picas. Falta medirlo con cinta para confirmar."
   },
-
   "geometry": {
     "source": "survey-stakes",
-    "endpointOffsetMm": 1400,
+    "endpointOffsetMm": -1464,
     "endpointOffsetMode": "both",
-    "lengthToleranceMmPerModule": 15
+    "lengthToleranceMmPerModule": 15,
+    "_nota": "Negativo a proposito: los modulos sobresalen 1464 mm mas alla de la pica. La pica queda debajo del segundo modulo. Medido con cinta en el campo."
   },
-
   "addressing": {
     "originStrategy": "dc-box-end",
     "dcBoxPlacement": "center-road",
     "inversionStrategy": "piercing-chain",
-    "sideRule": { "type": "tracker-number-ascending", "firstSide": "north" }
+    "sideRule": {
+      "type": "tracker-number-ascending",
+      "firstSide": "north"
+    }
   },
-
   "matching": {
     "maxDistanceM": 30,
     "neighborhood": 2,
     "maxRowCandidates": 3,
     "defaultAccuracyM": 3
   },
-
   "calibration": {
     "status": "partial",
     "verifiedCases": [
+      "56 modulos por fila, 28 por string — contados fisicamente",
+      "paso 1150 mm: modulo 1130 mm + hueco 20 mm, medido a mano",
+      "voladizo de 1464 mm: la pica esta ADENTRO del recorrido, debajo del segundo modulo. Medido con cinta, y verificado contra la segunda medicion (335 mm desde el modulo 2, que predice 314 mm)",
+      "hay una bahia de motor entre los dos strings de cada fila — observado en campo",
       "piercing-chain: tracker aislado o ultimo de linea, sin invertir (bloque 4)",
       "piercing-chain: tracker no-ultimo, string lejano invertido (bloque 5, tracker 05-042 R1)",
       "numeros de string no correlativos desde 1 (bloque 7, strings 5 y 6)",
-      "paso real medido a mano: modulo 1130 mm + hueco 20 mm",
-      "offset de pica al primer modulo: 1400 mm"
+      "bloque y tracker correctos con coordenada real de celular (bloque 4, tracker 18)"
     ],
     "unverified": [
-      "offset de pica en bloques de trazado disperso (5, 15, 16, 17, 24, 27)",
-      "dc-box-end en bloques con cajas fuera de la calle del medio"
+      "stringGapMm = 3713 mm esta DESPEJADO, no medido. Medir con cinta el hueco entre el ultimo modulo de un string y el primero del otro",
+      "dc-box-end: falta la columna `side` en el Excel de picas — esta en los planos CAD, ya extraida en el Panel Manager",
+      "piercing-chain: falta `pos` y `posTotal` por la misma razon"
     ],
-    "notes": "Las coordenadas reales de los puntos verificados van en fixtures/edenvale/. Este perfil describe las reglas; los fixtures las congelan."
+    "notes": "OJO con la referencia al medir: el pilote de la punta (el poste con el rodamiento) NO es la pica. Y OJO con asumir que los modulos van parejos de punta a punta: hay una bahia de motor en el medio que vale mas de tres posiciones de modulo. Ignorarla corre el string lejano 3.7 m enteros."
   }
 }

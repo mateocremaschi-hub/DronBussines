@@ -130,3 +130,78 @@ describe("chequeo de coherencia geometrica al compilar", () => {
     expect(farm.buildWarnings.some((w) => w.message.includes("mas de una fila"))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// La geometria de Edenvale, cerrada con mediciones de campo.
+// ---------------------------------------------------------------------------
+
+describe("geometria de Edenvale confirmada en campo", () => {
+  const stringSpanMm = () => {
+    const { modulesPerString } = edenvale.topology;
+    const w = edenvale.module.widthMm;
+    const g = edenvale.module.gapMm;
+    return modulesPerString * w + (modulesPerString - 1) * g;
+  };
+
+  it("los tres numeros cierran contra el largo real de las 3182 filas", () => {
+    const { modulesPerString, stringsPerRow, stringGapMm } = edenvale.topology;
+
+    expect(modulesPerString).toBe(28); // contados fisicamente
+    expect(stringsPerRow).toBe(2);
+    expect(edenvale.module.widthMm + edenvale.module.gapMm).toBe(1150); // medido a mano
+    expect(stringSpanMm()).toBe(32180);
+
+    // dos strings + la bahia del motor, menos los voladizos de cada punta.
+    const extentMm = stringsPerRow * stringSpanMm() + (stringsPerRow - 1) * (stringGapMm ?? 0);
+    const picaAPicaMm = extentMm + 2 * edenvale.geometry.endpointOffsetMm;
+    expect(picaAPicaMm / 1000).toBeCloseTo(65.145, 2);
+  });
+
+  it("el voladizo es negativo: la pica esta adentro del recorrido de modulos", () => {
+    // Medido con cinta: del borde del modulo 1 a la pica hay 1464 mm, y la pica
+    // queda debajo del segundo modulo. Verificado contra la segunda medicion:
+    // 1464 - 1150 = 314 mm dentro del modulo 2, y midio 335.
+    expect(edenvale.geometry.endpointOffsetMm).toBe(-1464);
+    expect(1464 - 1150).toBeGreaterThan(0);
+    expect(Math.abs(1464 - 1150 - 335)).toBeLessThan(30);
+  });
+
+  it("la bahia del motor vale mas de tres posiciones de modulo", () => {
+    const gap = edenvale.topology.stringGapMm ?? 0;
+    const pitch = edenvale.module.widthMm + edenvale.module.gapMm;
+    // Ignorarla desplazaria el string lejano por esa distancia entera.
+    expect(gap / pitch).toBeGreaterThan(3);
+  });
+
+  it("una fila del largo real compila sin avisos", () => {
+    const row = makeRow(
+      {
+        id: "x", block: "01", tracker: "01-001",
+        anchor: { lat: -27.4, lon: 152.7 }, azimuthDeg: 180,
+        side: "north" as const, pos: 1, posTotal: 2,
+        lengthM: 65.145,
+      },
+      edenvale,
+    );
+    expect(compileFarm(edenvale, [row]).buildWarnings).toEqual([]);
+  });
+
+  it("sin la bahia del motor, la misma fila salta el chequeo de largo", () => {
+    // Es la prueba de que el chequeo hubiera cazado esto solo.
+    const sinBahia = {
+      ...edenvale,
+      topology: { ...edenvale.topology, stringGapMm: 0 },
+    };
+    const row = makeRow(
+      {
+        id: "x", block: "01", tracker: "01-001",
+        anchor: { lat: -27.4, lon: 152.7 }, azimuthDeg: 180,
+        side: "north" as const, pos: 1, posTotal: 2,
+        lengthM: 65.145,
+      },
+      edenvale,
+    );
+    const w = compileFarm(sinBahia, [row]).buildWarnings.find((x) => x.code === "length-mismatch");
+    expect(w).toBeDefined();
+  });
+});
