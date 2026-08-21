@@ -117,6 +117,16 @@ export interface FarmProfile {
       pattern?: string;
       motorized?: string[];
       slave?: string[];
+      /**
+       * Cual de las filas de un tracker es la motorizada, cuando la lista de
+       * strings y la geometria no comparten vocabulario.
+       *
+       * En Edenvale la lista numera las filas de corrido por bloque —el
+       * tracker 33 tiene la R1, el 34 la R2 y la R3, el 35 la R4 y la R5— asi
+       * que ninguna lista de R fijas las une con motorizada/esclava: cambiaria
+       * en cada bloque. Lo que si se conserva es el orden adentro del tracker.
+       */
+      orderWithinTracker?: "lowest-first" | "highest-first";
     };
   };
 

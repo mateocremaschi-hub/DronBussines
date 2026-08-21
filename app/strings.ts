@@ -183,7 +183,27 @@ export function canonRow(row: string | undefined, naming?: RowNaming): string | 
 export interface RowNaming {
   motorized?: string[];
   slave?: string[];
+  /**
+   * Cual de las filas de un tracker es la motorizada, cuando los dos lados
+   * usan vocabularios distintos y no hay lista que los una.
+   *
+   * En Edenvale la lista de strings numera las filas de corrido por bloque
+   * (tracker 33 → R1, tracker 34 → R2 y R3, tracker 35 → R4 y R5) mientras la
+   * geometria solo sabe "motorizada" o "esclava", porque su columna era una
+   * bandera si/no. Ninguna lista de R fijas sirve ahi: cambia en cada bloque.
+   * Lo que si se mantiene es el ORDEN adentro del tracker.
+   */
+  orderWithinTracker?: "lowest-first" | "highest-first";
 }
+
+export interface MatchOptions {
+  naming?: RowNaming;
+  /** Orden de las filas de la geometria adentro de un tracker. */
+  geometryOrder?: string[];
+}
+
+/** El orden en que la geometria nombra las filas de un tracker. */
+const ORDEN_GEOMETRIA = ["motorizada", "esclava"];
 
 export interface MatchReport {
   strategy: string;
@@ -208,17 +228,88 @@ const CLAVES: Array<{ name: string; fn: (r: TrackerRef) => string | null }> = [
   { name: "tracker solo", fn: (r) => r.tracker },
 ];
 
+type Lado = { row: TrackerRow; ref: TrackerRef };
+type Fuente = { entry: StringEntry; ref: TrackerRef };
+
+const trackerKey = (r: TrackerRef): string | null => (r.block ? `${r.block}|${r.tracker}` : null);
+
+/** El numero que trae una etiqueta de fila, para poder ordenarlas. Ej: R12 → 12 */
+const numeroDeFila = (row: string): number => {
+  const m = row.match(/\d+/);
+  return m ? Number(m[0]) : Number.POSITIVE_INFINITY;
+};
+
+/**
+ * Empareja las filas de cada tracker por ORDEN, no por nombre.
+ *
+ * Es la unica salida cuando los dos lados usan vocabularios que no se tocan:
+ * el archivo dice R2 y R3, la geometria dice motorizada y esclava, y no hay
+ * ninguna lista que los una porque los numeros de fila corren de corrido por
+ * el bloque entero. Lo que si se conserva es el orden adentro del tracker, y
+ * eso alcanza: si el tracker tiene dos filas de cada lado, la primera es la
+ * primera.
+ *
+ * Solo empareja cuando las cantidades coinciden. Un tracker con dos filas en
+ * la geometria y tres etiquetas en el archivo queda sin cruzar, que es lo
+ * correcto: mejor decir que no se pudo que inventar una correspondencia.
+ */
+function pairByOrder(
+  geo: Lado[],
+  strings: Fuente[],
+  opts: MatchOptions,
+): Map<string, TrackerRow> {
+  const orden = opts.geometryOrder ?? ORDEN_GEOMETRIA;
+  const desc = opts.naming?.orderWithinTracker === "highest-first";
+
+  const geoPorTracker = new Map<string, Lado[]>();
+  for (const g of geo) {
+    const k = trackerKey(g.ref);
+    if (k) geoPorTracker.set(k, [...(geoPorTracker.get(k) ?? []), g]);
+  }
+
+  const filasPorTracker = new Map<string, Set<string>>();
+  for (const s of strings) {
+    const k = trackerKey(s.ref);
+    if (!k || !s.ref.row) continue;
+    const set = filasPorTracker.get(k) ?? new Set<string>();
+    set.add(s.ref.row);
+    filasPorTracker.set(k, set);
+  }
+
+  // Clave "bloque|tracker|fila del archivo" → la fila de la geometria.
+  const mapa = new Map<string, TrackerRow>();
+
+  for (const [k, lados] of geoPorTracker) {
+    const etiquetas = [...(filasPorTracker.get(k) ?? [])].sort((a, b) =>
+      desc ? numeroDeFila(b) - numeroDeFila(a) : numeroDeFila(a) - numeroDeFila(b),
+    );
+    if (!etiquetas.length || etiquetas.length !== lados.length) continue;
+
+    const geoOrdenado = [...lados].sort((a, b) => {
+      const ia = orden.indexOf(a.ref.row ?? "");
+      const ib = orden.indexOf(b.ref.row ?? "");
+      return (ia < 0 ? orden.length : ia) - (ib < 0 ? orden.length : ib);
+    });
+
+    etiquetas.forEach((fila, i) => mapa.set(`${k}|${fila}`, geoOrdenado[i]!.row));
+  }
+
+  return mapa;
+}
+
 export function matchEntries(
   entries: StringEntry[],
   rows: TrackerRow[],
-  naming?: RowNaming,
+  opts: MatchOptions = {},
 ): MatchResult {
+  const naming = opts.naming;
+
   // Las dos referencias, partidas igual.
-  const geo = rows.map((r) => ({
+  const geo: Lado[] = rows.map((r) => ({
     row: r,
     ref: { ...parseTrackerRef(r.tracker, r.block), row: canonRow(r.row, naming) } as TrackerRef,
   }));
-  const strings = entries.map((e) => ({
+  const strings: Fuente[] = entries.map((e) => ({
     entry: e,
     ref: (() => {
       const base = parseTrackerRef(e.tracker);
@@ -227,13 +318,24 @@ export function matchEntries(
     })(),
   }));
 
-  const preview = strings.slice(0, 3).map((s, i) => ({
-    desde: s.entry.tracker + (s.entry.row ? ` ${s.entry.row}` : ""),
-    entendido: `bloque ${s.ref.block ?? "?"} · tracker ${s.ref.tracker} · fila ${s.ref.row ?? "?"}`,
-    geometria: geo[i]
-      ? `bloque ${geo[i]!.ref.block ?? "?"} · tracker ${geo[i]!.ref.tracker} · fila ${geo[i]!.ref.row ?? "?"}`
-      : "—",
-  }));
+  // Para el informe: contra que filas de la geometria compite cada ejemplo.
+  const porTracker = new Map<string, Lado[]>();
+  for (const g of geo) {
+    const k = trackerKey(g.ref);
+    if (k) porTracker.set(k, [...(porTracker.get(k) ?? []), g]);
+  }
+
+  const preview = strings.slice(0, 3).map((s) => {
+    const k = trackerKey(s.ref);
+    const rivales = k ? porTracker.get(k) : undefined;
+    return {
+      desde: s.entry.tracker + (s.entry.row ? ` ${s.entry.row}` : ""),
+      entendido: `bloque ${s.ref.block ?? "?"} · tracker ${s.ref.tracker} · fila ${s.ref.row ?? "?"}`,
+      geometria: rivales?.length
+        ? `${rivales.length} fila(s) en ese tracker: ${rivales.map((r) => r.ref.row ?? "sin fila").join(", ")}`
+        : "no hay ninguna fila con ese bloque y tracker",
+    };
+  });
 
   let best: MatchResult | null = null;
 
@@ -270,6 +372,46 @@ export function matchEntries(
       byRow,
       report: {
         strategy: clave.name,
+        matched,
+        total: entries.length,
+        rowsWithStrings: byRow.size,
+        unmatchedExamples: sinMatch,
+        preview,
+      },
+    };
+    if (!best || result.report.matched > best.report.matched) best = result;
+  }
+
+  // Ultimo recurso, y el que salva el caso de Edenvale: emparejar por orden
+  // adentro del tracker. Va al final a proposito — si cruzar por nombre ya
+  // funciono, eso manda.
+  const mapa = pairByOrder(geo, strings, opts);
+  if (mapa.size) {
+    const byRow = new Map<string, { labels: string[]; dcBox?: string }>();
+    const sinMatch: string[] = [];
+    let matched = 0;
+
+    for (const s of strings) {
+      const k = trackerKey(s.ref);
+      const row = k && s.ref.row ? mapa.get(`${k}|${s.ref.row}`) : undefined;
+      if (!row) {
+        if (sinMatch.length < 6) {
+          sinMatch.push(`${s.entry.tracker}${s.entry.row ? " " + s.entry.row : ""} → ${s.entry.label}`);
+        }
+        continue;
+      }
+      matched++;
+      const prev = byRow.get(row.id) ?? { labels: [] };
+      prev.labels.push(s.entry.label);
+      if (s.entry.dcBox) prev.dcBox = s.entry.dcBox;
+      byRow.set(row.id, prev);
+    }
+
+    const orden = opts.naming?.orderWithinTracker === "highest-first" ? "mas alta" : "mas baja";
+    const result: MatchResult = {
+      byRow,
+      report: {
+        strategy: `bloque + tracker + orden de fila (la ${orden} es la motorizada)`,
         matched,
         total: entries.length,
         rowsWithStrings: byRow.size,

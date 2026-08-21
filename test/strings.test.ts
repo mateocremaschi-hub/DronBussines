@@ -200,13 +200,96 @@ describe("matcheo contra la geometria", () => {
       { label: "S-1.1.2.1.1", tracker: "01-035-R4", dcBox: "DCB-1.1.2" },
     ];
 
-    const { byRow, report } = matchEntries(entries, edenvale, profile.topology.rowNaming);
+    const { byRow, report } = matchEntries(entries, edenvale, { naming: profile.topology.rowNaming });
 
     expect(report.matched).toBe(4);
     expect(report.strategy).toBe("bloque + tracker + fila");
     expect(byRow.get("1-34-motorizada")!.labels).toEqual(["S-1.1.1.2.1", "S-1.1.1.2.2"]);
     expect(byRow.get("1-34-esclava")!.labels).toEqual(["S-1.1.1.3.1"]);
     expect(byRow.get("1-35-motorizada")!.dcBox).toBe("DCB-1.1.2");
+  });
+
+  // El caso de verdad: los numeros de fila corren de corrido por el bloque
+  // (tracker 33 → R1, tracker 34 → R2 y R3, tracker 35 → R4 y R5), asi que
+  // ninguna lista de R fijas puede unirlos con motorizada/esclava. Lo que se
+  // conserva es el ORDEN adentro del tracker, y con eso alcanza.
+  it("empareja por orden cuando los dos lados no comparten vocabulario", () => {
+    const edenvale = [
+      { block: "1", tracker: "33", row: "motorizada" },
+      { block: "1", tracker: "34", row: "motorizada" },
+      { block: "1", tracker: "34", row: "esclava" },
+      { block: "1", tracker: "35", row: "motorizada" },
+      { block: "1", tracker: "35", row: "esclava" },
+    ].map((r, i) =>
+      makeRow(
+        {
+          id: `${r.block}-${r.tracker}-${r.row}`,
+          block: r.block, tracker: r.tracker, row: r.row,
+          anchor: { lat: -27.4, lon: 152.7 + i * 0.00006 }, azimuthDeg: 180,
+        },
+        profile,
+      ),
+    );
+
+    const entries: StringEntry[] = [
+      { label: "S-1.1.1.1.1", tracker: "01-033-R1" },
+      { label: "S-1.1.1.2.1", tracker: "01-034-R2" },
+      { label: "S-1.1.1.3.1", tracker: "01-034-R3" },
+      { label: "S-1.1.2.1.1", tracker: "01-035-R4" },
+      { label: "S-1.1.2.2.1", tracker: "01-035-R5" },
+    ];
+
+    // Sin ninguna lista de nombres: solo el orden.
+    const { byRow, report } = matchEntries(entries, edenvale);
+
+    expect(report.matched).toBe(5);
+    expect(report.strategy).toMatch(/orden de fila/);
+    expect(byRow.get("1-33-motorizada")!.labels).toEqual(["S-1.1.1.1.1"]);
+    expect(byRow.get("1-34-motorizada")!.labels).toEqual(["S-1.1.1.2.1"]); // R2, la mas baja
+    expect(byRow.get("1-34-esclava")!.labels).toEqual(["S-1.1.1.3.1"]);    // R3, la mas alta
+    expect(byRow.get("1-35-motorizada")!.labels).toEqual(["S-1.1.2.1.1"]); // R4
+    expect(byRow.get("1-35-esclava")!.labels).toEqual(["S-1.1.2.2.1"]);    // R5
+  });
+
+  it("se puede dar vuelta si en el parque la motorizada es la de arriba", () => {
+    const rows2 = ["motorizada", "esclava"].map((row, i) =>
+      makeRow(
+        { id: `1-34-${row}`, block: "1", tracker: "34", row,
+          anchor: { lat: -27.4, lon: 152.7 + i * 0.00006 }, azimuthDeg: 180 },
+        profile,
+      ),
+    );
+    const entries: StringEntry[] = [
+      { label: "S-a", tracker: "01-034-R2" },
+      { label: "S-b", tracker: "01-034-R3" },
+    ];
+
+    const { byRow } = matchEntries(entries, rows2, {
+      naming: { orderWithinTracker: "highest-first" },
+    });
+    expect(byRow.get("1-34-motorizada")!.labels).toEqual(["S-b"]); // R3
+    expect(byRow.get("1-34-esclava")!.labels).toEqual(["S-a"]);    // R2
+  });
+
+  // No inventa correspondencias: si las cantidades no cierran, no empareja.
+  it("no empareja un tracker donde las cantidades no coinciden", () => {
+    const rows2 = ["motorizada", "esclava"].map((row, i) =>
+      makeRow(
+        { id: `1-34-${row}`, block: "1", tracker: "34", row,
+          anchor: { lat: -27.4, lon: 152.7 + i * 0.00006 }, azimuthDeg: 180 },
+        profile,
+      ),
+    );
+    const { report } = matchEntries(
+      [
+        { label: "S-a", tracker: "01-034-R2" },
+        { label: "S-b", tracker: "01-034-R3" },
+        { label: "S-c", tracker: "01-034-R7" }, // una fila de mas
+      ],
+      rows2,
+    );
+    expect(report.matched).toBe(0);
+    expect(report.unmatchedExamples.length).toBeGreaterThan(0);
   });
 
   // El diagnostico que hubiera hecho obvio el problema en un minuto en vez de
@@ -222,7 +305,7 @@ describe("matcheo contra la geometria", () => {
     const { report } = matchEntries(
       [{ label: "S-1.1.1.2.1", tracker: "01-034-R2" }],
       rows2,
-      profile.topology.rowNaming,
+      { naming: profile.topology.rowNaming },
     );
     expect(report.preview[0]!.entendido).toContain("tracker 34");
     expect(report.preview[0]!.entendido).toContain("motorizada");

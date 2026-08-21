@@ -44,6 +44,9 @@ export function StringList({ farm, onDone, onCancel }: {
   const [mapping, setMapping] = useState<StringMapping>({});
   const [rellenar, setRellenar] = useState(true);
   const [fieldIndex, setFieldIndex] = useState(-1);
+  const [orden, setOrden] = useState<"lowest-first" | "highest-first">(
+    farm.profile.topology.rowNaming?.orderWithinTracker ?? "lowest-first",
+  );
   const [error, setError] = useState<string | null>(null);
   const [guardado, setGuardado] = useState(false);
 
@@ -82,9 +85,11 @@ export function StringList({ farm, onDone, onCancel }: {
   const match = useMemo(
     () =>
       entries?.length
-        ? matchEntries(entries, farm.rows, farm.profile.topology.rowNaming)
+        ? matchEntries(entries, farm.rows, {
+            naming: { ...farm.profile.topology.rowNaming, orderWithinTracker: orden },
+          })
         : null,
-    [entries, farm.rows, farm.profile.topology.rowNaming],
+    [entries, farm.rows, farm.profile.topology.rowNaming, orden],
   );
 
   const campos = useMemo(
@@ -111,7 +116,15 @@ export function StringList({ farm, onDone, onCancel }: {
       ...farm,
       rows,
       savedAt: new Date().toISOString(),
-      profile: { ...farm.profile, profileVersion: farm.profile.profileVersion + 1 },
+      profile: {
+        ...farm.profile,
+        profileVersion: farm.profile.profileVersion + 1,
+        // Queda declarado en el parque: la proxima carga arranca igual.
+        topology: {
+          ...farm.profile.topology,
+          rowNaming: { ...farm.profile.topology.rowNaming, orderWithinTracker: orden },
+        },
+      },
     });
     setGuardado(true);
     onDone();
@@ -232,6 +245,31 @@ export function StringList({ farm, onDone, onCancel }: {
             Cruzados por <strong>{match.report.strategy}</strong>, que fue la forma que mas matcheo
             de las que probe.
           </p>
+
+          {match.report.strategy.includes("orden de fila") && (
+            <div className="field">
+              <h3>Cual fila del tracker es la motorizada</h3>
+              <p className="help">
+                Este archivo numera las filas de corrido por bloque — el tracker 33 tiene la R1, el
+                34 la R2 y la R3, el 35 la R4 y la R5 — asi que no hay lista de R que valga para
+                todo el parque. Lo que si se mantiene es el orden adentro de cada tracker, y con eso
+                alcanza. Solo hace falta saber para que lado va.
+              </p>
+              <select
+                id="sl-orden"
+                value={orden}
+                onChange={(e) => setOrden(e.target.value as typeof orden)}
+              >
+                <option value="lowest-first">La de numero mas bajo (R2 de R2/R3)</option>
+                <option value="highest-first">La de numero mas alto (R3 de R2/R3)</option>
+              </select>
+              <span className="help">
+                Si no estas seguro, dejalo como esta, aplicalo, y verificalo en el campo: parate en
+                un tracker, mira cual de las dos filas tiene el motor, y localiza un modulo de esa
+                fila. Si te devuelve la otra, volve aca y dalo vuelta.
+              </span>
+            </div>
+          )}
 
           {match.report.preview.length > 0 && (
             <div className="tablewrap">
