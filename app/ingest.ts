@@ -9,7 +9,7 @@
  * un importador que no sirve para "cualquier parque".
  */
 
-import { utmToWgs84 } from "@locator";
+import { distanceM, makeFrame, utmToWgs84 } from "@locator";
 import type { FarmProfile, TrackerRow } from "@locator";
 
 // ---------------------------------------------------------------------------
@@ -231,7 +231,34 @@ export function guessCrs(samples: Array<{ x: number; y: number }>): Crs {
 export interface BuildResult {
   rows: TrackerRow[];
   skipped: Array<{ index: number; reason: string }>;
+  /** Las razones de descarte agrupadas, con el rango de filas de cada una. */
+  skippedSummary: Array<{ reason: string; count: number; firstRow: number; lastRow: number }>;
   bounds: { minLat: number; maxLat: number; minLon: number; maxLon: number } | null;
+}
+
+/**
+ * Algunas planillas usan la columna de fila como una BANDERA, no como etiqueta:
+ * el `MOTOR ROW` de Edenvale trae YES/NO segun si esa fila lleva el motor. Poner
+ * "YES" como nombre de fila no le sirve a nadie parado en el campo.
+ *
+ * Solo se traduce si TODA la columna esta dentro de ese vocabulario — asi una
+ * planta que de verdad numere sus filas "1" y "0" no sale trastocada.
+ */
+const FLAG_WORDS: Record<string, string> = {
+  yes: "motorizada", si: "motorizada", "sí": "motorizada", true: "motorizada", y: "motorizada",
+  no: "esclava", "false": "esclava", n: "esclava",
+};
+
+function detectRowFlagColumn(sheet: Sheet, column: string | undefined): boolean {
+  if (!column) return false;
+  const seen = new Set<string>();
+  for (const r of sheet.rows) {
+    const v = r[column];
+    if (v == null || v === "") continue;
+    seen.add(String(v).trim().toLowerCase());
+    if (seen.size > 4) return false;
+  }
+  return seen.size > 0 && [...seen].every((v) => v in FLAG_WORDS);
 }
 
 const SIDE_WORDS: Record<string, TrackerRow["side"]> = {
@@ -271,6 +298,7 @@ export function buildRows(sheet: Sheet, mapping: Mapping, crs: Crs): BuildResult
       : { lat: y, lon: x };
 
   const seen = new Map<string, number>();
+  const rowIsFlag = detectRowFlagColumn(sheet, mapping.row);
 
   sheet.rows.forEach((raw, i) => {
     const sx = toNumber(get(raw, "startX"));
@@ -291,7 +319,8 @@ export function buildRows(sheet: Sheet, mapping: Mapping, crs: Crs): BuildResult
     }
 
     const rowLabel = get(raw, "row");
-    const rowStr = rowLabel == null || rowLabel === "" ? undefined : String(rowLabel).trim();
+    let rowStr = rowLabel == null || rowLabel === "" ? undefined : String(rowLabel).trim();
+    if (rowStr && rowIsFlag) rowStr = FLAG_WORDS[rowStr.toLowerCase()] ?? rowStr;
 
     const start = toLatLon(sx, sy);
     const end = toLatLon(ex, ey);
@@ -336,7 +365,58 @@ export function buildRows(sheet: Sheet, mapping: Mapping, crs: Crs): BuildResult
     bounds = { minLat, maxLat, minLon, maxLon };
   }
 
-  return { rows, skipped, bounds };
+  // Agrupar los descartes: "384 salteadas" no dice nada; "384 seguidas al final
+  // del archivo" es un bloque de totales, y "384 desparramadas" son datos que
+  // faltan de verdad. Son dos problemas distintos.
+  const byReason = new Map<string, number[]>();
+  for (const s of skipped) byReason.set(s.reason, [...(byReason.get(s.reason) ?? []), s.index]);
+  const skippedSummary = [...byReason.entries()]
+    .map(([reason, idx]) => ({
+      reason,
+      count: idx.length,
+      firstRow: Math.min(...idx),
+      lastRow: Math.max(...idx),
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  return { rows, skipped, skippedSummary, bounds };
+}
+
+// ---------------------------------------------------------------------------
+// Deduccion de parametros
+// ---------------------------------------------------------------------------
+
+/**
+ * Despeja el offset de pica a partir del largo real de las filas.
+ *
+ * Las tres cantidades estan atadas:  largo = modulos x paso + 2 x offset.
+ * Si conoces el modulo porque lo mediste a mano, el offset sale solo — y de
+ * paso te dice si el numero que venias usando era el correcto.
+ */
+export function suggestEndpointOffsetMm(
+  rows: TrackerRow[],
+  modulesPerRow: number,
+  pitchMm: number,
+): { medianLengthM: number; offsetMm: number; spreadMm: number } | null {
+  if (!rows.length) return null;
+
+  // Medir con el mismo marco que usa el motor, no con radios aproximados a
+  // mano. Con constantes redondeadas la diferencia daba 19 cm en una fila de
+  // 65 m — la sexta parte de un modulo, justo en el numero que se esta tratando
+  // de despejar.
+  const first = rows[0]!;
+  const frame = makeFrame(first.start.lat, first.start.lon);
+  const lengths = rows.map((r) => distanceM(frame, r.start, r.end)).sort((a, b) => a - b);
+
+  const median = lengths[Math.floor(lengths.length / 2)]!;
+  const p10 = lengths[Math.floor(lengths.length * 0.1)]!;
+  const p90 = lengths[Math.floor(lengths.length * 0.9)]!;
+
+  return {
+    medianLengthM: median,
+    offsetMm: ((median - (modulesPerRow * pitchMm) / 1000) / 2) * 1000,
+    spreadMm: (p90 - p10) * 1000,
+  };
 }
 
 // ---------------------------------------------------------------------------

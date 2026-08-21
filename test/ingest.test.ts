@@ -16,6 +16,7 @@ import {
   capabilityReport,
   guessCrs,
   readWorkbook,
+  suggestEndpointOffsetMm,
   suggestMapping,
   toNumber,
 } from "../app/ingest";
@@ -228,5 +229,111 @@ describe("informe de capacidad", () => {
     const byLabel = Object.fromEntries(caps.map((c) => [c.label, c]));
     expect(byLabel["Desde que punta se cuenta el modulo 1"]!.available).toBe(true);
     expect(byLabel["Cual de los strings de la fila"]!.available).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Casos que salieron del primer archivo real (Datos_Backtracking_T1)
+// ---------------------------------------------------------------------------
+
+describe("columna de fila usada como bandera (MOTOR ROW = YES/NO)", () => {
+  const sheetWith = (values: unknown[]) => ({
+    name: "DATA",
+    headers: ["bloque", "tracker", "MOTOR ROW", "pica1Y", "pica1X", "pica2Y", "pica2X"],
+    rows: values.map((v, i) => ({
+      bloque: 1,
+      tracker: i + 1,
+      "MOTOR ROW": v,
+      pica1Y: -27.4,
+      pica1X: 152.7,
+      pica2Y: -27.4006,
+      pica2X: 152.7,
+    })),
+  });
+  const mapping = {
+    block: "bloque", tracker: "tracker", row: "MOTOR ROW",
+    startY: "pica1Y", startX: "pica1X", endY: "pica2Y", endX: "pica2X",
+  };
+
+  it("traduce YES/NO a motorizada/esclava", () => {
+    const built = buildRows(sheetWith(["YES", "NO", "YES"]), mapping, { type: "wgs84" });
+    expect(built.rows.map((r) => r.row)).toEqual(["motorizada", "esclava", "motorizada"]);
+  });
+
+  it("no toca una columna que de verdad son etiquetas de fila", () => {
+    const built = buildRows(sheetWith(["R1", "R4", "R5"]), mapping, { type: "wgs84" });
+    expect(built.rows.map((r) => r.row)).toEqual(["R1", "R4", "R5"]);
+  });
+
+  it("no traduce si la columna mezcla banderas con otra cosa", () => {
+    const built = buildRows(sheetWith(["YES", "NO", "R3"]), mapping, { type: "wgs84" });
+    expect(built.rows.map((r) => r.row)).toEqual(["YES", "NO", "R3"]);
+  });
+});
+
+describe("deduccion del offset de pica", () => {
+  // Reproduce el caso real: filas de 65.145 m con 56 modulos de 1150 mm.
+  // El offset tiene que dar ~373 mm, no los 1400 mm que declaraba el perfil.
+  it("despeja el offset a partir del largo real de las filas", () => {
+    const rows = Array.from({ length: 9 }, (_, i) =>
+      makeRow(
+        {
+          id: `t${i}`, block: "1", tracker: `${i}`,
+          anchor: { lat: -27.4, lon: 152.7 + i * 0.0001 },
+          azimuthDeg: 180,
+          lengthM: 65.145,
+        },
+        profile,
+      ),
+    );
+    const hint = suggestEndpointOffsetMm(rows, 56, 1150)!;
+    expect(hint.medianLengthM).toBeCloseTo(65.145, 2);
+    expect(hint.offsetMm).toBeGreaterThan(360);
+    expect(hint.offsetMm).toBeLessThan(390);
+    expect(hint.spreadMm).toBeLessThan(50);
+  });
+
+  it("avisa cuando las filas no miden todas lo mismo", () => {
+    const rows = [40, 65, 90].map((len, i) =>
+      makeRow(
+        {
+          id: `t${i}`, block: "1", tracker: `${i}`,
+          anchor: { lat: -27.4, lon: 152.7 + i * 0.0001 },
+          azimuthDeg: 180, lengthM: len,
+        },
+        profile,
+      ),
+    );
+    expect(suggestEndpointOffsetMm(rows, 56, 1150)!.spreadMm).toBeGreaterThan(500);
+  });
+});
+
+describe("agrupacion de filas salteadas", () => {
+  const base = (i: number, ok: boolean) => ({
+    bloque: 1, tracker: i, pica1Y: ok ? -27.4 : null, pica1X: 152.7,
+    pica2Y: -27.4006, pica2X: 152.7,
+  });
+  const mapping = {
+    block: "bloque", tracker: "tracker",
+    startY: "pica1Y", startX: "pica1X", endY: "pica2Y", endX: "pica2X",
+  };
+
+  it("distingue un bloque contiguo al final de descartes desparramados", () => {
+    const contiguo = buildRows(
+      { name: "s", headers: [], rows: [...Array(5)].map((_, i) => base(i, i < 3)) },
+      mapping, { type: "wgs84" },
+    );
+    expect(contiguo.skippedSummary).toHaveLength(1);
+    expect(contiguo.skippedSummary[0]!.count).toBe(2);
+    // Contiguo: el rango de filas coincide con la cantidad.
+    const s = contiguo.skippedSummary[0]!;
+    expect(s.lastRow - s.firstRow + 1).toBe(s.count);
+
+    const disperso = buildRows(
+      { name: "s", headers: [], rows: [...Array(6)].map((_, i) => base(i, i % 2 === 0)) },
+      mapping, { type: "wgs84" },
+    );
+    const d = disperso.skippedSummary[0]!;
+    expect(d.lastRow - d.firstRow + 1).toBeGreaterThan(d.count);
   });
 });

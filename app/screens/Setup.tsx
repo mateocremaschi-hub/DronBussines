@@ -14,6 +14,7 @@ import {
   FIELDS,
   guessCrs,
   readWorkbook,
+  suggestEndpointOffsetMm,
   suggestMapping,
   toNumber,
   type Crs,
@@ -132,6 +133,19 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
     if (required.some((f) => !mapping[f.key])) return null;
     return buildRows(sheet, mapping, crs);
   }, [sheet, mapping, crs]);
+
+  // El largo real de las filas despeja el offset de pica: las tres cantidades
+  // (modulos, paso, offset) estan atadas, asi que conociendo dos sale la tercera.
+  const modulesPerRowDraft =
+    profileDraft.topology.modulesPerString * profileDraft.topology.stringsPerRow;
+  const nominalPitchMm = profileDraft.module.widthMm + profileDraft.module.gapMm;
+  const offsetHint = useMemo(
+    () =>
+      built?.rows.length
+        ? suggestEndpointOffsetMm(built.rows, modulesPerRowDraft, nominalPitchMm)
+        : null,
+    [built, modulesPerRowDraft, nominalPitchMm],
+  );
 
   const profile: FarmProfile = useMemo(
     () => ({
@@ -317,14 +331,41 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
           </div>
 
           {built && (
-            <p className={built.rows.length ? "note ok" : "note bad"}>
-              {built.rows.length} filas de trackers construidas
-              {built.skipped.length ? `, ${built.skipped.length} salteadas` : ""}
-              {built.rows.length ? ` · el parque ocupa ${boundsSummary(built.rows)}` : ""}.
-              {built.skipped.length > 0 && (
-                <span className="muted"> Primera salteada: fila {built.skipped[0]!.index} — {built.skipped[0]!.reason}.</span>
+            <>
+              <p className={built.rows.length ? "note ok" : "note bad"}>
+                {built.rows.length} filas de trackers construidas
+                {built.skipped.length ? `, ${built.skipped.length} salteadas` : ""}
+                {built.rows.length ? ` · el parque ocupa ${boundsSummary(built.rows)}` : ""}.
+              </p>
+              {built.skippedSummary.length > 0 && (
+                <div className="warnbox">
+                  <h3>Por que se saltearon</h3>
+                  <ul>
+                    {built.skippedSummary.map((s) => {
+                      // Un bloque contiguo al final del archivo suele ser una
+                      // tabla de totales, no datos que se estan perdiendo.
+                      const contiguo = s.lastRow - s.firstRow + 1 === s.count;
+                      return (
+                        <li key={s.reason}>
+                          <strong>{s.count}</strong> filas: {s.reason}.{" "}
+                          {contiguo ? (
+                            <>
+                              Van seguidas, de la {s.firstRow} a la {s.lastRow} — si estan al final
+                              del archivo suele ser una tabla de totales y no te falta nada.
+                            </>
+                          ) : (
+                            <>
+                              Desparramadas entre la fila {s.firstRow} y la {s.lastRow} — eso si son
+                              datos incompletos y conviene mirarlas en el Excel.
+                            </>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
               )}
-            </p>
+            </>
           )}
           {!built && <p className="note bad">Falta asignar alguna columna obligatoria.</p>}
 
@@ -407,6 +448,36 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
                   ...d, geometry: { ...d.geometry, endpointOffsetMm: Number(e.target.value) },
                 }))}
               />
+              {offsetHint && (
+                <span className="help">
+                  Tus filas miden <strong>{offsetHint.medianLengthM.toFixed(2)} m</strong> de pica a
+                  pica. Con {modulesPerRowDraft} modulos de {nominalPitchMm} mm, eso deja{" "}
+                  <strong>{offsetHint.offsetMm.toFixed(0)} mm</strong> por punta.
+                  {Math.abs(offsetHint.offsetMm - profileDraft.geometry.endpointOffsetMm) > 50 && (
+                    <>
+                      {" "}
+                      <button
+                        className="link"
+                        onClick={() => setProfileDraft((d) => ({
+                          ...d,
+                          geometry: {
+                            ...d.geometry,
+                            endpointOffsetMm: Math.round(offsetHint.offsetMm),
+                          },
+                        }))}
+                      >
+                        Usar {offsetHint.offsetMm.toFixed(0)} mm
+                      </button>
+                    </>
+                  )}
+                  {offsetHint.spreadMm > 500 && (
+                    <>
+                      {" "}Ojo: los largos varian {(offsetHint.spreadMm / 1000).toFixed(1)} m entre
+                      filas, asi que no todas tienen la misma cantidad de modulos.
+                    </>
+                  )}
+                </span>
+              )}
             </div>
             <div className="field">
               <label>Paso entre modulos</label>
