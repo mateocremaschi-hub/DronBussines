@@ -1,10 +1,12 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    // El motor no toca disco, ni red, ni proceso. Sacarle los tipos de Node
-    // no es cosmetico: hace que la regla se pueda romper en el typecheck en
-    // vez de descubrirse cuando alguien lo mete en un navegador.
-    "types": []
+    // El motor no toca disco, ni red, ni proceso, ni el DOM. Sacarle los tipos
+    // de Node y del navegador no es cosmetico: hace que romper esa regla falle
+    // en el typecheck en vez de descubrirse cuando alguien lo mete en un
+    // contexto donde esas APIs no existen.
+    "types": [],
+    "lib": ["ES2022"]
   },
   "include": ["src"]
 }

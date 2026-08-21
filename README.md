@@ -1,14 +1,41 @@
-# @pica/locator
+# Pica
 
-Motor puro de localizacion para inspeccion de plantas fotovoltaicas.
+App de localizacion de modulos fotovoltaicos para inspeccion con dron.
+**Una sola app que sirve en cualquier planta**: cargas los archivos que te dio el
+cliente y la app te dice que puede hacer con eso.
 
 ```
 locate(coordenada, farm) → direccion fisica + candidatos + confianza
 ```
 
-Es la Etapa 1 del plan: extraer el calculo que ya funciona en Edenvale y dejarlo
-independiente de Edenvale, para que dar de alta un parque nuevo sea llenar un
-JSON y no escribir codigo.
+## Las dos mitades
+
+**El motor** (`src/`) — funcion pura, sin dependencias de runtime, sin I/O.
+Toda la variabilidad entre parques vive en un JSON, no en el codigo.
+
+**La app** (`app/`) — PWA en React con dos modos:
+
+- **Setup**, una vez por parque, desde la compu: cargas el Excel de coordenadas,
+  confirmas que entendio bien las columnas, ves la geometria dibujada y recibis
+  el *informe de capacidad*.
+- **Localizar**, todos los dias, desde el celular: coordenada → donde esta el panel,
+  con los vecinos para confirmar contra la foto termica.
+
+## El informe de capacidad
+
+Es la respuesta concreta a "sirve para cualquier parque segun la info que tenga".
+La app **nunca se niega a funcionar**: da la respuesta mas precisa que los datos
+soportan y dice explicitamente que no pudo determinar.
+
+| Con lo que cargaste | Te puede decir | No te puede decir |
+|---|---|---|
+| Solo coordenadas de picas | bloque, tracker, fila, numero de modulo en la fila | cual de los strings, ni el sentido de conteo |
+| + lado de la calle y posicion en la linea | ademas el string y desde que punta se cuenta | el serial |
+| + numeros de string | ademas la etiqueta real del string | el serial |
+| + lista de paneles | ademas el serial | — |
+
+Esa lista de limitaciones no es solo honestidad: es lo que la IEC TS 62446-3 pide
+documentar en el reporte de una inspeccion termografica.
 
 ---
 
@@ -164,7 +191,28 @@ tres fixtures cargados con sus expectativas, esperando la coordenada.
 ## Comandos
 
 ```bash
-npm test          # 84 tests
+npm run dev       # la app en el navegador, con recarga en vivo
+npm test          # 95 tests
 npm run typecheck
-npm run build
+npm run build     # compila el motor y la app
+npm run sample    # genera un Excel de picas de ejemplo para probar el setup
+npm run smoke     # recorre el asistente entero en un navegador real (necesita playwright)
+```
+
+## Deploy
+
+`netlify.toml` ya esta configurado: build `npm run build:app`, publish `dist-app`,
+con los headers de cache para que el navegador no siga sirviendo una version vieja
+del index despues de un deploy.
+
+## Anatomia de la app
+
+```
+app/
+  ingest.ts               lee el Excel, propone el mapeo de columnas, arma la geometria
+  storage.ts              parques en IndexedDB — offline y solo en este dispositivo
+  screens/Setup.tsx       el asistente de 4 pasos
+  screens/Locate.tsx      el modo campo
+  screens/Farms.tsx       lista de parques, importar y exportar
+  components/GeometryPlot.tsx   dibujo de la geometria importada
 ```

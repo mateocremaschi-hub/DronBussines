@@ -1,0 +1,31 @@
+[build]
+  command = "npm run build:app"
+  publish = "dist-app"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# SPA: cualquier ruta cae en el index.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Los assets con hash en el nombre se pueden cachear para siempre.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# El index NO se cachea: es lo que apunta a la version nueva de los assets.
+# Sin esto, un navegador puede seguir sirviendo la app vieja desde su propio
+# cache aunque el deploy ya este hecho.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Cache-Control = "no-cache"

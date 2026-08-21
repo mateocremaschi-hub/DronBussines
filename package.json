@@ -17,17 +17,33 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "dev": "vite",
+    "build:app": "vite build",
+    "preview": "vite preview",
+    "build:pkg": "tsc -p tsconfig.build.json",
+    "sample": "node scripts/make-sample.mjs",
+    "smoke": "node scripts/smoke.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
     "typescript": "^5.6.3",
+    "vite": "^5.4.21",
     "vitest": "^2.1.8"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "idb-keyval": "^6.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "xlsx": "^0.18.5"
   }
 }
