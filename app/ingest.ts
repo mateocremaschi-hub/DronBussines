@@ -612,7 +612,7 @@ export interface SideDerivation {
   blocks: Array<{
     block: string;
     rows: number;
-    status: "dos-lados" | "un-solo-lado" | "ambiguo";
+    status: "dos-lados" | "un-solo-lado" | "escalonado" | "ambiguo";
     detail: string;
   }>;
 }
@@ -696,10 +696,51 @@ export function deriveSides(rows: TrackerRow[]): SideDerivation {
       continue;
     }
 
-    // El grupo con proyeccion mayor esta hacia donde apunta `u`, que
-    // normalizamos hacia el norte.
     const lower = proj.slice(0, gapAt);
     const upper = proj.slice(gapAt);
+
+    /**
+     * El chequeo que separa una calle de un escalon.
+     *
+     * Dos filas enfrentadas a los lados de una calle tienen los centros
+     * separados por medio largo de cada una MAS el ancho de la calle. O sea:
+     * la separacion no puede ser menor que el promedio de los dos largos, ni
+     * siquiera con la calle de ancho cero.
+     *
+     * Si el hueco es menor, los dos grupos se solapan a lo largo del eje —
+     * estan uno al costado del otro, no uno enfrente del otro— y no puede
+     * haber una calle en el medio. Es un escalon en el trazado, o un segundo
+     * rango del mismo lado.
+     *
+     * Esto no es un detalle: darle lados opuestos a dos grupos que estan del
+     * mismo lado invierte el conteo de uno de ellos entero.
+     */
+    const largoDe = (g: typeof proj) => {
+      const ls = g
+        .map((p) => local.find((l) => l.row.id === p.row.id)!)
+        .map((l) => Math.hypot(l.b.x - l.a.x, l.b.y - l.a.y))
+        .sort((a, b) => a - b);
+      return ls[Math.floor(ls.length / 2)] ?? medianLength;
+    };
+    const minimoParaCalle = (largoDe(lower) + largoDe(upper)) / 2;
+
+    if (gapSize < minimoParaCalle * 0.95) {
+      const solape = minimoParaCalle - gapSize;
+      blocks.push({
+        block, rows: group.length, status: "escalonado",
+        detail:
+          `Hay dos grupos de ${upper.length} y ${lower.length} filas separados por ` +
+          `${gapSize.toFixed(0)} m, pero eso NO puede ser una calle: dos filas enfrentadas ` +
+          `tendrian los centros a mas de ${minimoParaCalle.toFixed(0)} m aunque la calle midiera ` +
+          `cero. Con ${gapSize.toFixed(0)} m los dos grupos se solapan ${solape.toFixed(0)} m a lo ` +
+          `largo, asi que estan del mismo lado, corridos entre si. No les asigno lado: ` +
+          `partirlos invertiria el conteo de uno de los dos grupos entero.`,
+      });
+      continue;
+    }
+
+    // El grupo con proyeccion mayor esta hacia donde apunta `u`, que
+    // normalizamos hacia el norte.
     for (const p of lower) sides.set(p.row.id, "south");
     for (const p of upper) sides.set(p.row.id, "north");
 
@@ -707,7 +748,8 @@ export function deriveSides(rows: TrackerRow[]): SideDerivation {
       block, rows: group.length, status: "dos-lados",
       detail:
         `${upper.length} filas al norte y ${lower.length} al sur, separadas por ` +
-        `${gapSize.toFixed(0)} m de calle.`,
+        `${gapSize.toFixed(0)} m entre centros — mas que los ${minimoParaCalle.toFixed(0)} m ` +
+        `que ocuparian las filas solas, asi que hay una calle en el medio.`,
     });
   }
 

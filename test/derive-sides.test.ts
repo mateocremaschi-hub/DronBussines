@@ -167,3 +167,58 @@ describe("un bloque partido entre dos archivos", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// El caso real del bloque 6 de Edenvale.
+//
+// La app dijo "156 filas al norte y 30 al sur, separadas por 47 m de calle" y
+// Mateo confirmo en el campo que estan TODAS del mismo lado. La aritmetica lo
+// desmiente sola: dos filas de 65 m enfrentadas tienen los centros a mas de
+// 65 m aunque la calle mida cero, asi que 47 m no puede ser una calle. Los dos
+// grupos se solapan 18 m a lo largo — estan corridos, no enfrentados.
+//
+// El umbral viejo pedia medio largo de fila (32 m) y dejaba pasar esto. Darle
+// lados opuestos a esos 30 trackers habria invertido su conteo entero.
+// ---------------------------------------------------------------------------
+
+describe("dos grupos del mismo lado, corridos entre si", () => {
+  /** `n` filas en una franja, `m` filas corridas `desplazamiento` metros. */
+  function escalonado(block: string, n: number, m: number, desplazamiento: number): TrackerRow[] {
+    const rows: TrackerRow[] = [];
+    const push = (i: number, offsetM: number, tag: string) =>
+      rows.push(
+        makeRow(
+          {
+            id: `${block}-${tag}-${i}`, block, tracker: `${block}-${tag}-${i}`,
+            anchor: { lat: -27.4 + offsetM / M_PER_DEG_LAT, lon: 152.7 + i * 0.00006 },
+            azimuthDeg: 180,
+          },
+          profile,
+        ),
+      );
+    for (let i = 0; i < n; i++) push(i, 0, "a");
+    for (let i = 0; i < m; i++) push(i, -desplazamiento, "b");
+    return rows;
+  }
+
+  it("no los parte en dos lados: 47 m es menos de lo que ocupan las filas solas", () => {
+    const { sides, blocks } = deriveSides(escalonado("06", 156, 30, 47));
+    expect(blocks[0]!.status).toBe("escalonado");
+    expect(sides.size).toBe(0); // ni un solo lado asignado
+  });
+
+  it("explica la contradiccion con los numeros a la vista", () => {
+    const { blocks } = deriveSides(escalonado("06", 156, 30, 47));
+    expect(blocks[0]!.detail).toContain("47 m");
+    expect(blocks[0]!.detail).toContain("se solapan");
+    expect(blocks[0]!.detail).toMatch(/invertiria el conteo/);
+  });
+
+  // El limite: apenas la separacion alcanza para que las filas no se solapen,
+  // ya puede haber una calle, y entonces si se parte.
+  it("con una calle de verdad sigue partiendo bien", () => {
+    const { sides, blocks } = deriveSides(escalonado("06", 156, 30, LEN + 8));
+    expect(blocks[0]!.status).toBe("dos-lados");
+    expect(sides.size).toBe(186);
+  });
+});
