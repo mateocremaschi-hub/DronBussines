@@ -11,6 +11,7 @@ import type { CompiledFarm, FarmProfile, TrackerRow } from "@locator";
 import {
   buildRows,
   capabilityReport,
+  deriveSides,
   FIELDS,
   guessCrs,
   readWorkbook,
@@ -80,6 +81,7 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
   const [mapping, setMapping] = useState<Mapping>({});
   const [crs, setCrs] = useState<Crs>({ type: "wgs84" });
 
+  const [deriveSide, setDeriveSide] = useState(false);
   const [name, setName] = useState("");
   const [presetId, setPresetId] = useState(PRESETS[0]!.id);
   const [profileDraft, setProfileDraft] = useState(PRESETS[0]!.profile);
@@ -127,12 +129,32 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
 
   // -------------------------------------------------------------------------
 
-  const built = useMemo(() => {
+  const rawBuilt = useMemo(() => {
     if (!sheet) return null;
     const required = FIELDS.filter((f) => f.required);
     if (required.some((f) => !mapping[f.key])) return null;
     return buildRows(sheet, mapping, crs);
   }, [sheet, mapping, crs]);
+
+  // Si el archivo no trae el lado de la calle, se puede sacar de la geometria:
+  // las cajas DC estan en la calle del medio, asi que las filas caen en dos
+  // grupos separados por ella. Es opcional y se muestra lo que dedujo.
+  const derivation = useMemo(
+    () => (deriveSide && rawBuilt?.rows.length ? deriveSides(rawBuilt.rows) : null),
+    [deriveSide, rawBuilt],
+  );
+
+  const built = useMemo(() => {
+    if (!rawBuilt) return null;
+    if (!derivation) return rawBuilt;
+    return {
+      ...rawBuilt,
+      rows: rawBuilt.rows.map((r) => {
+        const side = derivation.sides.get(r.id);
+        return side ? { ...r, side } : r;
+      }),
+    };
+  }, [rawBuilt, derivation]);
 
   // El largo real de las filas despeja el offset de pica: las tres cantidades
   // (modulos, paso, offset) estan atadas, asi que conociendo dos sale la tercera.
@@ -313,6 +335,41 @@ export function Setup({ onDone, onCancel }: { onDone: () => void; onCancel: () =
               </>
             )}
           </div>
+
+          {!mapping.side && (
+            <>
+              <h3>El lado de la calle</h3>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={deriveSide}
+                  onChange={(e) => setDeriveSide(e.target.checked)}
+                />
+                <span>
+                  Deducirlo de la geometria
+                  <em>
+                    El archivo no trae columna de lado. Sin ese dato, el conteo desde la caja DC
+                    elige una punta al azar en cada fila: le pega en la mitad de los trackers y sale
+                    espejado en la otra mitad. Como las cajas estan en la calle del medio, las filas
+                    caen en dos grupos separados por ella — y eso si se puede leer de las
+                    coordenadas.
+                  </em>
+                </span>
+              </label>
+
+              {derivation && (
+                <div className={derivation.blocks.some((b) => b.status !== "dos-lados") ? "warnbox" : "note ok"}>
+                  <ul className="derive">
+                    {derivation.blocks.map((b) => (
+                      <li key={b.block} className={b.status === "dos-lados" ? "yes" : "no"}>
+                        <strong>Bloque {b.block}</strong> — {b.detail}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          )}
 
           <h3>Las primeras filas, como quedaron</h3>
           <div className="tablewrap">

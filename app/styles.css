@@ -296,3 +296,13 @@ tr:last-child td { border-bottom: none; }
   padding: 10px 14px; border-radius: 0 5px 5px 0; font-size: 14.5px;
   color: var(--ink-2); margin: 4px 0 8px;
 }
+
+/* Casilla con explicacion larga: el "por que" pesa mas que la etiqueta. */
+.check { display: flex; gap: 10px; align-items: flex-start; margin: 4px 0 14px; cursor: pointer; }
+.check input { width: auto; margin-top: 3px; flex: none; }
+.check span { font-family: Archivo, sans-serif; font-size: 15px; }
+.check em { display: block; font-style: normal; font-family: Inter, sans-serif;
+  font-size: 13.5px; color: var(--ink-3); margin-top: 3px; max-width: 68ch; }
+.derive { list-style: none; margin: 0; padding: 0; font-size: 14px; }
+.derive li { padding: 3px 0; }
+.derive li.no { opacity: .85; }

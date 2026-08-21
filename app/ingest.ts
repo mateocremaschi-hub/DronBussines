@@ -9,7 +9,7 @@
  * un importador que no sirve para "cualquier parque".
  */
 
-import { distanceM, makeFrame, utmToWgs84 } from "@locator";
+import { distanceM, makeFrame, toLocal, utmToWgs84 } from "@locator";
 import type { FarmProfile, TrackerRow } from "@locator";
 
 // ---------------------------------------------------------------------------
@@ -97,7 +97,8 @@ export interface FieldSpec {
   label: string;
   help: string;
   required: boolean;
-  patterns: RegExp[];
+  /** Palabras que identifican la columna. Se comparan como token completo. */
+  words?: string[][];
 }
 
 export const FIELDS: FieldSpec[] = [
@@ -106,89 +107,152 @@ export const FIELDS: FieldSpec[] = [
     label: "Bloque",
     help: "Identificador del bloque o sector.",
     required: true,
-    patterns: [/^bloque$/i, /^block$/i, /\bbloque\b/i, /\bblock\b/i, /^bl$/i],
+    words: [["bloque"], ["block"], ["bl"], ["sector"]],
   },
   {
     key: "tracker",
     label: "Tracker",
     help: "Numero o codigo del tracker.",
     required: true,
-    patterns: [/^tracker$/i, /\btracker\b/i, /seguidor/i, /\btrk\b/i, /^mesa$/i],
+    words: [["tracker"], ["seguidor"], ["trk"], ["mesa"]],
   },
   {
     key: "row",
     label: "Fila (R1, R2…)",
-    help: "Fila de modulos dentro del tracker, si el parque las distingue.",
+    help: "Fila de modulos dentro del tracker, si el parque las distingue. Puede ser una bandera si/no de fila motorizada.",
     required: false,
-    patterns: [/motor.*row/i, /^row$/i, /^fila$/i, /\brow\b/i],
+    words: [["motor", "row"], ["row"], ["fila"]],
   },
-  {
-    key: "startY",
-    label: "Pica 1 · latitud / Norte",
-    help: "Coordenada de una punta del tracker.",
-    required: true,
-    patterns: [/pica.?1.*(lat|norte|north|y|n)\b/i, /(lat|norte|north)\D*1\b/i, /^lat1$/i, /^y1$/i, /^norte1$/i, /^north1$/i, /^n1$/i],
-  },
-  {
-    key: "startX",
-    label: "Pica 1 · longitud / Este",
-    help: "La otra coordenada de esa misma punta.",
-    required: true,
-    patterns: [/pica.?1.*(lon|lng|este|east|x|e)\b/i, /(lon|lng|este|east)\D*1\b/i, /^lon1$/i, /^lng1$/i, /^x1$/i, /^este1$/i, /^east1$/i, /^e1$/i],
-  },
-  {
-    key: "endY",
-    label: "Pica 2 · latitud / Norte",
-    help: "Coordenada de la punta opuesta.",
-    required: true,
-    patterns: [/pica.?2.*(lat|sur|south|y|n)\b/i, /(lat|norte|north)\D*2\b/i, /^lat2$/i, /^y2$/i, /^norte2$/i, /^north2$/i, /^n2$/i],
-  },
-  {
-    key: "endX",
-    label: "Pica 2 · longitud / Este",
-    help: "La otra coordenada de la punta opuesta.",
-    required: true,
-    patterns: [/pica.?2.*(lon|lng|este|east|x|e)\b/i, /(lon|lng|este|east)\D*2\b/i, /^lon2$/i, /^lng2$/i, /^x2$/i, /^este2$/i, /^east2$/i, /^e2$/i],
-  },
+  { key: "startY", label: "Pica 1 · latitud / Norte", help: "Coordenada norte-sur de una punta del tracker.", required: true },
+  { key: "startX", label: "Pica 1 · longitud / Este", help: "Coordenada este-oeste de esa misma punta.", required: true },
+  { key: "endY", label: "Pica 2 · latitud / Norte", help: "Coordenada norte-sur de la punta opuesta.", required: true },
+  { key: "endX", label: "Pica 2 · longitud / Este", help: "Coordenada este-oeste de la punta opuesta.", required: true },
   {
     key: "side",
     label: "Lado de la calle",
-    help: "Norte / sur / este / oeste. Lo necesita la estrategia de conteo desde la caja DC.",
+    help: "Norte / sur / este / oeste. Lo necesita la estrategia de conteo desde la caja DC. Si no lo tenes, la app puede deducirlo de la geometria.",
     required: false,
-    patterns: [/^side$/i, /^lado$/i, /\bside\b/i],
+    words: [["lado"], ["side"]],
   },
   {
     key: "pos",
     label: "Posicion en la linea",
     help: "Que numero de tracker es dentro de su linea electrica. Lo necesita la regla del piercing connector.",
     required: false,
-    patterns: [/^pos$/i, /posicion/i, /position/i, /\border\b/i],
+    words: [["pos"], ["posicion"], ["position"], ["orden"]],
   },
   {
     key: "posTotal",
     label: "Trackers en la linea",
     help: "Cuantos trackers tiene esa linea en total.",
     required: false,
-    patterns: [/pos.?total/i, /total.*tracker/i, /\bde\b.*total/i],
+    words: [["pos", "total"], ["total", "trackers"], ["largo", "linea"]],
   },
   {
     key: "stringNumbers",
     label: "Numeros de string",
     help: "Los strings de esta fila, separados por coma o guion. Ej: 5,6",
     required: false,
-    patterns: [/string/i, /\bcadena\b/i],
+    words: [["strings"], ["string"], ["cadenas"], ["cadena"]],
   },
 ];
 
 export type Mapping = Partial<Record<FieldKey, string>>;
 
+/**
+ * Parte un encabezado en palabras sueltas.
+ *
+ * Se compara por token completo y no con expresiones sobre el texto entero,
+ * porque asi se cuela un error real: el patron para "este" matcheaba la E final
+ * de "NORTE", y "PICA2_NORTE" terminaba asignada a la columna de longitud.
+ */
+function tokenize(header: string): string[] {
+  return String(header)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/([a-z])(\d)/g, "$1 $2")
+    .replace(/(\d)([a-z])/g, "$1 $2")
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+// Palabras que nombran el eje sin ambiguedad.
+const AXIS_Y = new Set(["lat", "latitud", "latitude", "northing", "y"]);
+const AXIS_X = new Set(["lon", "lng", "long", "longitud", "longitude", "easting", "x"]);
+
+// Rumbos: nombran el eje cuando no hay nada mejor, pero cuando SI lo hay pasan
+// a nombrar la punta. "Y_NORTE" es la coordenada norte-sur de la pica norte.
+const DIR_Y = new Set(["norte", "north", "n"]);
+const DIR_X = new Set(["este", "east", "e"]);
+
+const FIRST_WORDS = new Set(["1", "a", "inicio", "ini", "start", "desde", "from", "norte", "north"]);
+const SECOND_WORDS = new Set(["2", "b", "fin", "final", "end", "hasta", "to", "sur", "south"]);
+
+/** Que punta y que eje describe un encabezado de coordenada, si es que lo es. */
+function readCoordinate(tokens: string[]): { end: 1 | 2; axis: "y" | "x" } | null {
+  const hasStrictY = tokens.some((t) => AXIS_Y.has(t));
+  const hasStrictX = tokens.some((t) => AXIS_X.has(t));
+
+  let axis: "y" | "x";
+  let usedForAxis: Set<string>;
+
+  if (hasStrictY !== hasStrictX) {
+    axis = hasStrictY ? "y" : "x";
+    usedForAxis = hasStrictY ? AXIS_Y : AXIS_X;
+  } else if (!hasStrictY && !hasStrictX) {
+    // Sin palabra clara del eje, se cae a los rumbos.
+    const looseY = tokens.some((t) => DIR_Y.has(t));
+    const looseX = tokens.some((t) => DIR_X.has(t));
+    if (looseY === looseX) return null;
+    axis = looseY ? "y" : "x";
+    usedForAxis = looseY ? DIR_Y : DIR_X;
+  } else {
+    // Nombra los dos ejes: no se puede decidir.
+    return null;
+  }
+
+  // Lo que queda despues de sacar el token del eje puede decir que punta es.
+  let axisConsumed = false;
+  const pool = tokens.filter((t) => {
+    if (!axisConsumed && usedForAxis.has(t)) {
+      axisConsumed = true;
+      return false;
+    }
+    return true;
+  });
+
+  if (pool.some((t) => SECOND_WORDS.has(t))) return { end: 2, axis };
+  if (pool.some((t) => FIRST_WORDS.has(t))) return { end: 1, axis };
+  return null;
+}
+
 /** Propone un mapeo mirando los encabezados. Es una sugerencia editable. */
 export function suggestMapping(headers: string[]): Mapping {
   const mapping: Mapping = {};
   const taken = new Set<string>();
+  const tokensOf = new Map(headers.map((h) => [h, tokenize(h)]));
+
+  // Primero las coordenadas, que son las que mas se confunden entre si.
+  for (const h of headers) {
+    const coord = readCoordinate(tokensOf.get(h) ?? []);
+    if (!coord) continue;
+    const key: FieldKey =
+      coord.end === 1 ? (coord.axis === "y" ? "startY" : "startX") : coord.axis === "y" ? "endY" : "endX";
+    if (mapping[key]) continue;
+    mapping[key] = h;
+    taken.add(h);
+  }
+
+  // Despues el resto, por palabras completas y de la mas especifica a la menos.
   for (const field of FIELDS) {
-    for (const pattern of field.patterns) {
-      const hit = headers.find((h) => !taken.has(h) && pattern.test(String(h).trim()));
+    if (!field.words || mapping[field.key]) continue;
+    for (const combo of field.words) {
+      const hit = headers.find((h) => {
+        if (taken.has(h)) return false;
+        const toks = tokensOf.get(h) ?? [];
+        return combo.every((w) => toks.includes(w));
+      });
       if (hit) {
         mapping[field.key] = hit;
         taken.add(hit);
@@ -196,6 +260,7 @@ export function suggestMapping(headers: string[]): Mapping {
       }
     }
   }
+
   return mapping;
 }
 
@@ -507,4 +572,117 @@ export function capabilityReport(rows: TrackerRow[], profile: FarmProfile): Capa
         "Requiere la lista de paneles del cliente. Para inspeccion no hace falta: el objetivo es ubicar el problema, no llevar inventario.",
     },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Deduccion del lado de la calle
+// ---------------------------------------------------------------------------
+
+export interface SideDerivation {
+  /** Lado deducido por fila, por id. */
+  sides: Map<string, "north" | "south" | "east" | "west">;
+  /** Que paso en cada bloque, para poder mirarlo antes de confiar. */
+  blocks: Array<{
+    block: string;
+    rows: number;
+    status: "dos-lados" | "un-solo-lado" | "ambiguo";
+    detail: string;
+  }>;
+}
+
+/**
+ * Deduce el lado de la calle a partir de la pura geometria.
+ *
+ * Las cajas DC estan en la calle del medio del bloque, asi que las filas caen
+ * en dos grupos separados por esa calle — y la separacion es a lo largo del eje
+ * de las propias filas, no perpendicular: las del lado norte terminan en la
+ * calle y las del sur arrancan ahi.
+ *
+ * Se verifica solo: dentro de un grupo los centros de fila difieren unos pocos
+ * metros, y entre grupos difieren mas de medio largo de fila. Si un bloque no
+ * se parte limpio, lo dice en vez de inventar un lado.
+ */
+export function deriveSides(rows: TrackerRow[]): SideDerivation {
+  const sides = new Map<string, "north" | "south" | "east" | "west">();
+  const blocks: SideDerivation["blocks"] = [];
+
+  const byBlock = new Map<string, TrackerRow[]>();
+  for (const r of rows) byBlock.set(r.block, [...(byBlock.get(r.block) ?? []), r]);
+
+  for (const [block, group] of [...byBlock.entries()].sort()) {
+    const first = group[0];
+    if (!first || group.length < 2) {
+      blocks.push({
+        block, rows: group.length, status: "ambiguo",
+        detail: "Muy pocas filas para deducir nada.",
+      });
+      continue;
+    }
+
+    const frame = makeFrame(first.start.lat, first.start.lon);
+    const local = group.map((r) => {
+      const a = toLocal(frame, r.start.lat, r.start.lon);
+      const b = toLocal(frame, r.end.lat, r.end.lon);
+      return { row: r, a, b, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+    });
+
+    // Direccion media de las filas, con el signo normalizado para que no se
+    // cancelen entre si las que vienen con las picas al reves en el Excel.
+    let ux = 0;
+    let uy = 0;
+    for (const l of local) {
+      const dx = l.b.x - l.a.x;
+      const dy = l.b.y - l.a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const sign = dy >= 0 ? 1 : -1; // apuntar siempre hacia el norte
+      ux += (dx / len) * sign;
+      uy += (dy / len) * sign;
+    }
+    const norm = Math.hypot(ux, uy) || 1;
+    ux /= norm;
+    uy /= norm;
+
+    const lengths = local.map((l) => Math.hypot(l.b.x - l.a.x, l.b.y - l.a.y));
+    const medianLength = lengths.sort((p, q) => p - q)[Math.floor(lengths.length / 2)] ?? 60;
+
+    // Proyeccion de cada centro sobre el eje de las filas.
+    const proj = local
+      .map((l) => ({ row: l.row, t: l.mid.x * ux + l.mid.y * uy }))
+      .sort((p, q) => p.t - q.t);
+
+    let gapAt = -1;
+    let gapSize = 0;
+    for (let i = 1; i < proj.length; i++) {
+      const d = proj[i]!.t - proj[i - 1]!.t;
+      if (d > gapSize) { gapSize = d; gapAt = i; }
+    }
+
+    const threshold = medianLength * 0.5;
+    if (gapAt < 1 || gapSize < threshold) {
+      blocks.push({
+        block, rows: group.length, status: "un-solo-lado",
+        detail:
+          `Las ${group.length} filas caen todas juntas (la mayor separacion es de ` +
+          `${gapSize.toFixed(0)} m, y para ser dos lados de una calle harian falta mas de ` +
+          `${threshold.toFixed(0)} m). No le asigno lado.`,
+      });
+      continue;
+    }
+
+    // El grupo con proyeccion mayor esta hacia donde apunta `u`, que
+    // normalizamos hacia el norte.
+    const lower = proj.slice(0, gapAt);
+    const upper = proj.slice(gapAt);
+    for (const p of lower) sides.set(p.row.id, "south");
+    for (const p of upper) sides.set(p.row.id, "north");
+
+    blocks.push({
+      block, rows: group.length, status: "dos-lados",
+      detail:
+        `${upper.length} filas al norte y ${lower.length} al sur, separadas por ` +
+        `${gapSize.toFixed(0)} m de calle.`,
+    });
+  }
+
+  return { sides, blocks };
 }
