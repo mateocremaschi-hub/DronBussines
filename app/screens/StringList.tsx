@@ -80,8 +80,11 @@ export function StringList({ farm, onDone, onCancel }: {
   }, [sheet, mapping, rellenar]);
 
   const match = useMemo(
-    () => (entries?.length ? matchEntries(entries, farm.rows) : null),
-    [entries, farm.rows],
+    () =>
+      entries?.length
+        ? matchEntries(entries, farm.rows, farm.profile.topology.rowNaming)
+        : null,
+    [entries, farm.rows, farm.profile.topology.rowNaming],
   );
 
   const campos = useMemo(
@@ -229,6 +232,31 @@ export function StringList({ farm, onDone, onCancel }: {
             Cruzados por <strong>{match.report.strategy}</strong>, que fue la forma que mas matcheo
             de las que probe.
           </p>
+
+          {match.report.preview.length > 0 && (
+            <div className="tablewrap">
+              <h3>Asi entendi cada lado</h3>
+              <p className="help">
+                Arriba, como viene escrito el tracker en la lista de strings. Al lado, como lo
+                interprete. Abajo, como esta en la geometria. Si las dos ultimas columnas no hablan
+                el mismo idioma, ahi esta el problema.
+              </p>
+              <table>
+                <thead>
+                  <tr><th>En el archivo</th><th>Lo entendi como</th><th>En la geometria</th></tr>
+                </thead>
+                <tbody>
+                  {match.report.preview.map((p, i) => (
+                    <tr key={i}>
+                      <td><code>{p.desde}</code></td>
+                      <td>{p.entendido}</td>
+                      <td>{p.geometria}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {match.report.unmatchedExamples.length > 0 && (
             <div className="warnbox">

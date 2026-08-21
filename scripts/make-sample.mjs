@@ -102,8 +102,12 @@ console.log(`Escrito public/ejemplo-picas-bloque2.xlsx con ${rows2.length} track
 // dos filas de titulo antes de los encabezados, y la caja DC combinada.
 // ---------------------------------------------------------------------------
 
+// Ojo con la columna TRACKER: como en las planillas reales, escribe bloque,
+// tracker y fila todo junto ("05-001-R1") mientras la planilla de coordenadas
+// los trae en columnas separadas. Que este archivo cruce igual es justamente
+// lo que hay que probar.
 const filas = [["Planilla de strings — ejemplo"], []];
-filas.push(["STRING", "TRACKER", "FILA", "DC BOX No."]);
+filas.push(["STRING", "TRACKER", "DC BOX No."]);
 
 let caja = 0;
 rows.forEach((r, i) => {
@@ -113,8 +117,7 @@ rows.forEach((r, i) => {
   for (const s of [1, 2]) {
     filas.push([
       `S-5.1.${caja}.${(i % 4) * 2 + s}`,
-      r.TRACKER,
-      "R1",
+      `${r.TRACKER}-${r["MOTOR ROW"]}`,
       // Combinada: solo aparece en la primera fila de cada bloque.
       primeroDeLaCaja && s === 1 ? `DCB-5.1.${caja}` : null,
     ]);

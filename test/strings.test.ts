@@ -12,11 +12,13 @@ import { describe, expect, it } from "vitest";
 import edenvaleJson from "../farms/edenvale.json" with { type: "json" };
 import {
   applyStrings,
+  canonRow,
   describeFields,
   deriveChains,
   forwardFill,
   matchEntries,
   numericFields,
+  parseTrackerRef,
   readEntries,
   suggestStringMapping,
   type StringEntry,
@@ -93,6 +95,55 @@ describe("el numero de string dentro de la etiqueta", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// El caso que rompio el import real de Edenvale: la lista de strings escribe
+// bloque, tracker y fila todo junto ("01-034-R2") mientras la geometria los
+// tiene en columnas separadas, y ademas la fila como motorizada/esclava porque
+// su columna era una bandera si/no. Sin partir las dos referencias igual, de
+// 13496 strings cruzaban 429.
+// ---------------------------------------------------------------------------
+
+describe("como se lee una referencia a un tracker", () => {
+  it("parte la forma compuesta de la lista de strings", () => {
+    expect(parseTrackerRef("01-034-R2")).toEqual({ block: "1", tracker: "34", row: "R2" });
+    expect(parseTrackerRef("01-035-R4")).toEqual({ block: "1", tracker: "35", row: "R4" });
+  });
+
+  it("no confunde el numero de la fila con el del tracker", () => {
+    // El bug: el ultimo grupo de digitos de "01-034-R2" es el 2 de R2.
+    expect(parseTrackerRef("01-034-R2").tracker).toBe("34");
+  });
+
+  it("acepta las otras formas de escribir la fila", () => {
+    expect(parseTrackerRef("01-034 ROW 3").row).toBe("R3");
+    expect(parseTrackerRef("01-034_r3").row).toBe("R3");
+  });
+
+  it("toma el bloque de su columna cuando viene aparte", () => {
+    expect(parseTrackerRef("34", "24")).toEqual({ block: "24", tracker: "34" });
+    expect(parseTrackerRef("034")).toEqual({ tracker: "34" });
+  });
+});
+
+describe("nombres de fila", () => {
+  it("traduce R2/R3 a motorizada/esclava con lo que declara el perfil", () => {
+    const naming = profile.topology.rowNaming;
+    expect(canonRow("R2", naming)).toBe("motorizada");
+    expect(canonRow("R1", naming)).toBe("motorizada");
+    expect(canonRow("R3", naming)).toBe("esclava");
+    expect(canonRow("R5", naming)).toBe("esclava");
+  });
+
+  it("deja pasar lo que ya viene en el vocabulario de la geometria", () => {
+    expect(canonRow("motorizada", profile.topology.rowNaming)).toBe("motorizada");
+    expect(canonRow("Esclava")).toBe("esclava");
+  });
+
+  it("sin perfil que lo declare, no inventa la equivalencia", () => {
+    expect(canonRow("R2")).toBe("r2");
+  });
+});
+
 describe("matcheo contra la geometria", () => {
   const rows = [fila("05-001", -27.4, 152.7), fila("05-002", -27.4, 152.7001)];
 
@@ -122,6 +173,60 @@ describe("matcheo contra la geometria", () => {
     expect(report.total).toBe(3);
     expect(report.unmatchedExamples.length).toBeGreaterThan(0);
     expect(report.unmatchedExamples[0]).toContain("99-999");
+  });
+
+  // El caso real de Edenvale, de punta a punta.
+  it("cruza la lista compuesta contra la geometria de bandera si/no", () => {
+    const edenvale: TrackerRow[] = [
+      { block: "1", tracker: "34", row: "motorizada" },
+      { block: "1", tracker: "34", row: "esclava" },
+      { block: "1", tracker: "35", row: "motorizada" },
+    ].map((r, i) =>
+      makeRow(
+        {
+          id: `${r.block}-${r.tracker}-${r.row}`,
+          block: r.block, tracker: r.tracker, row: r.row,
+          anchor: { lat: -27.4, lon: 152.7 + i * 0.00006 },
+          azimuthDeg: 180, side: "north",
+        },
+        profile,
+      ),
+    );
+
+    const entries: StringEntry[] = [
+      { label: "S-1.1.1.2.1", tracker: "01-034-R2", dcBox: "DCB-1.1.1" },
+      { label: "S-1.1.1.2.2", tracker: "01-034-R2", dcBox: "DCB-1.1.1" },
+      { label: "S-1.1.1.3.1", tracker: "01-034-R3", dcBox: "DCB-1.1.1" },
+      { label: "S-1.1.2.1.1", tracker: "01-035-R4", dcBox: "DCB-1.1.2" },
+    ];
+
+    const { byRow, report } = matchEntries(entries, edenvale, profile.topology.rowNaming);
+
+    expect(report.matched).toBe(4);
+    expect(report.strategy).toBe("bloque + tracker + fila");
+    expect(byRow.get("1-34-motorizada")!.labels).toEqual(["S-1.1.1.2.1", "S-1.1.1.2.2"]);
+    expect(byRow.get("1-34-esclava")!.labels).toEqual(["S-1.1.1.3.1"]);
+    expect(byRow.get("1-35-motorizada")!.dcBox).toBe("DCB-1.1.2");
+  });
+
+  // El diagnostico que hubiera hecho obvio el problema en un minuto en vez de
+  // en una tarde: mostrar como quedo entendida cada referencia de los dos lados.
+  it("muestra como entendio cada lado", () => {
+    const rows2 = [
+      makeRow(
+        { id: "1-34-motorizada", block: "1", tracker: "34", row: "motorizada",
+          anchor: { lat: -27.4, lon: 152.7 }, azimuthDeg: 180 },
+        profile,
+      ),
+    ];
+    const { report } = matchEntries(
+      [{ label: "S-1.1.1.2.1", tracker: "01-034-R2" }],
+      rows2,
+      profile.topology.rowNaming,
+    );
+    expect(report.preview[0]!.entendido).toContain("tracker 34");
+    expect(report.preview[0]!.entendido).toContain("motorizada");
+    expect(report.preview[0]!.geometria).toContain("motorizada");
   });
 });
 

@@ -126,32 +126,63 @@ export function describeFields(labels: string[]): Array<{ index: number; distint
 // Matcheo contra la geometria
 // ---------------------------------------------------------------------------
 
-/** Normalizaciones que se prueban, de la mas estricta a la mas suelta. */
-const NORMS: Array<{ name: string; fn: (block: string, tracker: string, row?: string) => string }> = [
-  {
-    name: "tracker + fila tal cual",
-    fn: (_b, t, r) => `${clean(t)}|${clean(r ?? "")}`,
-  },
-  {
-    name: "tracker solo",
-    fn: (_b, t) => clean(t),
-  },
-  {
-    name: "bloque + numero de tracker",
-    fn: (b, t) => `${num(b)}-${num(t, -1)}`,
-  },
-  {
-    name: "bloque + numero de tracker + fila",
-    fn: (b, t, r) => `${num(b)}-${num(t, -1)}|${clean(r ?? "")}`,
-  },
-];
+/**
+ * Las tres partes de una referencia a un tracker, vengan juntas o separadas.
+ *
+ * La lista de strings suele escribirlas todas en una: "01-034-R2" es el bloque
+ * 1, el tracker 34 y la fila R2. La planilla de coordenadas las trae en
+ * columnas aparte. Sin partirlas igual de los dos lados, no cruza nada.
+ */
+export interface TrackerRef {
+  block?: string;
+  tracker: string;
+  row?: string;
+}
 
-const clean = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-/** El n-esimo grupo de digitos de un texto. -1 = el ultimo. */
-function num(s: string, which = 0): string {
-  const all = s.match(/\d+/g) ?? [];
-  const pick = which < 0 ? all[all.length + which] : all[which];
-  return pick ? String(Number(pick)) : "";
+const soloNumero = (s: string): string => {
+  const m = s.match(/\d+/);
+  return m ? String(Number(m[0])) : s.trim().toLowerCase();
+};
+
+/** Parte un texto como "01-034-R2" o "34" en sus componentes. */
+export function parseTrackerRef(texto: string, blockAparte?: string): TrackerRef {
+  const t = String(texto).trim();
+
+  // La fila suele venir al final, como R2 / R-2 / ROW 2.
+  const fila = t.match(/[\s\-_]?R(?:OW)?[\s\-_]?(\d+)\s*$/i);
+  const row = fila ? `R${Number(fila[1])}` : undefined;
+  const resto = fila ? t.slice(0, fila.index) : t;
+
+  const grupos = resto.match(/\d+/g) ?? [];
+  const ref: TrackerRef = { tracker: grupos.length ? String(Number(grupos[grupos.length - 1]!)) : resto.trim().toLowerCase() };
+
+  // Si quedan dos numeros, el primero es el bloque.
+  if (grupos.length >= 2) ref.block = String(Number(grupos[0]!));
+  if (blockAparte) ref.block = soloNumero(blockAparte);
+  if (row) ref.row = row;
+  return ref;
+}
+
+/**
+ * Lleva la etiqueta de fila a una forma comun.
+ *
+ * La lista de strings dice R2 o R3; la geometria de Edenvale dice "motorizada"
+ * o "esclava", porque su columna era una bandera si/no. El perfil ya declara
+ * cuales filas llevan motor, asi que se usa eso en vez de inventar una regla.
+ */
+export function canonRow(row: string | undefined, naming?: RowNaming): string | undefined {
+  if (!row) return undefined;
+  const r = row.trim().toLowerCase();
+  if (r === "motorizada" || r === "esclava") return r;
+  const upper = row.trim().toUpperCase();
+  if (naming?.motorized?.some((m) => m.toUpperCase() === upper)) return "motorizada";
+  if (naming?.slave?.some((m) => m.toUpperCase() === upper)) return "esclava";
+  return r;
+}
+
+export interface RowNaming {
+  motorized?: string[];
+  slave?: string[];
 }
 
 export interface MatchReport {
@@ -160,60 +191,90 @@ export interface MatchReport {
   total: number;
   rowsWithStrings: number;
   unmatchedExamples: string[];
+  /** Como quedo entendida una referencia de cada lado, para ver por que no cruza. */
+  preview: Array<{ desde: string; entendido: string; geometria: string }>;
 }
 
 export interface MatchResult {
-  /** Por id de fila de geometria: las etiquetas de string que le corresponden. */
   byRow: Map<string, { labels: string[]; dcBox?: string }>;
   report: MatchReport;
 }
 
-/**
- * Cruza la lista de strings con la geometria, probando varias formas de
- * escribir el mismo tracker y quedandose con la que mas matchea.
- */
-export function matchEntries(entries: StringEntry[], rows: TrackerRow[]): MatchResult {
+/** Las formas de armar la clave, de la mas exigente a la mas suelta. */
+const CLAVES: Array<{ name: string; fn: (r: TrackerRef) => string | null }> = [
+  { name: "bloque + tracker + fila", fn: (r) => (r.block && r.row ? `${r.block}|${r.tracker}|${r.row}` : null) },
+  { name: "bloque + tracker", fn: (r) => (r.block ? `${r.block}|${r.tracker}` : null) },
+  { name: "tracker + fila", fn: (r) => (r.row ? `${r.tracker}|${r.row}` : null) },
+  { name: "tracker solo", fn: (r) => r.tracker },
+];
+
+export function matchEntries(
+  entries: StringEntry[],
+  rows: TrackerRow[],
+  naming?: RowNaming,
+): MatchResult {
+  // Las dos referencias, partidas igual.
+  const geo = rows.map((r) => ({
+    row: r,
+    ref: { ...parseTrackerRef(r.tracker, r.block), row: canonRow(r.row, naming) } as TrackerRef,
+  }));
+  const strings = entries.map((e) => ({
+    entry: e,
+    ref: (() => {
+      const base = parseTrackerRef(e.tracker);
+      const row = canonRow(e.row ?? base.row, naming);
+      return row ? { ...base, row } : base;
+    })(),
+  }));
+
+  const preview = strings.slice(0, 3).map((s, i) => ({
+    desde: s.entry.tracker + (s.entry.row ? ` ${s.entry.row}` : ""),
+    entendido: `bloque ${s.ref.block ?? "?"} · tracker ${s.ref.tracker} · fila ${s.ref.row ?? "?"}`,
+    geometria: geo[i]
+      ? `bloque ${geo[i]!.ref.block ?? "?"} · tracker ${geo[i]!.ref.tracker} · fila ${geo[i]!.ref.row ?? "?"}`
+      : "—",
+  }));
+
   let best: MatchResult | null = null;
 
-  for (const norm of NORMS) {
+  for (const clave of CLAVES) {
     const index = new Map<string, TrackerRow[]>();
-    for (const r of rows) {
-      const k = norm.fn(r.block, r.tracker, r.row);
-      if (!k || k === "|" || k.startsWith("-|") || k === "-") continue;
-      index.set(k, [...(index.get(k) ?? []), r]);
+    for (const g of geo) {
+      const k = clave.fn(g.ref);
+      if (!k) continue;
+      index.set(k, [...(index.get(k) ?? []), g.row]);
     }
 
     const byRow = new Map<string, { labels: string[]; dcBox?: string }>();
     const sinMatch: string[] = [];
     let matched = 0;
 
-    for (const e of entries) {
-      // La lista de strings no suele traer bloque; se prueba contra todos.
-      const candidatos =
-        index.get(norm.fn("", e.tracker, e.row)) ??
-        index.get(norm.fn(num(e.tracker), e.tracker, e.row)) ??
-        index.get(norm.fn(e.tracker.split(/[^0-9]/)[0] ?? "", e.tracker, e.row));
-
+    for (const s of strings) {
+      const k = clave.fn(s.ref);
+      const candidatos = k ? index.get(k) : undefined;
       if (!candidatos || candidatos.length !== 1) {
-        if (sinMatch.length < 6) sinMatch.push(`${e.tracker}${e.row ? " " + e.row : ""} → ${e.label}`);
+        if (sinMatch.length < 6) {
+          sinMatch.push(`${s.entry.tracker}${s.entry.row ? " " + s.entry.row : ""} → ${s.entry.label}`);
+        }
         continue;
       }
       matched++;
       const row = candidatos[0]!;
       const prev = byRow.get(row.id) ?? { labels: [] };
-      prev.labels.push(e.label);
-      if (e.dcBox) prev.dcBox = e.dcBox;
+      prev.labels.push(s.entry.label);
+      if (s.entry.dcBox) prev.dcBox = s.entry.dcBox;
       byRow.set(row.id, prev);
     }
 
     const result: MatchResult = {
       byRow,
       report: {
-        strategy: norm.name,
+        strategy: clave.name,
         matched,
         total: entries.length,
         rowsWithStrings: byRow.size,
         unmatchedExamples: sinMatch,
+        preview,
       },
     };
     if (!best || result.report.matched > best.report.matched) best = result;
