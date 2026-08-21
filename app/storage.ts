@@ -9,6 +9,7 @@
 
 import { del, get, keys, set } from "idb-keyval";
 import type { FarmProfile, TrackerRow } from "@locator";
+import type { FieldCheck } from "./checks";
 
 const PREFIX = "farm:";
 
@@ -17,6 +18,8 @@ export interface StoredFarm {
   rows: TrackerRow[];
   savedAt: string;
   source?: { fileName: string; sheetName: string; rowCount: number };
+  /** Lo que se conto a mano en el campo. La evidencia del parque. */
+  checks?: FieldCheck[];
 }
 
 export async function listFarms(): Promise<StoredFarm[]> {

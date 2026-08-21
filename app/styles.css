@@ -339,3 +339,16 @@ tr:last-child td { border-bottom: none; }
 .pairs { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; }
 .pairs li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 13px; }
 .pairs code { font-size: 12px; }
+
+/* Verificacion de campo: lo unico que separa "el calculo da" de "es correcto". */
+.verify { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.verify h3 { margin: 0 0 4px; }
+.verify .row { margin-top: 10px; align-items: center; }
+.verify input[type="number"] { width: 92px; }
+
+.rules { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
+.rules li { display: flex; gap: 10px; align-items: baseline; }
+.rules .tick { color: var(--ink-3); font-size: 15px; line-height: 1.2; }
+.rules li.ok .tick { color: var(--ok, #4ade80); }
+.rules strong { display: block; font-weight: 600; }
+.rules em { display: block; font-style: normal; font-size: 13px; color: var(--ink-3); margin-top: 2px; }

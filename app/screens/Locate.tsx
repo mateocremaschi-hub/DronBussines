@@ -10,15 +10,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { compileFarm, formatAddress, locate, parseCoordinate } from "@locator";
 import type { CompiledFarm, LocateResult } from "@locator";
-import type { StoredFarm } from "../storage";
+import { checkFromResult, summarize, toCalibration } from "../checks";
+import { saveFarm, type StoredFarm } from "../storage";
 
 export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () => void }) {
   const [text, setText] = useState("");
   const [accuracy, setAccuracy] = useState<number | null>(null);
   const [result, setResult] = useState<LocateResult | null>(null);
+  const [coord, setCoord] = useState<{ lat: number; lon: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
   const [gpsBusy, setGpsBusy] = useState(false);
+  const [checks, setChecks] = useState(stored.checks ?? []);
+  const [contado, setContado] = useState("");
+  const [registrando, setRegistrando] = useState(false);
+  const [registrado, setRegistrado] = useState<"match" | "mismatch" | null>(null);
 
   const farm = useMemo<CompiledFarm | null>(() => {
     try {
@@ -28,18 +34,55 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     }
   }, [stored]);
 
-  useEffect(() => { setResult(null); setError(null); }, [stored]);
+  useEffect(() => {
+    setResult(null); setError(null); setChecks(stored.checks ?? []);
+  }, [stored]);
 
   function run(input: string, acc: number | null) {
     if (!farm) return;
     setError(null);
+    setRegistrado(null);
+    setContado("");
     try {
       const coords = parseCoordinate(input);
+      setCoord(coords);
       setResult(locate(acc ? { ...coords, accuracyM: acc } : coords, farm));
     } catch (e) {
       setResult(null);
+      setCoord(null);
       setError(e instanceof Error ? e.message : String(e));
     }
+  }
+
+  /**
+   * Guarda lo que se conto a mano.
+   *
+   * Se guarda tambien cuando NO coincide, y eso es a proposito: un choque sin
+   * explicar es justamente el dato que evita que el parque figure como
+   * verificado y que alguien le mande un informe a un cliente con eso adentro.
+   */
+  async function registrar(outcome: "match" | "mismatch") {
+    if (!result?.best || !coord) return;
+    setRegistrando(true);
+    const row = stored.rows.find((r) => r.id === result.best!.rowId);
+    const n = Number(contado);
+    const check = checkFromResult(result, coord, formatAddress(result.best), row, outcome, {
+      accuracyM: accuracy,
+      ...(outcome === "mismatch" && Number.isFinite(n) && n > 0 ? { countedModule: n } : {}),
+    });
+    if (!check) { setRegistrando(false); return; }
+
+    const nuevos = [...checks, check];
+    const cal = toCalibration(nuevos, stored.rows);
+    await saveFarm({
+      ...stored,
+      checks: nuevos,
+      savedAt: new Date().toISOString(),
+      profile: { ...stored.profile, calibration: { ...stored.profile.calibration, ...cal } },
+    });
+    setChecks(nuevos);
+    setRegistrado(outcome);
+    setRegistrando(false);
   }
 
   function useGps() {
@@ -72,6 +115,7 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   }
 
   const best = result?.best;
+  const resumen = useMemo(() => summarize(checks, stored.rows), [checks, stored.rows]);
 
   /** El rango de modulos que cubre el 85 % de la probabilidad, dentro de la fila ganadora. */
   const range = useMemo(() => {
@@ -189,6 +233,47 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             </div>
           )}
 
+          {best && (
+            // El momento en que la verificacion es barata: la persona ya esta
+            // parada ahi. Un dia despues cuesta un viaje.
+            <div className="verify">
+              <h3>¿Contaste los modulos?</h3>
+              {registrado ? (
+                <p className={registrado === "match" ? "note good" : "note bad"}>
+                  {registrado === "match"
+                    ? "Anotado. Queda guardado en el parque como prueba de campo."
+                    : "Anotado el desacuerdo. El parque no va a figurar como verificado hasta que se entienda por que."}
+                </p>
+              ) : (
+                <>
+                  <p className="help">
+                    Es lo unico que separa "el calculo da" de "el calculo es correcto". Si ya contaste
+                    parado ahi, dejalo asentado ahora: mañana cuesta un viaje.
+                  </p>
+                  <div className="row">
+                    <button onClick={() => void registrar("match")} disabled={registrando}>
+                      Conte y coincide
+                    </button>
+                    <label className="inline">
+                      No coincide, conte el
+                      <input
+                        type="number" min={1} value={contado} placeholder="modulo"
+                        onChange={(e) => setContado(e.target.value)}
+                      />
+                    </label>
+                    <button
+                      className="ghost"
+                      onClick={() => void registrar("mismatch")}
+                      disabled={registrando || !contado.trim()}
+                    >
+                      Anotar el desacuerdo
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
           <button className="link" onClick={() => setDetails((d) => !d)}>
             {details ? "Ocultar" : "Ver"} el detalle del calculo
           </button>
@@ -210,13 +295,50 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         </section>
       )}
 
-      {stored.profile.calibration?.status !== "field-verified" && (
-        <p className="note bad">
-          Este parque todavia no tiene ninguna regla verificada en campo. Los resultados sirven para
-          orientarse, pero antes de reportarle algo a un cliente conviene confirmar unos puntos
-          contando modulos a mano.
-        </p>
-      )}
+      <section className="card">
+        <h2>Que esta probado en este parque</h2>
+        {resumen.status === "field-verified" ? (
+          <p className="note good">
+            Las tres reglas estan probadas contando modulos a mano, y no hay ningun desacuerdo sin
+            explicar. Este parque se puede reportar.
+          </p>
+        ) : (
+          <p className="note bad">
+            {resumen.matches === 0
+              ? "Todavia no hay ningun punto contado a mano. Los resultados sirven para orientarse, pero no para reportarle a un cliente."
+              : `${resumen.matches} punto(s) contados a mano. Todavia no alcanza: no basta con verificar varias veces lo mismo.`}
+          </p>
+        )}
+
+        <ul className="rules">
+          {resumen.coverage.map((r) => (
+            <li key={r.key} className={r.covered ? "ok" : ""}>
+              <span className="tick">{r.covered ? "✓" : "○"}</span>
+              <span>
+                <strong>{r.label}</strong>
+                <em>{r.why}</em>
+              </span>
+            </li>
+          ))}
+        </ul>
+
+        {resumen.mismatches > 0 && (
+          <div className="warnbox">
+            <h3>{resumen.mismatches} desacuerdo(s) sin explicar</h3>
+            <ul>
+              {checks.filter((c) => c.outcome === "mismatch").slice(-4).map((c) => (
+                <li key={c.id}>
+                  <code>{c.said}</code> — contaste el {c.countedModule ?? "?"}
+                </li>
+              ))}
+            </ul>
+            <p>
+              Mientras haya uno de estos, el parque queda en parcial por mas puntos que coincidan.
+              Un desacuerdo es un dato, no un error: casi siempre hay una regla que falta declarar.
+            </p>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
