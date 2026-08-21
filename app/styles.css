@@ -306,3 +306,26 @@ tr:last-child td { border-bottom: none; }
 .derive { list-style: none; margin: 0; padding: 0; font-size: 14px; }
 .derive li { padding: 3px 0; }
 .derive li.no { opacity: .85; }
+
+/* ---------- inspeccion ---------- */
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 10px; margin: 8px 0 18px; }
+.stats div { background: var(--surface-2); border: 1px solid var(--rule);
+  border-radius: 6px; padding: 12px 14px; }
+.stats b { font-family: Archivo, sans-serif; font-size: 24px; display: block;
+  line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stats span { font-size: 12.5px; color: var(--ink-3); }
+/* Los ceros no gritan: el color aparece solo cuando hay algo que mirar. */
+.stats .alerta { border-color: var(--warn); background: var(--warn-soft); }
+.stats .alerta b { color: var(--warn); }
+
+.hallazgo { margin-bottom: 14px; }
+.hallazgo.confirmado { border-left: 3px solid var(--accent); }
+.hallazgo.descartado { opacity: .5; }
+.hallazgo-top { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.hallazgo-top img { width: 132px; height: 132px; object-fit: cover;
+  border-radius: 6px; border: 1px solid var(--rule); flex: none; }
+.hallazgo-id { flex: 1; min-width: 220px; }
+.hallazgo .answer { font-size: clamp(17px, 2.4vw, 21px); margin: 2px 0 4px; }
+.row.chips button { padding: 6px 13px; font-variant-numeric: tabular-nums; }

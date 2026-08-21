@@ -6,10 +6,11 @@ interface Props {
   farms: StoredFarm[];
   onNew: () => void;
   onOpen: (farm: StoredFarm) => void;
+  onInspect: (farm: StoredFarm) => void;
   onChanged: () => void;
 }
 
-export function Farms({ farms, onNew, onOpen, onChanged }: Props) {
+export function Farms({ farms, onNew, onOpen, onInspect, onChanged }: Props) {
   async function importFarm(file: File) {
     const text = await file.text();
     const farm = JSON.parse(text) as StoredFarm;
@@ -49,11 +50,17 @@ export function Farms({ farms, onNew, onOpen, onChanged }: Props) {
                     {f.rows.length} filas · {f.profile.topology.modulesPerString} ×{" "}
                     {f.profile.topology.stringsPerRow} modulos por fila
                   </span>
+                  <span className="mono muted">
+                    paso {f.profile.module.widthMm + f.profile.module.gapMm} mm · bahia{" "}
+                    {f.profile.topology.stringGapMm ?? 0} mm · offset{" "}
+                    {f.profile.geometry.endpointOffsetMm} mm
+                  </span>
                   <span className={verified ? "chip ver" : "chip asm"}>
                     {verified ? "verificado en campo" : "sin verificar"}
                   </span>
                 </button>
                 <div className="farm-actions">
+                  <button className="link" onClick={() => onInspect(f)}>Inspecciones</button>
                   <button className="link" onClick={() => downloadFarm(f)}>Exportar</button>
                   <button
                     className="link danger"
