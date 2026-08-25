@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { compileFarm, formatAddress, locate } from "@locator";
 import type { CompiledFarm } from "@locator";
-import { readPhoto } from "../photos";
+import { offNadirDeg, readPhoto } from "../photos";
 import {
   ANOMALIAS,
   CLASES,
@@ -79,9 +79,13 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
       if (!read.fix) {
         fallos.push({ fileName: read.fileName, error: read.error ?? "sin coordenada" });
       } else {
+        // La coordenada de la foto es la del DRON. Si el gimbal no miraba
+        // derecho para abajo, lo que se ve en el cuadro esta corrido, asi que
+        // ese corrimiento entra al margen en vez de quedar escondido.
+        const margen = Math.hypot(read.fix.accuracyM ?? 0, read.fix.tiltOffsetM ?? 0);
         const res = locate(
-          read.fix.accuracyM
-            ? { lat: read.fix.lat, lon: read.fix.lon, accuracyM: read.fix.accuracyM }
+          margen > 0
+            ? { lat: read.fix.lat, lon: read.fix.lon, accuracyM: margen }
             : { lat: read.fix.lat, lon: read.fix.lon },
           farm,
         );
@@ -315,6 +319,16 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
                 {f.fix.accuracyM ? ` · precision ±${f.fix.accuracyM} m` : ""}
                 {f.fix.takenAt ? ` · ${new Date(f.fix.takenAt).toLocaleString("es-AR")}` : ""}
               </p>
+              {f.fix.tiltOffsetM != null && f.fix.tiltOffsetM > 0.5 && (
+                <p className="note bad small">
+                  La camara no estaba a plomo: {offNadirDeg(f.fix.gimbalPitchDeg)!.toFixed(0)}° de
+                  desvio a {f.fix.relativeAltitudeM!.toFixed(0)} m de altura. Lo que quedo en el
+                  centro del cuadro esta a <strong>{f.fix.tiltOffsetM.toFixed(1)} m</strong> de donde
+                  estaba el dron — {(f.fix.tiltOffsetM / 1.15).toFixed(0)} modulos. Ya lo sume al
+                  margen, pero para que la coordenada sea la del panel hay que disparar con el gimbal
+                  en -90°.
+                </p>
+              )}
             </div>
           </div>
 

@@ -33,7 +33,20 @@ export async function readWorkbook(
   headerRow = 1,
 ): Promise<Sheet[]> {
   const XLSX = await import("xlsx");
-  const wb = XLSX.read(buf, { cellDates: false });
+
+  /**
+   * `raw: true` al PARSEAR, no solo al convertir a filas.
+   *
+   * Sin esto, el lector de CSV aplica la convencion contable: interpreta los
+   * parentesis como signo negativo y la coma como separador de miles, asi que
+   * "(1,25)" —la posicion del modulo 25 en el informe de una termografica—
+   * entra como el numero -125.
+   *
+   * No es hipotetico: pasa con el archivo real de Edenvale, en las 3156 filas.
+   * Y es el peor tipo de error, porque no falla nada: queda un numero valido y
+   * equivocado. Es la misma convencion que aplica Excel al abrir ese CSV.
+   */
+  const wb = XLSX.read(buf, { cellDates: false, raw: true });
 
   const sheets: Sheet[] = [];
   // Recorre TODAS las hojas. En Edenvale, mirar solo la primera fue un bug real:

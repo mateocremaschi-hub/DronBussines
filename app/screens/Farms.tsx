@@ -9,10 +9,12 @@ interface Props {
   onInspect: (farm: StoredFarm) => void;
   onAddGeometry: (farm: StoredFarm) => void;
   onStrings: (farm: StoredFarm) => void;
+  onVendor: (farm: StoredFarm) => void;
+  onFlight: (farm: StoredFarm) => void;
   onChanged: () => void;
 }
 
-export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onStrings, onChanged }: Props) {
+export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onStrings, onVendor, onFlight, onChanged }: Props) {
   async function importFarm(file: File) {
     const text = await file.text();
     const farm = JSON.parse(text) as StoredFarm;
@@ -68,9 +70,11 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onString
                   </span>
                 </button>
                 <div className="farm-actions">
+                  <button className="link" onClick={() => onFlight(f)}>Planificar vuelo</button>
                   <button className="link" onClick={() => onInspect(f)}>Inspecciones</button>
                   <button className="link" onClick={() => onAddGeometry(f)}>Agregar geometria</button>
                   <button className="link" onClick={() => onStrings(f)}>Lista de strings</button>
+                  <button className="link" onClick={() => onVendor(f)}>Auditar un informe</button>
                   <button className="link" onClick={() => downloadFarm(f)}>Exportar</button>
                   <button
                     className="link danger"

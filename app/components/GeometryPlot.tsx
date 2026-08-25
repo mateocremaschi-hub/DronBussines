@@ -11,13 +11,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { makeFrame, toLocal } from "@locator";
 import type { CompiledFarm, TrackerRow, Warning } from "@locator";
+import type { Mission } from "../mission";
 
 interface Props {
   farm: CompiledFarm;
   height?: number;
+  /** Ruta de vuelo, para dibujarla encima de la geometria. */
+  mission?: Mission | null;
 }
 
-export function GeometryPlot({ farm, height = 420 }: Props) {
+export function GeometryPlot({ farm, height = 420, mission = null }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [hover, setHover] = useState<TrackerRow | null>(null);
   const [selected, setSelected] = useState<TrackerRow | null>(null);
@@ -94,6 +97,48 @@ export function GeometryPlot({ farm, height = 420 }: Props) {
     }
     ctx.globalAlpha = 1;
 
+    // La ruta de vuelo, encima. Primero la franja que cubre cada pasada y
+    // despues el eje: asi se ve de un vistazo si queda algun modulo afuera,
+    // que es el unico error de un plan de vuelo que importa.
+    if (mission) {
+      const frame = layout.frame;
+      const banda = mission.stats.huellaAnchoM * scale;
+      ctx.lineCap = "butt";
+
+      ctx.strokeStyle = accent;
+      ctx.globalAlpha = 0.13;
+      ctx.lineWidth = banda;
+      for (const l of mission.lines) {
+        const a = toLocal(frame, l.a.lat, l.a.lon);
+        const b = toLocal(frame, l.b.lat, l.b.lon);
+        ctx.beginPath();
+        ctx.moveTo(px(a.x), py(a.y));
+        ctx.lineTo(px(b.x), py(b.y));
+        ctx.stroke();
+      }
+
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      mission.waypoints.forEach((w, i) => {
+        const p = toLocal(frame, w.lat, w.lon);
+        if (i === 0) ctx.moveTo(px(p.x), py(p.y));
+        else ctx.lineTo(px(p.x), py(p.y));
+      });
+      ctx.stroke();
+
+      // Donde arranca el vuelo.
+      const inicio = mission.waypoints[0];
+      if (inicio) {
+        const p = toLocal(frame, inicio.lat, inicio.lon);
+        ctx.fillStyle = accent;
+        ctx.beginPath();
+        ctx.arc(px(p.x), py(p.y), 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
     // Barra de escala: 100 m reales.
     const barM = 100;
     const barPx = barM * scale;
@@ -110,7 +155,7 @@ export function GeometryPlot({ farm, height = 420 }: Props) {
       ctx.font = "11px 'IBM Plex Mono', monospace";
       ctx.fillText(`${barM} m`, pad + barPx + 8, cssH - 12);
     }
-  }, [farm, layout, flagged, hover, selected, height]);
+  }, [farm, layout, flagged, hover, selected, height, mission]);
 
   const pick = (evt: React.MouseEvent<HTMLCanvasElement>): TrackerRow | null => {
     const canvas = canvasRef.current;

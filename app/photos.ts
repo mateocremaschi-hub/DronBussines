@@ -20,6 +20,21 @@ export interface PhotoFix {
   takenAt?: string;
   /** Miniatura en data URI, para revisar sin volver a abrir el archivo. */
   thumb?: string;
+
+  /** Angulo del gimbal. -90 es mirando derecho para abajo. */
+  gimbalPitchDeg?: number;
+  /** Altura sobre el punto de despegue, que es lo que escriben los DJI. */
+  relativeAltitudeM?: number;
+  /**
+   * Cuanto se corre el punto fotografiado por no estar la camara a plomo.
+   *
+   * La coordenada de la foto es la del DRON. Solo coincide con lo que se ve
+   * abajo si el gimbal apunta derecho para abajo. Inclinado, el punto que
+   * quedo en el centro del cuadro esta a `altura x tan(desvio)` de distancia
+   * horizontal — y siempre para el mismo lado, que es lo que lo hace peligroso.
+   * A 30 m de altura, 5 grados son 2.6 m: mas de dos modulos.
+   */
+  tiltOffsetM?: number;
 }
 
 export interface PhotoRead {
@@ -30,6 +45,31 @@ export interface PhotoRead {
 
 /** Lado mayor de la miniatura que se guarda con cada hallazgo. */
 const THUMB_PX = 360;
+
+/** Desvio del gimbal respecto de mirar derecho para abajo, en grados. */
+export function offNadirDeg(pitchDeg: number | undefined | null): number | undefined {
+  if (pitchDeg == null || !Number.isFinite(pitchDeg)) return undefined;
+  return Math.abs(90 - Math.abs(pitchDeg));
+}
+
+/**
+ * Cuanto se corre el punto fotografiado, por altura y desvio del gimbal.
+ *
+ * Es geometria de secundaria —cateto opuesto— pero es la diferencia entre
+ * ubicar el modulo y ubicar el de tres mas alla.
+ */
+export function tiltOffsetM(alturaM: number, desvioDeg: number): number {
+  return alturaM * Math.tan((desvioDeg * Math.PI) / 180);
+}
+
+function firstNumber(meta: Record<string, unknown>, claves: string[]): number | undefined {
+  for (const k of claves) {
+    const v = meta[k];
+    const n = typeof v === "string" ? Number(v) : v;
+    if (typeof n === "number" && Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
 
 export async function readPhoto(file: File): Promise<PhotoRead> {
   let gps: { latitude?: number; longitude?: number } | undefined;
@@ -44,6 +84,16 @@ export async function readPhoto(file: File): Promise<PhotoRead> {
       "GPSAltitude",
       "GPSHPositioningError",
     ])) ?? {}) as Record<string, unknown>;
+
+    // Los DJI escriben el angulo del gimbal y la altura en el XMP, no en EXIF.
+    try {
+      const xmp = (await exifr.parse(file, { xmp: true, tiff: false, exif: false, gps: false })) as
+        | Record<string, unknown>
+        | undefined;
+      if (xmp) meta = { ...xmp, ...meta };
+    } catch {
+      // Sin XMP se sigue igual: se pierde el chequeo del gimbal, no la foto.
+    }
   } catch (e) {
     return {
       fileName: file.name,
@@ -70,6 +120,21 @@ export async function readPhoto(file: File): Promise<PhotoRead> {
 
   const when = meta["DateTimeOriginal"] ?? meta["CreateDate"];
   if (when instanceof Date && !Number.isNaN(when.getTime())) fix.takenAt = when.toISOString();
+
+  // Cada fabricante lo nombra distinto; se prueban las formas conocidas.
+  const pitch = firstNumber(meta, [
+    "GimbalPitchDegree", "drone-dji:GimbalPitchDegree", "GimbalPitch", "CameraPitch",
+  ]);
+  const relAlt = firstNumber(meta, [
+    "RelativeAltitude", "drone-dji:RelativeAltitude", "AboveGroundAltitude",
+  ]);
+  if (pitch != null) fix.gimbalPitchDeg = pitch;
+  if (relAlt != null) fix.relativeAltitudeM = Math.abs(relAlt);
+
+  const off = offNadirDeg(pitch);
+  if (off != null && fix.relativeAltitudeM != null) {
+    fix.tiltOffsetM = fix.relativeAltitudeM * Math.tan((off * Math.PI) / 180);
+  }
 
   const thumb = await makeThumb(file);
   if (thumb) fix.thumb = thumb;
