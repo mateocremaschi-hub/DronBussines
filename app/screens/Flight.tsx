@@ -16,7 +16,9 @@ import { GeometryPlot } from "../components/GeometryPlot";
 import { download } from "../inspection";
 import {
   CAMARAS,
+  MINUTOS_POR_BATERIA,
   OPCIONES_POR_DEFECTO,
+  planByBlock,
   planMission,
   toKml,
   toWaypointCsv,
@@ -27,6 +29,9 @@ import type { StoredFarm } from "../storage";
 export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () => void }) {
   const [camIndex, setCamIndex] = useState(0);
   const [o, setO] = useState(OPCIONES_POR_DEFECTO);
+  const [porBloque, setPorBloque] = useState(true);
+  const [baterias, setBaterias] = useState(4);
+  const [bloqueAbierto, setBloqueAbierto] = useState<string | null>(null);
 
   const opts: MissionOptions = { camera: CAMARAS[camIndex]!, ...o };
 
@@ -34,10 +39,21 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     try { return compileFarm(stored.profile, stored.rows); } catch { return null; }
   }, [stored]);
 
-  const mission = useMemo(
+  const plan = useMemo(
+    () => planByBlock(stored.rows, stored.profile, opts, baterias),
+    [stored.rows, stored.profile, opts.camera, o, baterias],
+  );
+
+  const entero = useMemo(
     () => planMission(stored.rows, stored.profile, opts),
     [stored.rows, stored.profile, opts.camera, o],
   );
+
+  // Lo que se dibuja y se exporta: un bloque si hay uno elegido, si no todo.
+  const mission = porBloque
+    ? plan.bloques.find((b) => b.block === bloqueAbierto)?.mission ?? null
+    : entero;
+  const etiqueta = porBloque && bloqueAbierto ? `bloque ${bloqueAbierto}` : "todo el parque";
 
   if (!farm) {
     return (
@@ -111,10 +127,89 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         </label>
       </section>
 
+      <section className="card">
+        <h2>Como se organiza el trabajo</h2>
+        <p>
+          Un parque entero no es una mision, es un proyecto: {stored.profile.name} da{" "}
+          <strong>{(plan.totalMinutos / 60).toFixed(1)} horas</strong> de vuelo. La unidad util es
+          el <strong>bloque</strong> — que ademas es la unidad en la que ya piensa la planta: los
+          bloques tienen nombre, los defectos se reportan por bloque y la cuadrilla trabaja por
+          bloque.
+        </p>
+
+        <div className="stats">
+          <div><b>{plan.bloques.length}</b><span>bloques</span></div>
+          <div><b>{(plan.totalMinutos / 60).toFixed(1)} h</b><span>de vuelo en total</span></div>
+          <div><b>{plan.totalBaterias}</b><span>baterias</span></div>
+          <div><b>{plan.salidas}</b><span>salidas de campo</span></div>
+        </div>
+
+        <div className="grid-2">
+          <div className="field">
+            <label htmlFor="f-bat">Baterias que llevas por salida</label>
+            <input
+              id="f-bat" type="number" min={1} max={20} value={baterias}
+              onChange={(e) => setBaterias(Math.max(1, Number(e.target.value) || 1))}
+            />
+            <span className="help">
+              Se cuentan {MINUTOS_POR_BATERIA} minutos utiles por bateria, ya descontada la reserva
+              y el traslado hasta el bloque.
+            </span>
+          </div>
+        </div>
+
+        <label className="check">
+          <input
+            type="checkbox" checked={porBloque}
+            onChange={(e) => { setPorBloque(e.target.checked); setBloqueAbierto(null); }}
+          />
+          <span>
+            Planificar bloque por bloque
+            <em>
+              Ademas de hacerlo manejable, sale mas corto: volando el parque entero se cruza el
+              campo vacio de punta a punta en cada pasada.
+            </em>
+          </span>
+        </label>
+
+        {porBloque && plan.bloques.length > 0 && (
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr><th></th><th>Bloque</th><th>Filas</th><th>Pasadas</th><th>Fotos</th><th>Minutos</th><th>Baterias</th></tr>
+              </thead>
+              <tbody>
+                {plan.bloques.map((b) => (
+                  <tr key={b.block} className={bloqueAbierto === b.block ? "top" : ""}>
+                    <td>
+                      <input
+                        type="radio" name="bloque" checked={bloqueAbierto === b.block}
+                        onChange={() => setBloqueAbierto(b.block)}
+                        aria-label={`Bloque ${b.block}`}
+                      />
+                    </td>
+                    <td><code>{b.block}</code></td>
+                    <td>{b.filas}</td>
+                    <td>{b.mission.stats.lineas}</td>
+                    <td>{b.mission.stats.fotos}</td>
+                    <td>{b.mission.stats.minutos.toFixed(0)}</td>
+                    <td>{b.baterias}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {porBloque && !bloqueAbierto && (
+          <p className="note">Elegi un bloque de la tabla para ver su ruta y exportarla.</p>
+        )}
+      </section>
+
       {s && mission && (
         <>
           <section className="card">
-            <h2>Como queda</h2>
+            <h2>Como queda — {etiqueta}</h2>
             <div className="stats">
               <div><b>{s.lineas}</b><span>pasadas</span></div>
               <div><b>{s.fotos}</b><span>fotos</span></div>
@@ -137,7 +232,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             ) : (
               <p className="note good">
                 El plan cierra: cada modulo va a quedar cubierto con {s.pixelesPorModulo.toFixed(0)} pixeles
-                de ancho, y el vuelo entra en una bateria.
+                de ancho, y el vuelo entra en {Math.max(1, Math.ceil(s.minutos / MINUTOS_POR_BATERIA))} bateria(s).
               </p>
             )}
           </section>
@@ -150,10 +245,10 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             </p>
             <GeometryPlot farm={farm} mission={mission} height={480} />
             <div className="actions">
-              <button onClick={() => download(`${stored.profile.id}-vuelo.kml`, toKml(mission, stored.profile.name), "application/vnd.google-earth.kml+xml")}>
+              <button onClick={() => download(`${stored.profile.id}-${bloqueAbierto ?? "todo"}-vuelo.kml`, toKml(mission, `${stored.profile.name} — ${etiqueta}`), "application/vnd.google-earth.kml+xml")}>
                 Exportar KML
               </button>
-              <button className="ghost" onClick={() => download(`${stored.profile.id}-waypoints.csv`, toWaypointCsv(mission, opts), "text/csv")}>
+              <button className="ghost" onClick={() => download(`${stored.profile.id}-${bloqueAbierto ?? "todo"}-waypoints.csv`, toWaypointCsv(mission, opts), "text/csv")}>
                 Exportar waypoints CSV
               </button>
             </div>

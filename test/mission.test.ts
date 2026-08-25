@@ -14,6 +14,7 @@ import edenvaleJson from "../farms/edenvale.json" with { type: "json" };
 import {
   CAMARAS,
   OPCIONES_POR_DEFECTO,
+  planByBlock,
   planMission,
   toKml,
   toWaypointCsv,
@@ -179,5 +180,74 @@ describe("exportacion", () => {
     expect(csv.split("\n")[0]).toContain("gimbal_grados");
     expect(csv.split("\n")[1]).toContain("-90");
     expect(csv.split("\n")).toHaveLength(m.waypoints.length + 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Por bloque
+//
+// Edenvale entero da 23 horas de vuelo. No es un error del calculo: la
+// empresa que lo hizo tardo cuatro dias. Lo que hace manejable el trabajo no
+// es volar mas rapido sino partirlo por la unidad en la que ya piensa la
+// planta.
+// ---------------------------------------------------------------------------
+
+describe("plan por bloque", () => {
+  /** Filas repartidas en `b` bloques de `n` filas cada uno, separados 300 m. */
+  function parque(b: number, n: number): TrackerRow[] {
+    const out: TrackerRow[] = [];
+    const mPerLon = 111320 * Math.cos((-27.4 * Math.PI) / 180);
+    for (let k = 0; k < b; k++) {
+      for (let i = 0; i < n; i++) {
+        out.push(
+          makeRow(
+            {
+              id: `${k}-${i}`, block: String(k + 1).padStart(2, "0"), tracker: `t${i}`,
+              anchor: { lat: -27.4, lon: 152.7 + (k * 300 + i * 6) / mPerLon },
+              azimuthDeg: 180,
+            },
+            profile,
+          ),
+        );
+      }
+    }
+    return out;
+  }
+
+  it("hace una mision por bloque y las ordena", () => {
+    const { bloques } = planByBlock(parque(4, 10), profile, opts());
+    expect(bloques.map((b) => b.block)).toEqual(["01", "02", "03", "04"]);
+    expect(bloques.every((b) => b.filas === 10)).toBe(true);
+  });
+
+  // El valor de partirlo: cada bloque entra en una o dos baterias.
+  it("cada bloque queda en un vuelo manejable", () => {
+    const { bloques } = planByBlock(parque(6, 12), profile, opts());
+    for (const b of bloques) {
+      expect(b.mission.stats.minutos).toBeLessThan(30);
+      expect(b.baterias).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it("partirlo NO alarga el trabajo: sale parecido al vuelo entero", () => {
+    const rows = parque(4, 10);
+    const entero = planMission(rows, profile, opts())!;
+    const { totalMinutos } = planByBlock(rows, profile, opts());
+    // Por bloque se vuela menos, porque no se cruza el campo vacio de punta a punta.
+    expect(totalMinutos).toBeLessThan(entero.stats.minutos);
+  });
+
+  it("cuenta baterias y salidas de campo con las que uno tiene", () => {
+    const p = planByBlock(parque(8, 12), profile, opts(), 4);
+    expect(p.totalBaterias).toBeGreaterThanOrEqual(p.bloques.length);
+    expect(p.salidas).toBe(Math.ceil(p.totalBaterias / 4));
+    // Con mas baterias, menos viajes.
+    expect(planByBlock(parque(8, 12), profile, opts(), 8).salidas).toBeLessThan(p.salidas);
+  });
+
+  it("un parque sin bloques cargados no rompe nada", () => {
+    const p = planByBlock([], profile, opts());
+    expect(p.bloques).toEqual([]);
+    expect(p.totalMinutos).toBe(0);
   });
 });

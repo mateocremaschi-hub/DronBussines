@@ -24,7 +24,21 @@ await page.getByRole("heading", { name: "Parques" }).waitFor();
 await page.getByRole("button", { name: "Planificar vuelo" }).first().click();
 await page.getByRole("heading", { name: "Planificar el vuelo" }).waitFor();
 
-const leer = async () => (await page.locator(".stats").allInnerTexts()).join(" · ").replace(/\n/g, " ");
+// El parque de ejemplo tiene dos bloques: tiene que ofrecer el plan por bloque.
+const organiza = await page.locator(".card").nth(2).innerText();
+console.log("Organizacion:", organiza.split("\n").filter(l => /bloques|horas|baterias|salidas/.test(l)).join(" · "));
+// El Excel de ejemplo trae un solo bloque; el reparto en varios lo cubren los
+// tests unitarios. Aca alcanza con que la tabla exista y se pueda elegir.
+const filasBloque = await page.locator("table tbody tr").count();
+console.log(`Bloques en la tabla: ${filasBloque}`);
+if (filasBloque < 1) { console.error("ESPERABA al menos 1 bloque"); process.exitCode = 1; }
+const sinElegir = await page.locator(".note").first().innerText().catch(() => "");
+if (!/Elegi un bloque/.test(sinElegir)) { console.error("ESPERABA el aviso de elegir bloque"); process.exitCode = 1; }
+
+await page.locator('input[name="bloque"]').first().check();
+await page.waitForTimeout(400);
+
+const leer = async () => (await page.locator(".stats").allInnerTexts()).slice(1).join(" · ").replace(/\n/g, " ");
 console.log("Con los valores por defecto:");
 console.log("  " + await leer());
 

@@ -265,3 +265,73 @@ export function toWaypointCsv(mission: Mission, opts: MissionOptions): string {
   });
   return lines.join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// Por bloque
+// ---------------------------------------------------------------------------
+
+/**
+ * Un parque entero no es una mision: es un proyecto.
+ *
+ * Edenvale son 23 horas de vuelo. Nadie vuela eso de un saque — la empresa que
+ * lo hizo tardo cuatro dias. La unidad util no es la farm sino el BLOQUE, y no
+ * por una razon tecnica sino porque es la unidad en la que ya piensa todo el
+ * mundo en la planta: los bloques tienen nombre, los defectos se reportan por
+ * bloque y la cuadrilla trabaja por bloque.
+ *
+ * Ademas un bloque entra en una o dos baterias, que es la otra unidad real.
+ */
+
+export interface BlockPlan {
+  block: string;
+  filas: number;
+  mission: Mission;
+  baterias: number;
+}
+
+export interface BlockPlanSet {
+  bloques: BlockPlan[];
+  totalMinutos: number;
+  totalFotos: number;
+  totalBaterias: number;
+  /** Cuantas salidas de campo, si en cada una se llevan las baterias que hay. */
+  salidas: number;
+}
+
+/** Minutos de vuelo util por bateria, ya descontada la reserva y el traslado. */
+export const MINUTOS_POR_BATERIA = 20;
+
+export function planByBlock(
+  rows: TrackerRow[],
+  profile: FarmProfile,
+  opts: MissionOptions,
+  bateriasDisponibles = 4,
+): BlockPlanSet {
+  const porBloque = new Map<string, TrackerRow[]>();
+  for (const r of rows) porBloque.set(r.block, [...(porBloque.get(r.block) ?? []), r]);
+
+  const bloques: BlockPlan[] = [];
+  for (const [block, group] of [...porBloque.entries()].sort((a, b) =>
+    a[0].localeCompare(b[0], undefined, { numeric: true }),
+  )) {
+    const mission = planMission(group, profile, opts);
+    if (!mission) continue;
+    bloques.push({
+      block,
+      filas: group.length,
+      mission,
+      baterias: Math.max(1, Math.ceil(mission.stats.minutos / MINUTOS_POR_BATERIA)),
+    });
+  }
+
+  const totalMinutos = bloques.reduce((s, b) => s + b.mission.stats.minutos, 0);
+  const totalBaterias = bloques.reduce((s, b) => s + b.baterias, 0);
+
+  return {
+    bloques,
+    totalMinutos,
+    totalFotos: bloques.reduce((s, b) => s + b.mission.stats.fotos, 0),
+    totalBaterias,
+    salidas: Math.max(1, Math.ceil(totalBaterias / Math.max(1, bateriasDisponibles))),
+  };
+}
