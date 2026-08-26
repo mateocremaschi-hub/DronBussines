@@ -47,6 +47,7 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
   const [muestras, setMuestras] = useState<Muestra[]>([]);
   const [camera, setCamera] = useState<Camera | null>(null);
   const [gsdCm, setGsdCm] = useState(0);
+  const [enElBorde, setEnElBorde] = useState(0);
   const [progreso, setProgreso] = useState<{ hecho: number; total: number } | null>(null);
   const [problemas, setProblemas] = useState<string[]>([]);
   const [ajuste, setAjuste] = useState<Ajuste>({ dxM: 0, dyM: 0 });
@@ -72,8 +73,8 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
     stored.profile.topology.modulesPerString *
     stored.profile.topology.stringsPerRow;
   const resumen = useMemo(
-    () => (hallazgos.length ? resumir(hallazgos, totalModulos, eventos, gsdCm) : null),
-    [hallazgos, totalModulos, eventos, gsdCm],
+    () => (hallazgos.length ? resumir(hallazgos, totalModulos, eventos, gsdCm, enElBorde) : null),
+    [hallazgos, totalModulos, eventos, gsdCm, enElBorde],
   );
 
   /**
@@ -158,6 +159,7 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
     }
 
     setGsdCm(nGsd ? sumaGsd / nGsd : 0);
+    setEnElBorde(acc ? acc.soloEnElBorde() : 0);
     setMuestras(acc ? acc.muestras() : []);
     setProblemas(fallos);
     setProgreso(null);
@@ -326,7 +328,10 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
             <div className="tablewrap">
               <table>
                 <thead>
-                  <tr><th>Bloque</th><th>Tracker</th><th>String</th><th>Modulo</th><th>°C</th><th>ΔT</th><th></th></tr>
+                  <tr>
+                    <th>Bloque</th><th>Tracker</th><th>String</th><th>Modulo</th>
+                    <th>°C</th><th>ΔT</th><th>Comparado contra</th><th></th>
+                  </tr>
                 </thead>
                 <tbody>
                   {hallazgos
@@ -345,6 +350,11 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
                         <td>{h.modulo.module}</td>
                         <td>{h.celsius.toFixed(1)}</td>
                         <td><strong>+{h.deltaT.toFixed(1)}</strong></td>
+                        <td className={h.ambito === "string" ? "" : "flojo"}>
+                          {h.ambito === "string"
+                            ? `su string (${h.vecinos})`
+                            : `${h.ambito} (${h.vecinos}) — flojo`}
+                        </td>
                         <td>{h.severidad}</td>
                       </tr>
                     ))}

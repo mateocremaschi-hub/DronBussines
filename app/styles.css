@@ -373,3 +373,8 @@ td select {
   background: var(--surface); color: var(--ink); max-width: 210px;
 }
 td input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+
+/* Un hallazgo comparado contra un vecindario mas suelto que su propio string
+   no vale lo mismo que uno comparado contra sus 27 hermanos, y tiene que
+   notarse en la fila y no solo en un parrafo de arriba. */
+td.flojo { color: var(--warn); font-style: italic; }

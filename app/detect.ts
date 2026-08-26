@@ -60,6 +60,35 @@ export interface OpcionesMuestreo {
 }
 
 /**
+ * Que fraccion del modulo tiene que haber entrado de verdad en el cuadro.
+ *
+ * Esta es la regla que separa una medicion de un numero inventado, y hace
+ * falta explicarla porque no es evidente.
+ *
+ * `pixelOf` acepta un modulo cuando su CENTRO cae adentro de la foto. Un
+ * modulo cuyo centro esta a un centimetro del borde pasa ese filtro, pero la
+ * caja que se mide sobre el queda mitad afuera — y el recorte al tamaño de la
+ * imagen la deja apoyada justo en la ultima fila de pixeles del sensor.
+ *
+ * Ahi es donde un microbolometro miente mas: el barril de la lente irradia
+ * sobre las esquinas, y el vidrio del modulo visto de costado refleja el
+ * cielo. Un modulo medido sobre cuatro pixeles del borde da diferencias de
+ * varios grados contra sus vecinos medidos sobre setenta pixeles del centro,
+ * y esa diferencia no es un defecto: es el borde del cuadro.
+ *
+ * Exigiendo que la caja entre casi entera, esos modulos no se miden. Es
+ * preferible decir "no lo vi" a inventarle una temperatura.
+ */
+const FRACCION_MINIMA_MEDIDA = 0.9;
+
+/** Cuantos pixeles tendria la caja si entrara entera en el cuadro. */
+function pixelesEsperados(cx: number, cy: number, anchoPx: number, altoPx: number): number {
+  const spanX = Math.round(cx + anchoPx / 2) - Math.round(cx - anchoPx / 2) + 1;
+  const spanY = Math.round(cy + altoPx / 2) - Math.round(cy - altoPx / 2) + 1;
+  return Math.max(1, spanX) * Math.max(1, spanY);
+}
+
+/**
  * Junta las muestras de un vuelo, foto por foto.
  *
  * Se procesa de a una y se descarta la matriz de temperaturas apenas se midio,
@@ -73,6 +102,8 @@ export interface OpcionesMuestreo {
  */
 export class Acumulador {
   private mejor = new Map<string, Muestra>();
+  /** Modulos que quedaron cortados por el borde del cuadro y no se midieron. */
+  private recortados = new Set<string>();
 
   constructor(
     private farm: CompiledFarm,
@@ -112,14 +143,18 @@ export class Acumulador {
         const previo = this.mejor.get(clave);
         if (previo && previo.distanciaAlCentroM <= d) continue;
 
-        const hit = medianaEnCaja(
-          foto.radio,
-          px.px * escalaX,
-          px.py * escalaY,
-          ((moduloAnchoM * FRACCION_UTIL) / mPorPx) * escalaX,
-          ((moduloLargoM * FRACCION_UTIL) / mPorPx) * escalaY,
-        );
-        if (!hit || hit.pixeles < 1) continue;
+        const cx = px.px * escalaX;
+        const cy = px.py * escalaY;
+        const anchoCaja = ((moduloAnchoM * FRACCION_UTIL) / mPorPx) * escalaX;
+        const altoCaja = ((moduloLargoM * FRACCION_UTIL) / mPorPx) * escalaY;
+
+        const hit = medianaEnCaja(foto.radio, cx, cy, anchoCaja, altoCaja);
+        // El modulo tiene que haber entrado casi entero. Medio modulo apoyado
+        // en el borde del sensor no es una medicion, es el borde del cuadro.
+        if (!hit || hit.pixeles < pixelesEsperados(cx, cy, anchoCaja, altoCaja) * FRACCION_MINIMA_MEDIDA) {
+          this.recortados.add(clave);
+          continue;
+        }
 
         medidos++;
         this.mejor.set(clave, {
@@ -136,6 +171,19 @@ export class Acumulador {
 
   muestras(): Muestra[] {
     return [...this.mejor.values()];
+  }
+
+  /**
+   * Cuantos modulos se descartaron por caer cortados en el borde.
+   *
+   * No se cuentan los que despues se midieron bien en otra foto: con solape,
+   * un modulo cortado en el borde de una cae comodo en el centro de la
+   * siguiente, y ese es justo el trabajo que hace el solape.
+   */
+  soloEnElBorde(): number {
+    let n = 0;
+    for (const k of this.recortados) if (!this.mejor.has(k)) n++;
+    return n;
   }
 }
 
@@ -325,6 +373,7 @@ export function resumir(
   totalModulos: number,
   eventos: EventoDeString[],
   gsdCm: number,
+  soloEnElBorde = 0,
 ): ResumenDeteccion {
   const n = (s: Severidad) => hallazgos.filter((h) => h.severidad === s).length;
   const limitaciones: string[] = [];
@@ -342,6 +391,28 @@ export function resumir(
     limitaciones.push(
       `${flojos} modulos se compararon contra un vecindario mas suelto que su propio string, ` +
       `porque no habia suficientes vecinos medidos. Su delta T es menos confiable.`,
+    );
+  }
+
+  // Los que solo aparecieron cortados por el borde del cuadro. Decirlo importa
+  // porque si son muchos, el vuelo tuvo poco solape y la solucion es volar
+  // distinto, no bajar los umbrales.
+  if (soloEnElBorde) {
+    limitaciones.push(
+      `${soloEnElBorde} modulos aparecieron solo cortados por el borde de alguna foto y no se ` +
+      `midieron: en el borde del sensor la lectura se va varios grados y daria hallazgos falsos. ` +
+      `Si son muchos, al vuelo le falto solape.`,
+    );
+  }
+
+  // La comparacion necesita vecinos. Con pocos modulos medidos, cualquier
+  // diferencia se compara contra casi nada.
+  const conString = hallazgos.filter((h) => h.ambito === "string").length;
+  if (hallazgos.length && conString / hallazgos.length < 0.5) {
+    limitaciones.push(
+      `Menos de la mitad de los modulos medidos tuvieron su propio string completo para ` +
+      `compararse. Este vuelo cubrio parches sueltos, no un parque: sirve para probar la ` +
+      `cadena, no para emitir un informe.`,
     );
   }
   if (totalModulos > hallazgos.length) {

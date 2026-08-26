@@ -13,8 +13,9 @@
 
 import { describe, expect, it } from "vitest";
 import edenvaleJson from "../farms/edenvale.json" with { type: "json" };
-import { comparar, eventosDeString, resumir, UMBRALES, type Muestra } from "../app/detect";
-import { compileFarm, makeFrame, modulesOfRow } from "../src/index.js";
+import { Acumulador, comparar, eventosDeString, resumir, UMBRALES, type Muestra } from "../app/detect";
+import { camaraDesdeEquivalente35 } from "../app/mission";
+import { compileFarm, makeFrame, modulesOfRow, toGeo } from "../src/index.js";
 import type { FarmProfile } from "../src/types.js";
 import { applyStrings } from "../app/strings";
 import { makeRow } from "./helpers/synthetic.js";
@@ -174,5 +175,98 @@ describe("los umbrales son una convencion declarada, no la norma", () => {
     const estricto = comparar(muestras(40, { 5: 4 }), { leve: 2, moderada: 3, critica: 4 });
     expect(estricto.find((x) => x.modulo.positionInRow === 5)!.severidad).toBe("critica");
     expect(UMBRALES.leve).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// El borde del cuadro
+// ---------------------------------------------------------------------------
+
+/**
+ * Un modulo cortado por el borde no se mide.
+ *
+ * Esta es la regla que decide si los hallazgos son defectos o son el borde de
+ * la foto, y hace falta probarla con una camara de verdad y no con muestras
+ * escritas a mano, porque el error nacia en el muestreo y no en la comparacion.
+ *
+ * `pixelOf` acepta un modulo cuando su CENTRO cae adentro. Un modulo cuyo
+ * centro esta a un centimetro del borde pasaba ese filtro y despues se medía
+ * sobre la ultima fila de pixeles del sensor — que es donde el barril de la
+ * lente irradia y donde el vidrio visto de costado refleja el cielo. De ahi
+ * salian diferencias de varios grados que no eran ningun defecto.
+ */
+describe("el borde del cuadro", () => {
+  const camara = camaraDesdeEquivalente35("prueba", 40, 640, 512);
+  const marco = makeFrame(farm.origin.lat, farm.origin.lon);
+  const centroFila = farm.rows[0]!;
+
+  /** Una termica pareja, sin ninguna anomalia. Todo el cuadro a la misma temperatura. */
+  const termicaPareja = (c: number) => ({
+    width: 640, height: 512,
+    celsius: new Float32Array(640 * 512).fill(c),
+    escala: "de prueba",
+  });
+
+  /** El centro geometrico de la fila, en latitud y longitud. */
+  const centro = (() => {
+    const ms = modulesOfRow(centroFila, farm);
+    const x = ms.reduce((a, m) => a + m.x, 0) / ms.length;
+    const y = ms.reduce((a, m) => a + m.y, 0) / ms.length;
+    return toGeo(marco, x, y);
+  })();
+
+  const volar = (lat: number, lon: number, altura: number) => {
+    const acc = new Acumulador(farm, marco, {
+      camera: camara, moduloAnchoM: profile.module.widthMm / 1000, moduloLargoM: 2.28,
+    });
+    acc.agregar({
+      fileName: "T.JPG",
+      radio: termicaPareja(45),
+      pose: { lat, lon, altitudeAglM: altura, gimbalYawDeg: 0, gimbalPitchDeg: -90 },
+    });
+    return acc;
+  };
+
+  it("mide los modulos que entran enteros", () => {
+    const acc = volar(centro.lat, centro.lon, 60);
+    expect(acc.muestras().length).toBeGreaterThan(0);
+  });
+
+  /**
+   * La prueba que importa: sobre una termica PAREJA —todo el cuadro a 45
+   * grados, sin una sola anomalia— no puede salir ningun hallazgo. Si sale
+   * alguno, lo invento el borde.
+   */
+  it("sobre una termica pareja no inventa ni un hallazgo", () => {
+    const acc = volar(centro.lat, centro.lon, 60);
+    const hallazgos = comparar(acc.muestras()).filter((h) => h.severidad !== "normal");
+    expect(hallazgos).toEqual([]);
+  });
+
+  it("los que quedan cortados los cuenta aparte en vez de medirlos", () => {
+    // Volando bajo, la fila entera no entra: sus puntas quedan cortadas.
+    const acc = volar(centro.lat, centro.lon, 25);
+    expect(acc.soloEnElBorde()).toBeGreaterThan(0);
+    // Y ninguno de los medidos puede tener menos pixeles que los que le tocan.
+    const minimo = Math.min(...acc.muestras().map((m) => m.pixeles));
+    const maximo = Math.max(...acc.muestras().map((m) => m.pixeles));
+    expect(minimo).toBeGreaterThanOrEqual(maximo * 0.5);
+  });
+
+  // Con solape, un modulo cortado en el borde de una foto cae comodo en el
+  // centro de la siguiente. Ese es el trabajo del solape y no se puede contar
+  // como perdido.
+  it("no cuenta como perdido lo que otra foto midio bien", () => {
+    const acc = new Acumulador(farm, marco, {
+      camera: camara, moduloAnchoM: profile.module.widthMm / 1000, moduloLargoM: 2.28,
+    });
+    const pose = (alt: number) => ({
+      lat: centro.lat, lon: centro.lon, altitudeAglM: alt,
+      gimbalYawDeg: 0, gimbalPitchDeg: -90,
+    });
+    acc.agregar({ fileName: "baja.JPG", radio: termicaPareja(45), pose: pose(25) });
+    const cortadosSolo = acc.soloEnElBorde();
+    acc.agregar({ fileName: "alta.JPG", radio: termicaPareja(45), pose: pose(200) });
+    expect(acc.soloEnElBorde()).toBeLessThan(cortadosSolo);
   });
 });
