@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { deleteFarm, downloadFarm, saveFarm, type StoredFarm } from "../storage";
+import { aplicarPlano, leerPlano } from "../plans";
+import { resolverSentidoPorGeometria } from "../checks";
 
 interface Props {
   farms: StoredFarm[];
@@ -20,6 +22,80 @@ interface Props {
 
 export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams, onStrings, onVendor, onFlight, onAnalysis, onWarranty, onChanged }: Props) {
   const [problema, setProblema] = useState<string | null>(null);
+  const [plano, setPlano] = useState<{ farm: string; notas: string[]; avisos: string[] } | null>(null);
+  const [leyendo, setLeyendo] = useState<string | null>(null);
+
+  /**
+   * Cargar el plano de interconexion de un parque.
+   *
+   * Es lo que evita ir al campo a descubrir de que lado esta cada bloque: los
+   * PDF del proyecto lo traen dibujado. Entran los PDF directo —se pueden
+   * arrastrar los 36 juntos— y de paso se resuelve el sentido del conteo por
+   * geometria, para que el parque quede listo en un solo paso.
+   *
+   * Tambien entra el all_blocks.json del extractor de escritorio, para los
+   * parques que ya se procesaron asi. Se distingue por la extension, no se
+   * pregunta.
+   */
+  async function cargarPlano(farm: StoredFarm, files: File[]) {
+    setProblema(null); setPlano(null);
+    const pdfs = files.filter((f) => f.name.toLowerCase().endsWith(".pdf"));
+    const avisos: string[] = [];
+    const previas: string[] = [];
+    let leido: ReturnType<typeof leerPlano>;
+
+    try {
+      if (pdfs.length) {
+        setLeyendo(`Abriendo ${pdfs.length} plano${pdfs.length > 1 ? "s" : ""}…`);
+        // pdf.js pesa, y el que nunca carga un plano nunca lo baja.
+        const { etiquetasDePdfs } = await import("../pdftext");
+        const { planoDeEtiquetas } = await import("../planpdf");
+        const lectura = await etiquetasDePdfs(pdfs, (hecho, total, archivo) => {
+          setLeyendo(archivo ? `Leyendo ${hecho + 1} de ${total}: ${archivo}` : "Armando el plano…");
+        });
+        const extraido = planoDeEtiquetas(lectura.etiquetas);
+        avisos.push(...lectura.avisos, ...extraido.avisos);
+        previas.push(
+          `De ${pdfs.length} PDF salieron ${extraido.leidas.total} textos: ` +
+          `${extraido.leidas.trackers} etiquetas de tracker, ${extraido.leidas.cajas} de caja de ` +
+          `continua y ${extraido.leidas.strings} de string. El resto es rotulado de la lamina.`,
+        );
+        leido = leerPlano(JSON.stringify(extraido.plano));
+      } else {
+        const f = files[0];
+        if (!f) return;
+        leido = leerPlano(await f.text());
+      }
+    } catch (e) {
+      setProblema(`No pude leer el plano: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    } finally {
+      setLeyendo(null);
+    }
+
+    if ("error" in leido) { setProblema([leido.error, ...avisos].join(" ")); return; }
+
+    const a = aplicarPlano(farm.rows, leido.plano);
+    const sentido = resolverSentidoPorGeometria({ profile: farm.profile, rows: a.rows });
+    await saveFarm({
+      ...farm,
+      rows: sentido.rows,
+      profile: sentido.profile,
+      savedAt: new Date().toISOString(),
+    });
+    setPlano({
+      farm: farm.profile.name,
+      notas: [
+        ...previas,
+        `${leido.resumen.bloques} bloques, ${leido.resumen.trackers} trackers y ` +
+        `${leido.resumen.cajas} cajas de continua leidos del plano.`,
+        ...a.notas,
+        `El sentido del conteo quedo resuelto en ${sentido.resueltas} filas.`,
+      ],
+      avisos,
+    });
+    onChanged();
+  }
 
   async function importFarm(file: File) {
     setProblema(null);
@@ -93,6 +169,19 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
                   <button className="link" onClick={() => onParams(f)}>Ajustar parametros</button>
                   <button className="link" onClick={() => onAddGeometry(f)}>Agregar geometria</button>
                   <button className="link" onClick={() => onStrings(f)}>Lista de strings</button>
+                  <label className="link comoboton">
+                    Cargar los planos
+                    <input
+                      type="file"
+                      multiple
+                      onChange={(e) => {
+                        const x = [...(e.target.files ?? [])];
+                        // Se limpia para poder volver a elegir los mismos.
+                        e.target.value = "";
+                        if (x.length) void cargarPlano(f, x);
+                      }}
+                    />
+                  </label>
                   <button className="link" onClick={() => onVendor(f)}>Auditar un informe</button>
                   <button className="link" onClick={() => downloadFarm(f)}>Exportar</button>
                   <button
@@ -111,6 +200,30 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
             );
           })}
         </ul>
+      )}
+
+      {leyendo && (
+        <section className="card">
+          <h2>Leyendo los planos</h2>
+          <p className="mono">{leyendo}</p>
+          <p className="muted">
+            Se abren en este dispositivo, no se suben a ningun lado. Con los 36 planos de un
+            parque tarda un rato largo — dejalo terminar.
+          </p>
+        </section>
+      )}
+
+      {plano && (
+        <section className="card">
+          <h2>El plano de {plano.farm}</h2>
+          {plano.notas.map((n, i) => (<p key={i}>{n}</p>))}
+          {plano.avisos.length > 0 && (
+            <>
+              <h3>Lo que no salió redondo</h3>
+              {plano.avisos.map((n, i) => (<p key={i} className="muted">{n}</p>))}
+            </>
+          )}
+        </section>
       )}
 
       <section className="card">

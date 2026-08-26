@@ -417,3 +417,7 @@ td.flojo { color: var(--warn); font-style: italic; }
 .sinred.fallo, .sinred\.sin-soporte, .sinred[class*="sin-soporte"] {
   background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn);
 }
+
+/* Un input de archivo que se ve como los demas botones de la fila. */
+.comoboton { position: relative; overflow: hidden; cursor: pointer; }
+.comoboton input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
