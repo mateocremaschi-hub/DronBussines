@@ -428,18 +428,39 @@ describe("cuando la coordenada no cae en ninguna fila", () => {
     expect(msg).toMatch(/no se haya importado|GPS/);
   });
 
-  it("a kilometros, dice que esa coordenada no es de este parque", () => {
+  it("a unos kilometros, apunta a un bloque sin importar", () => {
     const msg = locate({ ...lejos(4000), accuracyM: 3 }, sola).warnings
       .find((w) => w.code === "no-row-within-range")!.message;
     expect(msg).toMatch(/4\.0 km/);
+    expect(msg).toMatch(/falte importar el bloque/);
+  });
+
+  it("a decenas de kilometros, dice que la coordenada no es de este parque", () => {
+    const msg = locate({ ...lejos(60000), accuracyM: 3 }, sola).warnings
+      .find((w) => w.code === "no-row-within-range")!.message;
     expect(msg).toMatch(/no es de este parque/);
+    // 60 km NO es "mal convertido": una zona UTM son 600.
+    expect(msg).not.toMatch(/mal convertidas/);
+  });
+
+  /**
+   * Lo primero que se mira es la precision de la propia lectura. Si el error es
+   * mas grande que el radio de busqueda, no encontrar nada estaba cantado — y
+   * mandar a revisar la importacion seria mandar al archivo equivocado.
+   */
+  it("con una coordenada imprecisa culpa a la lectura y no al parque", () => {
+    const msg = locate({ ...lejos(4000), accuracyM: 900 }, sola).warnings
+      .find((w) => w.code === "no-row-within-range")!.message;
+    expect(msg).toMatch(/±900 m de error/);
+    expect(msg).toMatch(/no dice nada sobre el parque/);
+    expect(msg).not.toMatch(/mal convertidas|falte importar/);
   });
 
   // El sintoma clasico de importar con la zona UTM equivocada.
   it("del otro lado del mundo, apunta a la conversion y no al GPS", () => {
     const msg = locate({ lat: 51.5, lon: -0.12, accuracyM: 3 }, sola).warnings
       .find((w) => w.code === "no-row-within-range")!.message;
-    expect(msg).toMatch(/del otro lado del mundo/);
+    expect(msg).toMatch(/no hay error de GPS que alcance/);
     expect(msg).toMatch(/zona UTM o el hemisferio/);
     expect(msg).not.toMatch(/Prob[aá] de nuevo/);
   });

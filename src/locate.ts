@@ -48,26 +48,57 @@ function filaMasCercana(
  *
  * Un numero suelto no ayuda parado en el campo con el celular en la mano. Cada
  * orden de magnitud es un problema distinto y se arregla de una forma distinta.
+ *
+ * Los cortes no son arbitrarios. Una zona UTM mide 6 grados, o sea unos 600 km
+ * de ancho: importar con la zona equivocada tira el parque a esa distancia, y
+ * con el hemisferio al reves lo tira al otro lado del planeta. Por debajo de
+ * eso, estar lejos solo significa estar lejos.
+ *
+ * Y antes que nada se mira la precision de la coordenada: si el error de la
+ * propia lectura es mas grande que el radio con el que se busca, no encontrar
+ * nada estaba garantizado y no dice nada del parque. Echarle la culpa a la
+ * importacion ahi seria mandar a revisar el archivo equivocado.
  */
-function diagnosticoDeDistancia(m: { rowId: string; distanceM: number }): string {
+function diagnosticoDeDistancia(
+  m: { rowId: string; distanceM: number },
+  accuracyM: number | undefined,
+  radioM: number,
+): string {
   const d = m.distanceM;
-  if (d < 200) {
+  const lejos = d < 1000 ? `${d.toFixed(0)} m` : `${(d / 1000).toFixed(1)} km`;
+
+  if (accuracyM != null && accuracyM > radioM) {
     return (
-      `La fila mas cercana ("${m.rowId}") esta a ${d.toFixed(0)} m. Estas en el parque pero ` +
-      `fuera de toda fila: puede ser que ese bloque no se haya importado todavia, o que el GPS ` +
-      `haya tomado mal la posicion. Probá de nuevo parado quieto unos segundos.`
+      `La fila mas cercana ("${m.rowId}") esta a ${lejos}, pero la coordenada viene con ` +
+      `±${Math.round(accuracyM)} m de error — mas que los ${radioM} m con los que se busca. ` +
+      `Con esa precision no encontrar nada estaba cantado, y no dice nada sobre el parque: ` +
+      `primero hay que conseguir una lectura de GPS de verdad.`
     );
   }
-  if (d < 50000) {
+
+  if (d < 200) {
     return (
-      `La fila mas cercana ("${m.rowId}") esta a ${(d / 1000).toFixed(1)} km. Esa coordenada no ` +
-      `es de este parque — o todavia no estas en el, o el parque cargado es otro.`
+      `La fila mas cercana ("${m.rowId}") esta a ${lejos}. Estas en el parque pero fuera de toda ` +
+      `fila: puede ser que ese bloque no se haya importado todavia, o que el GPS haya tomado mal ` +
+      `la posicion. Probá de nuevo parado quieto unos segundos.`
+    );
+  }
+  if (d < 5000) {
+    return (
+      `La fila mas cercana ("${m.rowId}") esta a ${lejos}. Estas cerca del parque pero no sobre ` +
+      `el: puede que falte importar el bloque donde estas parado.`
+    );
+  }
+  if (d < 500000) {
+    return (
+      `La fila mas cercana ("${m.rowId}") esta a ${lejos}. Esa coordenada no es de este parque — ` +
+      `o el parque cargado es otro, o todavia no llegaste.`
     );
   }
   return (
-    `La fila mas cercana ("${m.rowId}") esta a ${Math.round(d / 1000)} km, o sea del otro lado ` +
-    `del mundo. Eso no es un error de GPS: las coordenadas del parque estan mal convertidas. ` +
-    `Casi siempre es la zona UTM o el hemisferio equivocados al importar el archivo.`
+    `La fila mas cercana ("${m.rowId}") esta a ${Math.round(d / 1000)} km. A esa distancia no hay ` +
+    `error de GPS que alcance: las coordenadas del parque estan mal convertidas al importarlas, ` +
+    `casi siempre por la zona UTM o el hemisferio equivocados.`
   );
 }
 
@@ -127,7 +158,9 @@ export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
       code: "no-row-within-range",
       message:
         `No hay ninguna fila de trackers a menos de ${farm.maxDistanceM} m de esa coordenada. ` +
-        (masCerca ? diagnosticoDeDistancia(masCerca) : "El parque no tiene ninguna fila cargada."),
+        (masCerca
+          ? diagnosticoDeDistancia(masCerca, fix.accuracyM, farm.maxDistanceM)
+          : "El parque no tiene ninguna fila cargada."),
     });
     return { best: null, candidates: [], diagnostics, warnings };
   }

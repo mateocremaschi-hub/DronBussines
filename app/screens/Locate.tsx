@@ -12,6 +12,7 @@ import { compileFarm, formatAddress, locate, parseCoordinate } from "@locator";
 import type { CompiledFarm, LocateResult } from "@locator";
 import { checkFromResult, summarize, toCalibration } from "../checks";
 import { veredictoDeOffset } from "../solveoffset";
+import { calidadDeCoordenada, comoArreglarlo } from "../gpsquality";
 import { saveFarm, type StoredFarm } from "../storage";
 
 export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () => void }) {
@@ -116,6 +117,16 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   }
 
   const best = result?.best;
+  // El veredicto de la propia coordenada. Va antes que cualquier resultado:
+  // con una coordenada de 800 m de error, no encontrar fila no dice nada del
+  // parque — dice que esa coordenada no es una medicion de GPS.
+  const calidad = useMemo(
+    () => (result || accuracy != null
+      ? calidadDeCoordenada(accuracy, stored.profile.matching?.maxDistanceM ?? 30)
+      : null),
+    [result, accuracy, stored.profile.matching?.maxDistanceM],
+  );
+
   const resumen = useMemo(() => summarize(checks, stored.rows), [checks, stored.rows]);
 
   // Lo que los conteos dicen sobre el offset de punta. Es el unico numero del
@@ -184,6 +195,23 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
 
         {error && <p className="alert">{error}</p>}
       </section>
+
+      {calidad && !calidad.sirve && (
+        <section className="card">
+          <div className="cuadre no">
+            <h3>{calidad.titulo}</h3>
+            <p>{calidad.detalle}</p>
+            <h3 style={{ marginTop: 10 }}>Como arreglarlo</h3>
+            <ul>{comoArreglarlo().map((x, i) => (<li key={i}>{x}</li>))}</ul>
+          </div>
+        </section>
+      )}
+
+      {calidad && calidad.sirve && calidad.calidad !== "gps" && (
+        <p className="note bad">
+          <strong>{calidad.titulo}</strong> — {calidad.detalle}
+        </p>
+      )}
 
       {result && (
         <section className="card">
