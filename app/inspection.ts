@@ -185,6 +185,11 @@ export function toCsv(inspection: Inspection): string {
 }
 
 export function download(name: string, content: string, mime: string): void {
+  descargarBytes(name, content, mime);
+}
+
+/** Lo mismo, para un archivo binario — el KMZ del vuelo, por ejemplo. */
+export function descargarBytes(name: string, content: BlobPart, mime: string): void {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");

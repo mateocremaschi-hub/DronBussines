@@ -13,7 +13,7 @@ import { useMemo, useState } from "react";
 import { compileFarm } from "@locator";
 import type { CompiledFarm } from "@locator";
 import { GeometryPlot } from "../components/GeometryPlot";
-import { download } from "../inspection";
+import { descargarBytes, download } from "../inspection";
 import {
   CAMARAS,
   MINUTOS_POR_BATERIA,
@@ -26,6 +26,7 @@ import {
   toWaypointCsv,
   type MissionOptions,
 } from "../mission";
+import { avisosDeKmz, PERFILES_DJI, toKmz } from "../wpml";
 import type { StoredFarm } from "../storage";
 
 export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () => void }) {
@@ -35,6 +36,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   const [baterias, setBaterias] = useState(4);
   const [bloqueAbierto, setBloqueAbierto] = useState<string | null>(null);
   const [agrupar, setAgrupar] = useState(true);
+  const [perfilDji, setPerfilDji] = useState(0);
 
   const opts: MissionOptions = { camera: CAMARAS[camIndex]!, ...o };
 
@@ -367,18 +369,57 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
               parque asomando fuera de las franjas, ahi va a faltar foto.
             </p>
             <GeometryPlot farm={farm} mission={mission} height={480} />
+            <h3>Llevarlo al dron</h3>
+            <div className="row">
+              <label className="inline">
+                Dron
+                <select value={perfilDji} onChange={(e) => setPerfilDji(Number(e.target.value))}>
+                  {PERFILES_DJI.map((p, i) => (
+                    <option key={p.id} value={i}>{p.nombre}{p.confirmado ? "" : " (sin confirmar)"}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
             <div className="actions">
-              <button onClick={() => download(`${stored.profile.id}-${bloqueAbierto ?? "todo"}-vuelo.kml`, toKml(mission, `${stored.profile.name} — ${etiqueta}`), "application/vnd.google-earth.kml+xml")}>
-                Exportar KML
+              <button
+                onClick={() => {
+                  const bytes = toKmz(mission, opts, {
+                    nombre: `${stored.profile.name} — ${etiqueta}`,
+                    perfil: PERFILES_DJI[perfilDji]!,
+                    fecha: new Date(),
+                  });
+                  descargarBytes(
+                    `${stored.profile.id}-${bloqueAbierto ?? "todo"}.kmz`,
+                    bytes,
+                    "application/vnd.google-earth.kmz",
+                  );
+                }}
+              >
+                Exportar KMZ para DJI Pilot 2
+              </button>
+              <button className="ghost" onClick={() => download(`${stored.profile.id}-${bloqueAbierto ?? "todo"}-vuelo.kml`, toKml(mission, `${stored.profile.name} — ${etiqueta}`), "application/vnd.google-earth.kml+xml")}>
+                KML para Google Earth
               </button>
               <button className="ghost" onClick={() => download(`${stored.profile.id}-${bloqueAbierto ?? "todo"}-waypoints.csv`, toWaypointCsv(mission, opts), "text/csv")}>
-                Exportar waypoints CSV
+                Waypoints CSV
               </button>
             </div>
+
+            <div className="warnbox">
+              <h3>Antes de copiarlo al controlador</h3>
+              <ul>
+                {avisosDeKmz(mission, opts, {
+                  nombre: etiqueta, perfil: PERFILES_DJI[perfilDji]!, fecha: new Date(),
+                }).map((a, i) => (<li key={i}>{a}</li>))}
+              </ul>
+            </div>
+
             <p className="help">
-              El KML se abre en Google Earth para revisarlo antes de ir. Los waypoints salen con el
-              gimbal en −90°, que es lo unico que sirve para mapear: inclinado, la coordenada de la
-              foto deja de ser la del panel.
+              El KMZ va derecho a Pilot 2: copialo a la tarjeta del controlador, en{" "}
+              <code>DJI/wpmz</code>, y aparece en la lista de misiones. El KML es para mirarlo en
+              Google Earth antes de ir. Los disparos salen con el gimbal en −90°, que es lo unico
+              que sirve para mapear: inclinado, la coordenada de la foto deja de ser la del panel.
             </p>
           </section>
         </>

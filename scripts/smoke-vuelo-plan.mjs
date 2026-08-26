@@ -1,5 +1,9 @@
 /** Prueba de humo del planificador de vuelo. */
 import { chromium } from "playwright";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 const BASE = process.env.BASE ?? "http://localhost:4173";
 
 const browser = await chromium.launch();
@@ -67,9 +71,40 @@ await page.getByLabel("Altura sobre el terreno (m)").fill("35");
 await page.waitForTimeout(500);
 
 const kml = page.waitForEvent("download");
-await page.getByRole("button", { name: "Exportar KML" }).click();
+await page.getByRole("button", { name: "KML para Google Earth" }).click();
 const d = await kml;
-console.log("Descarga:", d.suggestedFilename());
+console.log("Descarga KML:", d.suggestedFilename());
+
+// El KMZ es el que se vuela, asi que se descarga y se abre de verdad: lo que
+// decide si el archivo sirve son las rutas que tiene adentro.
+const kmzEvt = page.waitForEvent("download");
+await page.getByRole("button", { name: "Exportar KMZ para DJI Pilot 2" }).click();
+const kmz = await kmzEvt;
+const destino = `/tmp/smoke-${kmz.suggestedFilename()}`;
+await kmz.saveAs(destino);
+const dir = mkdtempSync(join(tmpdir(), "kmz-smoke-"));
+execFileSync("unzip", ["-q", destino, "-d", dir]);
+const dentro = readdirSync(join(dir, "wpmz")).sort();
+console.log("Descarga KMZ:", kmz.suggestedFilename(), "→", dentro.join(", "));
+if (dentro.join(",") !== "template.kml,waylines.wpml") {
+  console.error("ERROR: el KMZ no trae wpmz/template.kml y wpmz/waylines.wpml");
+  process.exitCode = 1;
+}
+const wpml = readFileSync(join(dir, "wpmz", "waylines.wpml"), "utf8");
+const tpl = readFileSync(join(dir, "wpmz", "template.kml"), "utf8");
+const puntos = (x) => (x.match(/<coordinates>/g) ?? []).length;
+console.log(`Waypoints: ${puntos(tpl)} en template, ${puntos(wpml)} en waylines`);
+if (!puntos(tpl) || puntos(tpl) !== puntos(wpml)) {
+  console.error("ERROR: los waypoints no coinciden entre los dos archivos");
+  process.exitCode = 1;
+}
+for (const req of ["gimbalPitchRotateAngle>-90", "multipleDistance", "relativeToStartPoint"]) {
+  if (!wpml.includes(req)) { console.error(`ERROR: al wpml le falta ${req}`); process.exitCode = 1; }
+}
+
+// El aviso de altura tiene que estar en la pantalla, no solo en el archivo.
+const antesDeCopiar = await page.locator(".warnbox", { hasText: "Antes de copiarlo" }).innerText();
+console.log("Avisos:", antesDeCopiar.split("\n").slice(1).join(" · ").slice(0, 120));
 
 await page.screenshot({ path: "shots/12-vuelo.png", fullPage: true });
 await browser.close();
