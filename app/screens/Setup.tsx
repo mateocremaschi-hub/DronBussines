@@ -12,6 +12,8 @@ import type { CompiledFarm, FarmProfile, TrackerRow } from "@locator";
 import {
   buildRows,
   capabilityReport,
+  aplicarOrigenes,
+  deriveOriginEnds,
   deriveSides,
   FIELDS,
   guessCrs,
@@ -186,18 +188,29 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
     [deriveSide, rawMerge],
   );
 
+  /**
+   * El sentido del conteo, resuelto por geometria y sin preguntar nada.
+   *
+   * Va automatico a proposito. Antes salia de una etiqueta cardinal que despues
+   * se invertia, y cuando quedaba al reves habia que ir a contar modulos bloque
+   * por bloque para descubrirlo — en un parque de 36 bloques eso cuesta mas que
+   * volar el dron. Que punta da a la calle de las cajas se MIDE.
+   */
   const merge = useMemo(() => {
-    if (soloParametros) return { rows: existing?.rows ?? [], nuevas: 0, repetidas: 0, colisiones: [] };
+    if (soloParametros) return { rows: existing?.rows ?? [], nuevas: 0, repetidas: 0, colisiones: [], origenes: null };
     if (!rawMerge) return null;
-    if (!derivation) return rawMerge;
-    return {
-      ...rawMerge,
-      rows: rawMerge.rows.map((r) => {
-        const side = derivation.sides.get(r.id);
-        return side ? { ...r, side } : r;
-      }),
-    };
-  }, [rawMerge, derivation]);
+    const conLado = !derivation
+      ? rawMerge
+      : {
+          ...rawMerge,
+          rows: rawMerge.rows.map((r) => {
+            const side = derivation.sides.get(r.id);
+            return side ? { ...r, side } : r;
+          }),
+        };
+    const org = deriveOriginEnds(conLado.rows, profileDraft.addressing.dcBoxPlacement ?? "center-road");
+    return { ...conLado, rows: aplicarOrigenes(conLado.rows, org), origenes: org };
+  }, [rawMerge, derivation, soloParametros, existing, profileDraft.addressing.dcBoxPlacement]);
 
   // Lo que se muestra en el paso de columnas es siempre lo que entro del archivo.
   const built = rawBuilt;
@@ -248,6 +261,7 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
       profileVersion: (existing?.profile.profileVersion ?? 0) + 1,
       crs: crs.type === "utm" ? { type: "utm", zone: crs.zone, hemisphere: crs.hemisphere } : { type: "wgs84" },
       ...profileDraft,
+      addressing: { ...profileDraft.addressing, originStrategy: "per-row-flag" as const },
       calibration: existing?.profile.calibration ?? {
         status: "unverified",
         notes: "Perfil creado desde el asistente. Ninguna regla verificada en campo todavia.",

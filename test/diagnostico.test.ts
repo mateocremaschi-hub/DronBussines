@@ -22,7 +22,7 @@ import { describe, expect, it } from "vitest";
 import edenvaleJson from "../farms/edenvale.json" with { type: "json" };
 import type { FarmProfile } from "../src/types.js";
 import { compileFarm, locate } from "../src/index.js";
-import { diagnosticoDeReglas, pareceEspejado } from "../app/diagnostico";
+import { diagnosticoDeReglas, pareceEspejado, voltearLadoDelBloque } from "../app/diagnostico";
 import type { FieldCheck } from "../app/checks";
 import { makeRow } from "./helpers/synthetic.js";
 
@@ -174,5 +174,55 @@ describe("probar que regla explica los desacuerdos", () => {
     const raros = comoChecks().map((c, i) => ({ ...c, countedModule: [7, 7, 7, 7][i]! }));
     const d = diagnosticoDeReglas(raros, profile, [fila]);
     if (!d.mejor) expect(d.notas.join(" ")).toMatch(/Ninguna de las reglas conocidas/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("dar vuelta el lado del bloque", () => {
+  const rows = [
+    { ...fila, id: "04-018-R1", block: "04", side: "north" as const },
+    { ...fila, id: "04-019-R1", block: "04", side: "south" as const },
+    { ...fila, id: "05-001-R1", block: "05", side: "north" as const },
+  ];
+
+  it("da vuelta las dos orillas del bloque, no solo una", () => {
+    const out = voltearLadoDelBloque(rows, "04");
+    expect(out.find((r) => r.id === "04-018-R1")!.side).toBe("south");
+    expect(out.find((r) => r.id === "04-019-R1")!.side).toBe("north");
+  });
+
+  // El lado es del bloque: tocar otro seria romper lo que ya estaba verificado.
+  it("no toca los otros bloques", () => {
+    expect(voltearLadoDelBloque(rows, "04").find((r) => r.id === "05-001-R1")!.side).toBe("north");
+  });
+
+  it("una fila sin lado se queda sin lado, en vez de inventarle uno", () => {
+    const sinLado = [{ ...fila, id: "x", block: "04", side: undefined }];
+    expect(voltearLadoDelBloque(sinLado, "04")[0]!.side).toBeUndefined();
+  });
+});
+
+describe("el desempate entre las dos hipotesis que empatan", () => {
+  /**
+   * Dar vuelta el origen y dar vuelta los dos strings producen la MISMA
+   * numeracion, asi que siempre empatan. Lo que las separa no es la aritmetica:
+   * es que una se puede ir a comprobar parandose donde esta la caja de continua.
+   */
+  it("elige la que se puede comprobar en el campo, y lo explica", () => {
+    const d = diagnosticoDeReglas(comoChecks(), profile, [fila]);
+    if (!d.mejor) return;
+    expect(d.mejor.id.startsWith("origen-")).toBe(true);
+    expect(d.notas.join(" ")).toMatch(/da exactamente la misma numeracion/);
+    expect(d.notas.join(" ")).toMatch(/se puede ir a comprobar/);
+  });
+
+  it("y ofrece el bloque concreto para darlo vuelta", () => {
+    const d = diagnosticoDeReglas(comoChecks(), profile, [fila]);
+    if (!d.mejor) return;
+    expect(d.bloquesParaVoltear).toContain("04");
+    expect(d.notas.join(" ")).toMatch(/lado de la calle del bloque 04/);
+    // Y avisa del alcance: es el bloque entero, no una fila.
+    expect(d.notas.join(" ")).toMatch(/BLOQUE entero/);
   });
 });

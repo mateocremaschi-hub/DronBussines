@@ -17,7 +17,8 @@
  * algo sin explicar.
  */
 
-import type { LocateResult, TrackerRow } from "@locator";
+import type { FarmProfile, LocateResult, TrackerRow } from "@locator";
+import { aplicarOrigenes, deriveOriginEnds } from "./ingest";
 
 export interface FieldCheck {
   id: string;
@@ -184,5 +185,38 @@ export function toCalibration(
     status: s.status,
     verifiedCases,
     unverified: [...choques, ...s.missing.map((m) => `${m.label}: ${m.why}`)],
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolver el sentido del conteo de todo el parque por geometria.
+ *
+ * Reemplaza a la cadena `side` → invertir → extremo, que tenia tres lugares
+ * donde se podia dar vuelta un signo y obligaba a ir a contar modulos bloque
+ * por bloque para descubrirlo. La punta que da a la calle se mide; no hay nada
+ * que declarar por bloque.
+ *
+ * El sentido queda ESCRITO en cada fila (`originEnd`) en vez de recalcularse
+ * escondido: asi se puede mirar, exportar y corregir a mano si un bloque raro
+ * lo necesita.
+ */
+export function resolverSentidoPorGeometria(
+  farm: { profile: FarmProfile; rows: TrackerRow[] },
+  dcBoxPlacement: "center-road" | "outer-edge" = "center-road",
+): { rows: TrackerRow[]; profile: FarmProfile; resueltas: number; sinResolver: string[] } {
+  const d = deriveOriginEnds(farm.rows, dcBoxPlacement);
+  const rows = aplicarOrigenes(farm.rows, d);
+
+  return {
+    rows,
+    profile: {
+      ...farm.profile,
+      addressing: { ...farm.profile.addressing, originStrategy: "per-row-flag", dcBoxPlacement },
+    },
+    resueltas: d.origins.size,
+    sinResolver: d.blocks.filter((b) => b.status !== "ok").map((b) => `${b.block}: ${b.detail}`),
   };
 }

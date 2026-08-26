@@ -10,10 +10,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { compileFarm, formatAddress, locate, parseCoordinate } from "@locator";
 import type { CompiledFarm, LocateResult } from "@locator";
-import { checkFromResult, summarize, toCalibration } from "../checks";
+import { checkFromResult, resolverSentidoPorGeometria, summarize, toCalibration } from "../checks";
 import { veredictoDeOffset } from "../solveoffset";
 import { calidadDeCoordenada, comoArreglarlo } from "../gpsquality";
-import { diagnosticoDeReglas, pareceEspejado } from "../diagnostico";
+import { diagnosticoDeReglas, pareceEspejado, voltearLadoDelBloque } from "../diagnostico";
 import { saveFarm, type StoredFarm } from "../storage";
 
 /** Por debajo de esta precision ya sirve para contar modulos. */
@@ -26,6 +26,7 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   const [accuracy, setAccuracy] = useState<number | null>(null);
   /** La mejor precision conseguida mientras el GPS todavia esta convergiendo. */
   const [buscando, setBuscando] = useState<number | null>(null);
+  const [sentido, setSentido] = useState<string | null>(null);
   const [result, setResult] = useState<LocateResult | null>(null);
   const [coord, setCoord] = useState<{ lat: number; lon: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +72,77 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
    * explicar es justamente el dato que evita que el parque figure como
    * verificado y que alguien le mande un informe a un cliente con eso adentro.
    */
+  /**
+   * Aplica el arreglo que salio del diagnostico.
+   *
+   * Se borran los desacuerdos de ese bloque a proposito: quedaron explicados
+   * por el lado que estaba al reves y dejarlos ahi haria que el parque figure
+   * en parcial para siempre por un problema que ya no existe. Los conteos que
+   * coincidian se conservan — esos siguen valiendo.
+   */
+  /**
+   * Resolver el sentido del conteo de TODO el parque, por geometria.
+   *
+   * Es lo que corresponde en vez de dar vuelta un bloque a la vez: la punta que
+   * da a la calle se mide, no se declara, asi que sale igual en los 36 bloques
+   * sin caminar ninguno. Dar vuelta bloque por bloque queda para el caso raro
+   * en que la geometria no alcance.
+   */
+  async function resolverSentido() {
+    setRegistrando(true);
+    const r = resolverSentidoPorGeometria(stored);
+    const quedan = checks.filter((c) => c.outcome !== "mismatch");
+    await saveFarm({
+      ...stored,
+      rows: r.rows,
+      profile: {
+        ...r.profile,
+        calibration: {
+          ...(stored.profile.calibration ?? { status: "partial" }),
+          verifiedCases: [
+            ...(stored.profile.calibration?.verifiedCases ?? []),
+            `El sentido del conteo se resolvio por geometria en ${r.resueltas} filas: la punta ` +
+            "que da a la calle de las cajas se mide, no se declara.",
+          ],
+        },
+      },
+      checks: quedan,
+      savedAt: new Date().toISOString(),
+    });
+    setChecks(quedan);
+    setSentido(`${r.resueltas} filas resueltas` + (r.sinResolver.length ? ` · ${r.sinResolver.length} bloque(s) sin resolver` : ""));
+    setRegistrando(false);
+    setResult(null);
+  }
+
+  async function voltearLado(bloque: string) {
+    setRegistrando(true);
+    const filas = voltearLadoDelBloque(stored.rows, bloque);
+    const quedan = checks.filter((c) => !(c.block === bloque && c.outcome === "mismatch"));
+    await saveFarm({
+      ...stored,
+      rows: filas,
+      checks: quedan,
+      savedAt: new Date().toISOString(),
+      profile: {
+        ...stored.profile,
+        calibration: {
+          ...(stored.profile.calibration ?? { status: "partial" }),
+          verifiedCases: [
+            ...(stored.profile.calibration?.verifiedCases ?? []),
+            `Bloque ${bloque}: el lado de la calle estaba deducido al reves y se dio vuelta a ` +
+            `partir de ${checks.filter((c) => c.block === bloque).length} conteos de campo que ` +
+            "salian espejados.",
+          ],
+        },
+      },
+    });
+    setChecks(quedan);
+    setRegistrando(false);
+    setResult(null);
+    setError(null);
+  }
+
   async function registrar(outcome: "match" | "mismatch") {
     if (!result?.best || !coord) return;
     setRegistrando(true);
@@ -480,6 +552,27 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
               </table>
             </div>
             {diag.notas.map((n, i) => (<p key={i} className="small">{n}</p>))}
+            {diag.bloquesParaVoltear.length > 0 && (
+              <>
+                <p className="small">
+                  <strong>Pero no lo arregles bloque por bloque.</strong> Que punta de la fila da a
+                  la calle de las cajas se puede MEDIR, y sale igual en todos los bloques sin
+                  caminar ninguno. Resolvelo de una vez para el parque entero; dar vuelta un bloque
+                  suelto queda para el caso raro en que la geometria no alcance.
+                </p>
+                <div className="actions">
+                  <button disabled={registrando} onClick={() => void resolverSentido()}>
+                    Resolver el sentido de todo el parque
+                  </button>
+                  {diag.bloquesParaVoltear.map((b) => (
+                    <button key={b} className="ghost" disabled={registrando} onClick={() => void voltearLado(b)}>
+                      Solo dar vuelta el bloque {b}
+                    </button>
+                  ))}
+                </div>
+                {sentido && <p className="note ok">{sentido}</p>}
+              </>
+            )}
           </div>
         )}
 

@@ -642,6 +642,132 @@ export interface SideDerivation {
  * metros, y entre grupos difieren mas de medio largo de fila. Si un bloque no
  * se parte limpio, lo dice en vez de inventar un lado.
  */
+/**
+ * Los dos grupos de filas que separa la calle del medio de un bloque.
+ *
+ * Se usa para dos cosas distintas —deducir el lado y deducir desde que punta se
+ * cuenta— y por eso vive aparte. Antes estaba adentro de `deriveSides`, y tener
+ * la geometria escondida ahi fue justamente lo que hizo pasar el sentido del
+ * conteo por una etiqueta cardinal en vez de sacarlo directo del terreno.
+ */
+export interface GruposDeCalle {
+  status: "ok" | "un-solo-lado" | "escalonado" | "ambiguo";
+  detail: string;
+  /** Direccion media de las filas, normalizada hacia el norte. */
+  u?: { x: number; y: number };
+  frame?: ReturnType<typeof makeFrame>;
+  /** Proyeccion sobre el eje: el grupo de proyeccion menor y el mayor. */
+  lower?: TrackerRow[];
+  upper?: TrackerRow[];
+  /** Donde cae la calle sobre ese eje. */
+  corte?: number;
+}
+
+export function agruparPorCalle(group: TrackerRow[]): GruposDeCalle {
+  const first = group[0];
+  if (!first || group.length < 2) {
+    return { status: "ambiguo", detail: "Muy pocas filas para deducir nada." };
+  }
+
+  const frame = makeFrame(first.start.lat, first.start.lon);
+  const local = group.map((r) => {
+    const a = toLocal(frame, r.start.lat, r.start.lon);
+    const b = toLocal(frame, r.end.lat, r.end.lon);
+    return { row: r, a, b, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+  });
+
+  // Direccion media de las filas, con el signo normalizado para que no se
+  // cancelen entre si las que vienen con las picas al reves en el Excel.
+  let ux = 0;
+  let uy = 0;
+  for (const l of local) {
+    const dx = l.b.x - l.a.x;
+    const dy = l.b.y - l.a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const sign = dy >= 0 ? 1 : -1; // apuntar siempre hacia el norte
+    ux += (dx / len) * sign;
+    uy += (dy / len) * sign;
+  }
+  const norm = Math.hypot(ux, uy) || 1;
+  ux /= norm;
+  uy /= norm;
+
+  const lengths = local.map((l) => Math.hypot(l.b.x - l.a.x, l.b.y - l.a.y));
+  const medianLength = lengths.sort((p, q) => p - q)[Math.floor(lengths.length / 2)] ?? 60;
+
+  const proj = local
+    .map((l) => ({ row: l.row, t: l.mid.x * ux + l.mid.y * uy }))
+    .sort((p, q) => p.t - q.t);
+
+  let gapAt = -1;
+  let gapSize = 0;
+  for (let i = 1; i < proj.length; i++) {
+    const d = proj[i]!.t - proj[i - 1]!.t;
+    if (d > gapSize) { gapSize = d; gapAt = i; }
+  }
+
+  const threshold = medianLength * 0.5;
+  if (gapAt < 1 || gapSize < threshold) {
+    return {
+      status: "un-solo-lado",
+      detail:
+        `Las ${group.length} filas caen todas juntas (la mayor separacion es de ` +
+        `${gapSize.toFixed(0)} m, y para ser dos lados de una calle harian falta mas de ` +
+        `${threshold.toFixed(0)} m).`,
+    };
+  }
+
+  const lower = proj.slice(0, gapAt);
+  const upper = proj.slice(gapAt);
+
+  /**
+   * El chequeo que separa una calle de un escalon.
+   *
+   * Dos filas enfrentadas a los lados de una calle tienen los centros separados
+   * por medio largo de cada una MAS el ancho de la calle. O sea: la separacion
+   * no puede ser menor que el promedio de los dos largos, ni siquiera con la
+   * calle de ancho cero.
+   *
+   * Si el hueco es menor, los dos grupos se solapan a lo largo del eje — estan
+   * uno al costado del otro, no uno enfrente del otro. Es un escalon en el
+   * trazado, o un segundo rango del mismo lado. Partirlos invertiria el conteo
+   * de uno de los dos grupos entero.
+   */
+  const largoDe = (g: typeof proj) => {
+    const ls = g
+      .map((p) => local.find((l) => l.row.id === p.row.id)!)
+      .map((l) => Math.hypot(l.b.x - l.a.x, l.b.y - l.a.y))
+      .sort((a, b) => a - b);
+    return ls[Math.floor(ls.length / 2)] ?? medianLength;
+  };
+  const minimoParaCalle = (largoDe(lower) + largoDe(upper)) / 2;
+
+  if (gapSize < minimoParaCalle * 0.95) {
+    const solape = minimoParaCalle - gapSize;
+    return {
+      status: "escalonado",
+      detail:
+        `Hay dos grupos de ${upper.length} y ${lower.length} filas separados por ` +
+        `${gapSize.toFixed(0)} m, pero eso NO puede ser una calle: dos filas enfrentadas ` +
+        `tendrian los centros a mas de ${minimoParaCalle.toFixed(0)} m aunque la calle midiera ` +
+        `cero. Con ${gapSize.toFixed(0)} m los dos grupos se solapan ${solape.toFixed(0)} m a lo ` +
+        `largo, asi que estan del mismo lado, corridos entre si.`,
+    };
+  }
+
+  return {
+    status: "ok",
+    detail:
+      `Dos grupos de ${lower.length} y ${upper.length} filas separados por ${gapSize.toFixed(0)} m.`,
+    u: { x: ux, y: uy },
+    frame,
+    lower: lower.map((p) => p.row),
+    upper: upper.map((p) => p.row),
+    // La calle cae en el medio del hueco entre los dos grupos.
+    corte: (proj[gapAt - 1]!.t + proj[gapAt]!.t) / 2,
+  };
+}
+
 export function deriveSides(rows: TrackerRow[]): SideDerivation {
   const sides = new Map<string, "north" | "south" | "east" | "west">();
   const blocks: SideDerivation["blocks"] = [];
@@ -650,107 +776,21 @@ export function deriveSides(rows: TrackerRow[]): SideDerivation {
   for (const r of rows) byBlock.set(r.block, [...(byBlock.get(r.block) ?? []), r]);
 
   for (const [block, group] of [...byBlock.entries()].sort()) {
-    const first = group[0];
-    if (!first || group.length < 2) {
-      blocks.push({
-        block, rows: group.length, status: "ambiguo",
-        detail: "Muy pocas filas para deducir nada.",
-      });
+    const g = agruparPorCalle(group);
+    if (g.status !== "ok") {
+      // El agrupador describe lo que ve; la consecuencia la pone quien lo usa.
+      // Para el lado, no poder separar los dos grupos significa no asignarlo —
+      // y decirlo importa: partir mal dos grupos invierte el conteo de uno
+      // entero, que es peor que dejarlo sin lado.
+      const consecuencia =
+        g.status === "escalonado"
+          ? " No les asigno lado: partirlos invertiria el conteo de uno de los dos grupos entero."
+          : " No le asigno lado.";
+      blocks.push({ block, rows: group.length, status: g.status, detail: g.detail + consecuencia });
       continue;
     }
-
-    const frame = makeFrame(first.start.lat, first.start.lon);
-    const local = group.map((r) => {
-      const a = toLocal(frame, r.start.lat, r.start.lon);
-      const b = toLocal(frame, r.end.lat, r.end.lon);
-      return { row: r, a, b, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
-    });
-
-    // Direccion media de las filas, con el signo normalizado para que no se
-    // cancelen entre si las que vienen con las picas al reves en el Excel.
-    let ux = 0;
-    let uy = 0;
-    for (const l of local) {
-      const dx = l.b.x - l.a.x;
-      const dy = l.b.y - l.a.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const sign = dy >= 0 ? 1 : -1; // apuntar siempre hacia el norte
-      ux += (dx / len) * sign;
-      uy += (dy / len) * sign;
-    }
-    const norm = Math.hypot(ux, uy) || 1;
-    ux /= norm;
-    uy /= norm;
-
-    const lengths = local.map((l) => Math.hypot(l.b.x - l.a.x, l.b.y - l.a.y));
-    const medianLength = lengths.sort((p, q) => p - q)[Math.floor(lengths.length / 2)] ?? 60;
-
-    // Proyeccion de cada centro sobre el eje de las filas.
-    const proj = local
-      .map((l) => ({ row: l.row, t: l.mid.x * ux + l.mid.y * uy }))
-      .sort((p, q) => p.t - q.t);
-
-    let gapAt = -1;
-    let gapSize = 0;
-    for (let i = 1; i < proj.length; i++) {
-      const d = proj[i]!.t - proj[i - 1]!.t;
-      if (d > gapSize) { gapSize = d; gapAt = i; }
-    }
-
-    const threshold = medianLength * 0.5;
-    if (gapAt < 1 || gapSize < threshold) {
-      blocks.push({
-        block, rows: group.length, status: "un-solo-lado",
-        detail:
-          `Las ${group.length} filas caen todas juntas (la mayor separacion es de ` +
-          `${gapSize.toFixed(0)} m, y para ser dos lados de una calle harian falta mas de ` +
-          `${threshold.toFixed(0)} m). No le asigno lado.`,
-      });
-      continue;
-    }
-
-    const lower = proj.slice(0, gapAt);
-    const upper = proj.slice(gapAt);
-
-    /**
-     * El chequeo que separa una calle de un escalon.
-     *
-     * Dos filas enfrentadas a los lados de una calle tienen los centros
-     * separados por medio largo de cada una MAS el ancho de la calle. O sea:
-     * la separacion no puede ser menor que el promedio de los dos largos, ni
-     * siquiera con la calle de ancho cero.
-     *
-     * Si el hueco es menor, los dos grupos se solapan a lo largo del eje —
-     * estan uno al costado del otro, no uno enfrente del otro— y no puede
-     * haber una calle en el medio. Es un escalon en el trazado, o un segundo
-     * rango del mismo lado.
-     *
-     * Esto no es un detalle: darle lados opuestos a dos grupos que estan del
-     * mismo lado invierte el conteo de uno de ellos entero.
-     */
-    const largoDe = (g: typeof proj) => {
-      const ls = g
-        .map((p) => local.find((l) => l.row.id === p.row.id)!)
-        .map((l) => Math.hypot(l.b.x - l.a.x, l.b.y - l.a.y))
-        .sort((a, b) => a - b);
-      return ls[Math.floor(ls.length / 2)] ?? medianLength;
-    };
-    const minimoParaCalle = (largoDe(lower) + largoDe(upper)) / 2;
-
-    if (gapSize < minimoParaCalle * 0.95) {
-      const solape = minimoParaCalle - gapSize;
-      blocks.push({
-        block, rows: group.length, status: "escalonado",
-        detail:
-          `Hay dos grupos de ${upper.length} y ${lower.length} filas separados por ` +
-          `${gapSize.toFixed(0)} m, pero eso NO puede ser una calle: dos filas enfrentadas ` +
-          `tendrian los centros a mas de ${minimoParaCalle.toFixed(0)} m aunque la calle midiera ` +
-          `cero. Con ${gapSize.toFixed(0)} m los dos grupos se solapan ${solape.toFixed(0)} m a lo ` +
-          `largo, asi que estan del mismo lado, corridos entre si. No les asigno lado: ` +
-          `partirlos invertiria el conteo de uno de los dos grupos entero.`,
-      });
-      continue;
-    }
+    const lower = g.lower!.map((row) => ({ row }));
+    const upper = g.upper!.map((row) => ({ row }));
 
     // El grupo con proyeccion mayor esta hacia donde apunta `u`, que
     // normalizamos hacia el norte.
@@ -759,14 +799,109 @@ export function deriveSides(rows: TrackerRow[]): SideDerivation {
 
     blocks.push({
       block, rows: group.length, status: "dos-lados",
-      detail:
-        `${upper.length} filas al norte y ${lower.length} al sur, separadas por ` +
-        `${gapSize.toFixed(0)} m entre centros — mas que los ${minimoParaCalle.toFixed(0)} m ` +
-        `que ocuparian las filas solas, asi que hay una calle en el medio.`,
+      detail: `${upper.length} filas al norte y ${lower.length} al sur. ${g.detail}`,
     });
   }
 
   return { sides, blocks };
+}
+
+/**
+ * De que punta se cuenta cada fila, sacado del terreno y no de una etiqueta.
+ *
+ * Esta funcion existe porque el diseño anterior estaba mal, y vale la pena
+ * dejar escrito por que.
+ *
+ * Antes el sentido del conteo salia de una cadena de tres pasos: se le ponia
+ * al tracker una etiqueta cardinal (`side: "north"`), despues se la invertia
+ * (`opposite[side]`), y despues se buscaba el extremo que apuntaba hacia ahi.
+ * Tres lugares donde se puede dar vuelta un signo, para expresar algo que es
+ * directo: cual de las dos puntas de esta fila da a la calle donde estan las
+ * cajas de continua.
+ *
+ * Eso no hay que declararlo ni deducirlo de un nombre. Se mide: se proyectan
+ * las dos puntas sobre el eje de las filas y gana la que cae mas cerca del
+ * corte entre los dos grupos. Es geometria pura, sale igual en los 36 bloques,
+ * y no hay ninguna moneda al aire.
+ *
+ * Lo unico que queda por declarar es una cosa por PARQUE, no por bloque: si las
+ * cajas estan en la calle del medio o en el borde de afuera. Un solo bit, que
+ * un conteo de campo confirma para todo el parque de una vez.
+ */
+export interface OriginDerivation {
+  origins: Map<string, "start" | "end">;
+  blocks: Array<{
+    block: string;
+    rows: number;
+    status: "ok" | "un-solo-lado" | "escalonado" | "ambiguo";
+    detail: string;
+  }>;
+}
+
+export function deriveOriginEnds(
+  rows: TrackerRow[],
+  dcBoxPlacement: "center-road" | "outer-edge" = "center-road",
+): OriginDerivation {
+  const origins = new Map<string, "start" | "end">();
+  const blocks: OriginDerivation["blocks"] = [];
+
+  const byBlock = new Map<string, TrackerRow[]>();
+  for (const r of rows) byBlock.set(r.block, [...(byBlock.get(r.block) ?? []), r]);
+
+  for (const [block, group] of [...byBlock.entries()].sort()) {
+    const g = agruparPorCalle(group);
+    if (g.status !== "ok") {
+      blocks.push({
+        block, rows: group.length, status: g.status,
+        detail:
+          g.detail +
+          " Sin la calle no se puede saber que punta da a las cajas, asi que estas filas quedan " +
+          "con el sentido sin resolver.",
+      });
+      continue;
+    }
+
+    const { u, frame, corte } = g;
+    let asignadas = 0;
+    for (const r of group) {
+      const a = toLocal(frame!, r.start.lat, r.start.lon);
+      const b = toLocal(frame!, r.end.lat, r.end.lon);
+      const ta = a.x * u!.x + a.y * u!.y;
+      const tb = b.x * u!.x + b.y * u!.y;
+
+      // La punta que da a la calle es la que cae mas cerca del corte.
+      const haciaLaCalle: "start" | "end" =
+        Math.abs(ta - corte!) <= Math.abs(tb - corte!) ? "start" : "end";
+
+      // Con las cajas en el borde de afuera, se cuenta desde la otra punta.
+      const elegida: "start" | "end" =
+        dcBoxPlacement === "center-road"
+          ? haciaLaCalle
+          : haciaLaCalle === "start" ? "end" : "start";
+
+      origins.set(r.id, elegida);
+      asignadas++;
+    }
+
+    blocks.push({
+      block, rows: group.length, status: "ok",
+      detail:
+        `${asignadas} filas con el sentido resuelto por geometria. ${g.detail} ` +
+        (dcBoxPlacement === "center-road"
+          ? "Se cuenta desde la punta que da a la calle del medio."
+          : "Se cuenta desde la punta de afuera, que es donde estan las cajas."),
+    });
+  }
+
+  return { origins, blocks };
+}
+
+/** Escribe el sentido deducido en las filas, para que quede a la vista. */
+export function aplicarOrigenes(rows: TrackerRow[], d: OriginDerivation): TrackerRow[] {
+  return rows.map((r) => {
+    const o = d.origins.get(r.id);
+    return o ? { ...r, originEnd: o } : r;
+  });
 }
 
 // ---------------------------------------------------------------------------

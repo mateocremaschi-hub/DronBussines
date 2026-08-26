@@ -44,6 +44,14 @@ export interface DiagnosticoReglas {
   hipotesis: Hipotesis[];
   /** La que explica mas, si le gana claramente a como esta ahora. */
   mejor: Hipotesis | null;
+  /**
+   * Los bloques donde el conteo salio espejado, para poder dar vuelta el lado.
+   *
+   * Es la accion concreta: el lado se deduce de la geometria y las dos
+   * opciones son igual de consistentes, asi que un conteo es lo unico que lo
+   * decide — y cuando lo decide, hay que poder aplicarlo sin editar un JSON.
+   */
+  bloquesParaVoltear: string[];
   /** Cuantos explica la configuracion actual. */
   actual: number;
   notas: string[];
@@ -157,7 +165,7 @@ export function diagnosticoDeReglas(
 
   if (!utiles.length) {
     return {
-      usados: 0, hipotesis: [], mejor: null, actual: 0,
+      usados: 0, hipotesis: [], mejor: null, actual: 0, bloquesParaVoltear: [],
       notas: ["Hacen falta conteos con numero de modulo para poder diagnosticar."],
     };
   }
@@ -176,18 +184,65 @@ export function diagnosticoDeReglas(
 
   // Una hipotesis solo vale si explica MAS que como esta. Empatar no alcanza:
   // cambiar una regla porque explica lo mismo es mover un numero al azar.
-  const mejor = candidata && candidata.aciertos > actual ? candidata : null;
+  let mejor = candidata && candidata.aciertos > actual ? candidata : null;
+
+  /**
+   * Desempate, cuando dar vuelta el origen y dar vuelta los dos strings
+   * explican lo mismo.
+   *
+   * Pasa siempre, y no es un defecto del metodo: las dos producen la misma
+   * numeracion. Lo que las separa no es la aritmetica sino que una se puede ir
+   * a mirar. Contando desde la caja de continua —que es como se cuenta— si la
+   * app arranca del otro lado es porque tiene mal de que lado de la calle esta
+   * el tracker. Eso se comprueba parandose ahi y viendo donde esta la caja.
+   *
+   * La otra hipotesis da el mismo numero por una razon que no se puede
+   * verificar y que se romperia en el proximo tracker.
+   */
+  if (mejor && mejor.id === "invertir-todo") {
+    const origen = otras.find((h) => h.id.startsWith("origen-") && h.aciertos === mejor!.aciertos);
+    if (origen) mejor = origen;
+  }
+
+  const bloquesParaVoltear =
+    mejor && mejor.id.startsWith("origen-")
+      ? [...new Set(utiles.map((c) => c.block).filter(Boolean))]
+      : [];
 
   return {
     usados: utiles.length,
     hipotesis: [...hipotesis].sort((a, b) => b.aciertos - a.aciertos),
     mejor,
     actual,
-    notas: notasDe(actual, utiles.length, mejor),
+    bloquesParaVoltear,
+    notas: notasDe(actual, utiles.length, mejor, bloquesParaVoltear),
   };
 }
 
-function notasDe(actual: number, total: number, mejor: Hipotesis | null): string[] {
+/**
+ * Da vuelta el lado de la calle de todas las filas de un bloque.
+ *
+ * El lado es una propiedad del BLOQUE, no de una fila: las filas de un lado
+ * cuentan desde la calle del medio y las del otro tambien, cada una hacia su
+ * propia caja. Darlo vuelta en una sola fila la dejaria peleada con sus vecinas.
+ */
+export function voltearLadoDelBloque(rows: TrackerRow[], bloque: string): TrackerRow[] {
+  const opuesto: Record<string, TrackerRow["side"]> = {
+    north: "south", south: "north", east: "west", west: "east",
+  };
+  return rows.map((r) =>
+    r.block === bloque && r.side && opuesto[r.side]
+      ? { ...r, side: opuesto[r.side]! }
+      : r,
+  );
+}
+
+function notasDe(
+  actual: number,
+  total: number,
+  mejor: Hipotesis | null,
+  bloques: string[] = [],
+): string[] {
   const notas: string[] = [];
 
   if (actual === total) {
@@ -208,6 +263,25 @@ function notasDe(actual: number, total: number, mejor: Hipotesis | null): string
 
   notas.push(`«${mejor.titulo}» explica ${mejor.aciertos} de ${total}.`);
   notas.push(mejor.comoSeArregla);
+  if (mejor.id.startsWith("origen-")) {
+    notas.push(
+      "Dar vuelta los dos strings da exactamente la misma numeracion y por eso empata en la " +
+      "tabla. Se elige esta porque es la unica que se puede ir a comprobar: la otra acierta por " +
+      "una razon que no se ve en el campo y que se romperia en el proximo tracker.",
+    );
+  }
+
+  if (bloques.length) {
+    notas.push(
+      `Se arregla dando vuelta el lado de la calle del bloque ${bloques.join(", ")}. ` +
+      "Antes de aplicarlo, comprobalo mirando: parate en la punta desde la que contaste y fijate " +
+      "si la caja de continua esta ahi. Si esta, el lado que tiene cargado la app es el opuesto.",
+    );
+    notas.push(
+      "Ojo que el lado es del BLOQUE entero, asi que cambia el conteo de todas sus filas. " +
+      "Despues de aplicarlo conviene contar un modulo en otro tracker del mismo bloque.",
+    );
+  }
 
   if (mejor.aciertos < total) {
     notas.push(
