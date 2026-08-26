@@ -295,6 +295,37 @@ describe("deduccion del offset de pica", () => {
     expect(hint.spreadMm).toBeLessThan(50);
   });
 
+  /**
+   * Edenvale con los cuatro numeros medidos con cinta, que es de donde sale el
+   * −25 que quedo guardado en el perfil.
+   *
+   * Se prueba el desglose y no solo el resultado, porque la pantalla mostraba
+   * el −25 correcto con una explicacion que no daba −25: decia "56 modulos de
+   * 1155 mm" y se olvidaba de la bahia y del hueco que el ultimo modulo no
+   * tiene. Numero bien, cuenta mal es peor que los dos mal — el que la revisa
+   * a mano concluye que el numero esta mal y lo cambia.
+   */
+  it("el -25 de Edenvale sale de sumar el fierro, no de un paso promedio", () => {
+    const rows = Array.from({ length: 9 }, (_, i) =>
+      makeRow(
+        {
+          id: `t${i}`, block: "1", tracker: `${i}`,
+          anchor: { lat: -27.4, lon: 152.7 + i * 0.0001 },
+          azimuthDeg: 180, lengthM: 65.145,
+        },
+        profile,
+      ),
+    );
+    const hint = suggestEndpointOffsetMm(rows, 56, 1135 + 20, {
+      moduleGapMm: 20, stringsPerRow: 2, stringGapMm: 555,
+    })!;
+
+    // 56 paneles + 54 huecos + 1 bahia. Ni 55 huecos ni 2 bahias.
+    expect(hint.extentMm).toBe(56 * 1135 + 54 * 20 + 555);
+    expect(hint.extentMm).toBe(65195);
+    expect(hint.offsetMm).toBeCloseTo(-25, 0);
+  });
+
   it("avisa cuando las filas no miden todas lo mismo", () => {
     const rows = [40, 65, 90].map((len, i) =>
       makeRow(

@@ -621,8 +621,9 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
               />
               <span className="help">
                 El espacio libre donde va el motor, entre un string y el siguiente. No es el
-                huequito entre modulos. En Edenvale son 3713 mm — mas de tres posiciones de modulo
-                vacias, y olvidarlo corre el string lejano esa distancia entera.
+                huequito entre modulos, y hay uno solo por fila. Olvidarlo corre el string lejano
+                esa distancia entera. Medilo con cinta: en Edenvale se habia despejado en 3713 mm
+                —el unico numero que hacia cerrar la cuenta— y la cinta dio 555.
               </span>
               <label className="cinta">
                 <input type="checkbox" checked={!!medidos.bahia}
@@ -654,10 +655,18 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
               />
               {offsetHint && (
                 <span className="help">
-                  Tus filas miden <strong>{offsetHint.medianLengthM.toFixed(2)} m</strong> entre los
-                  dos puntos del archivo. Con {modulesPerRowDraft} modulos de {nominalPitchMm} mm, eso deja{" "}
-                  <strong>{offsetHint.offsetMm.toFixed(0)} mm</strong> por punta
-                  {offsetHint.offsetMm < 0 ? " (negativo: los modulos sobresalen mas alla de la pica)" : ""}.
+                  El fierro suma <strong>{(offsetHint.extentMm / 1000).toFixed(3)} m</strong>:{" "}
+                  {modulesPerRowDraft} modulos de {profileDraft.module.widthMm} mm,{" "}
+                  {modulesPerRowDraft - profileDraft.topology.stringsPerRow} huecos de{" "}
+                  {profileDraft.module.gapMm} mm
+                  {profileDraft.topology.stringsPerRow > 1
+                    ? ` y ${profileDraft.topology.stringsPerRow - 1} bahia${profileDraft.topology.stringsPerRow > 2 ? "s" : ""} de ${profileDraft.topology.stringGapMm ?? 0} mm`
+                    : ""}. Tus filas miden{" "}
+                  <strong>{offsetHint.medianLengthM.toFixed(3)} m</strong> entre los dos puntos del
+                  archivo, asi que sobran{" "}
+                  <strong>{Math.abs(offsetHint.offsetMm * 2).toFixed(0)} mm</strong> repartidos en
+                  las dos puntas: <strong>{offsetHint.offsetMm.toFixed(0)} mm</strong> cada una
+                  {offsetHint.offsetMm < 0 ? " (negativo: los modulos sobresalen mas alla del punto del archivo)" : ""}.
                   {Math.abs(offsetHint.offsetMm - profileDraft.geometry.endpointOffsetMm) > 50 && (
                     <>
                       {" "}

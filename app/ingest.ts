@@ -503,7 +503,7 @@ export function suggestEndpointOffsetMm(
   modulesPerRow: number,
   pitchMm: number,
   opts: { moduleGapMm?: number; stringsPerRow?: number; stringGapMm?: number } = {},
-): { medianLengthM: number; offsetMm: number; spreadMm: number } | null {
+): { medianLengthM: number; offsetMm: number; spreadMm: number; extentMm: number } | null {
   if (!rows.length) return null;
 
   // Medir con el mismo marco que usa el motor, no con radios aproximados a
@@ -530,6 +530,12 @@ export function suggestEndpointOffsetMm(
     medianLengthM: median,
     offsetMm: (median * 1000 - extentMm) / 2,
     spreadMm: (p90 - p10) * 1000,
+    // Se devuelve para poder MOSTRAR la cuenta y no solo el resultado. El
+    // cartel decia "con 56 modulos de 1155 mm eso deja -25 mm", y esa cuenta no
+    // da -25: le faltaban la bahia y el hueco que el ultimo modulo no tiene.
+    // El numero estaba bien y la explicacion no, que es la peor combinacion —
+    // el que la revisa a mano concluye que el numero esta mal.
+    extentMm,
   };
 }
 
