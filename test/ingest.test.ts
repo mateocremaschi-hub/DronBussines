@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import type { TrackerRow } from "@locator";
 import * as XLSX from "xlsx";
 import edenvaleJson from "../farms/edenvale.json" with { type: "json" };
 import {
@@ -445,5 +446,59 @@ describe("colisiones al fusionar dos archivos", () => {
     const m = mergeRows([fila("05-001", -27.4, 152.7)], [fila("06-001", -27.41, 152.71)]);
     expect(m.nuevas).toBe(1);
     expect(m.colisiones).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Volver a cargar el Excel no puede borrar lo que se aplico aparte.
+ *
+ * Un Excel de picas trae geometria y nada mas. El numero de string, la etiqueta
+ * del cliente, la posicion del tracker en su linea electrica y el lado de la
+ * calle entraron por otro lado y despues de bastante trabajo.
+ *
+ * Sin esta regla, corregir un parametro de geometria —que obliga a pasar por el
+ * asistente— borraba los 13.480 strings de Edenvale en silencio.
+ */
+describe("fusionar sin perder lo aplicado aparte", () => {
+  const base = (over: Partial<TrackerRow> = {}): TrackerRow => ({
+    id: "01-001-R1", block: "01", tracker: "01-001", row: "R1",
+    start: { lat: -27.4, lon: 152.7 }, end: { lat: -27.4006, lon: 152.7 },
+    ...over,
+  });
+
+  const conStrings = base({
+    stringNumbers: [5, 6],
+    stringLabels: ["S-1.2.15.1", "S-1.2.15.2"],
+    pos: 2, posTotal: 4, side: "north",
+  });
+
+  it("conserva los strings cuando el archivo nuevo no los trae", () => {
+    const r = mergeRows([conStrings], [base({ start: { lat: -27.4001, lon: 152.7 } })]);
+    const fila = r.rows[0]!;
+    expect(fila.stringNumbers).toEqual([5, 6]);
+    expect(fila.stringLabels).toEqual(["S-1.2.15.1", "S-1.2.15.2"]);
+    expect(fila.pos).toBe(2);
+    expect(fila.posTotal).toBe(4);
+    expect(fila.side).toBe("north");
+  });
+
+  it("pero la geometria si la pisa el archivo nuevo", () => {
+    const r = mergeRows([conStrings], [base({ start: { lat: -27.4001, lon: 152.7 } })]);
+    expect(r.rows[0]!.start.lat).toBeCloseTo(-27.4001, 6);
+    expect(r.repetidas).toBe(1);
+  });
+
+  it("y si el archivo nuevo SI trae strings, manda el archivo", () => {
+    const r = mergeRows([conStrings], [base({ stringNumbers: [9], stringLabels: ["S-9"] })]);
+    expect(r.rows[0]!.stringNumbers).toEqual([9]);
+    expect(r.rows[0]!.stringLabels).toEqual(["S-9"]);
+  });
+
+  it("una fila nueva entra tal cual, sin heredar nada", () => {
+    const r = mergeRows([conStrings], [base({ id: "01-002-R1" })]);
+    expect(r.nuevas).toBe(1);
+    expect(r.rows.find((x) => x.id === "01-002-R1")!.stringNumbers).toBeUndefined();
   });
 });

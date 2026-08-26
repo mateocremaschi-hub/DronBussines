@@ -256,12 +256,18 @@ describe("el borde del cuadro", () => {
   });
 
   it("los que quedan cortados los cuenta aparte en vez de medirlos", () => {
-    // Volando bajo, la fila entera no entra: sus puntas quedan cortadas.
-    const acc = volar(centro.lat, centro.lon, 25);
-    expect(acc.soloEnElBorde()).toBeGreaterThan(0);
+    // Volando bajo, la fila no entra entera y algun modulo cae partido por el
+    // borde. A que altura pasa exactamente depende de la geometria del parque,
+    // asi que se busca en vez de fijar un numero magico que se rompa cada vez
+    // que se corrige una medida de campo.
+    const acc = [18, 20, 22, 25, 28, 32, 36, 40]
+      .map((h) => volar(centro.lat, centro.lon, h))
+      .find((a) => a.soloEnElBorde() > 0 && a.muestras().length > 0);
+    expect(acc, "ninguna altura dejo un modulo partido por el borde").toBeDefined();
+    expect(acc!.soloEnElBorde()).toBeGreaterThan(0);
     // Y ninguno de los medidos puede tener menos pixeles que los que le tocan.
-    const minimo = Math.min(...acc.muestras().map((m) => m.pixeles));
-    const maximo = Math.max(...acc.muestras().map((m) => m.pixeles));
+    const minimo = Math.min(...acc!.muestras().map((m) => m.pixeles));
+    const maximo = Math.max(...acc!.muestras().map((m) => m.pixeles));
     expect(minimo).toBeGreaterThanOrEqual(maximo * 0.5);
   });
 
@@ -276,8 +282,13 @@ describe("el borde del cuadro", () => {
       lat: centro.lat, lon: centro.lon, altitudeAglM: alt,
       gimbalYawDeg: 0, gimbalPitchDeg: -90,
     });
-    acc.agregar({ fileName: "baja.JPG", radio: termicaPareja(45), pose: pose(25) });
+    // Una altura a la que algo queda partido, buscada igual que arriba.
+    const baja = [18, 20, 22, 25, 28, 32, 36, 40].find(
+      (h) => volar(centro.lat, centro.lon, h).soloEnElBorde() > 0,
+    )!;
+    acc.agregar({ fileName: "baja.JPG", radio: termicaPareja(45), pose: pose(baja) });
     const cortadosSolo = acc.soloEnElBorde();
+    expect(cortadosSolo).toBeGreaterThan(0);
     acc.agregar({ fileName: "alta.JPG", radio: termicaPareja(45), pose: pose(200) });
     expect(acc.soloEnElBorde()).toBeLessThan(cortadosSolo);
   });

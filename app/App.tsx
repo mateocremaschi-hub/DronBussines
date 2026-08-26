@@ -13,6 +13,7 @@ import { listFarms, type StoredFarm } from "./storage";
 type View =
   | { name: "farms" }
   | { name: "setup"; existing?: StoredFarm }
+  | { name: "params"; farm: StoredFarm }
   | { name: "locate"; farm: StoredFarm }
   | { name: "inspection"; farm: StoredFarm }
   | { name: "strings"; farm: StoredFarm }
@@ -42,6 +43,7 @@ export function App() {
           farms={farms}
           onNew={() => setView({ name: "setup" })}
           onAddGeometry={(farm) => setView({ name: "setup", existing: farm })}
+          onParams={(farm) => setView({ name: "params", farm })}
           onStrings={(farm) => setView({ name: "strings", farm })}
           onVendor={(farm) => setView({ name: "vendor", farm })}
           onFlight={(farm) => setView({ name: "flight", farm })}
@@ -55,6 +57,14 @@ export function App() {
       {view.name === "setup" && (
         <Setup
           {...(view.existing ? { existing: view.existing } : {})}
+          onCancel={() => setView({ name: "farms" })}
+          onDone={() => { void refresh(); setView({ name: "farms" }); }}
+        />
+      )}
+      {view.name === "params" && (
+        <Setup
+          existing={view.farm}
+          soloParametros
           onCancel={() => setView({ name: "farms" })}
           onDone={() => { void refresh(); setView({ name: "farms" }); }}
         />

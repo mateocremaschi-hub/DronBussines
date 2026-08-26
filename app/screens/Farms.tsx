@@ -8,6 +8,7 @@ interface Props {
   onOpen: (farm: StoredFarm) => void;
   onInspect: (farm: StoredFarm) => void;
   onAddGeometry: (farm: StoredFarm) => void;
+  onParams: (farm: StoredFarm) => void;
   onStrings: (farm: StoredFarm) => void;
   onVendor: (farm: StoredFarm) => void;
   onFlight: (farm: StoredFarm) => void;
@@ -16,7 +17,7 @@ interface Props {
   onChanged: () => void;
 }
 
-export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onStrings, onVendor, onFlight, onAnalysis, onWarranty, onChanged }: Props) {
+export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams, onStrings, onVendor, onFlight, onAnalysis, onWarranty, onChanged }: Props) {
   async function importFarm(file: File) {
     const text = await file.text();
     const farm = JSON.parse(text) as StoredFarm;
@@ -76,6 +77,7 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onString
                   <button className="link" onClick={() => onAnalysis(f)}>Analizar un vuelo</button>
                   <button className="link" onClick={() => onWarranty(f)}>Garantias</button>
                   <button className="link" onClick={() => onInspect(f)}>Inspecciones</button>
+                  <button className="link" onClick={() => onParams(f)}>Ajustar parametros</button>
                   <button className="link" onClick={() => onAddGeometry(f)}>Agregar geometria</button>
                   <button className="link" onClick={() => onStrings(f)}>Lista de strings</button>
                   <button className="link" onClick={() => onVendor(f)}>Auditar un informe</button>

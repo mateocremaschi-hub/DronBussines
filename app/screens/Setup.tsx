@@ -78,10 +78,18 @@ interface SetupProps {
   onCancel: () => void;
   /** Si viene, en vez de crear un parque se le agrega geometria a este. */
   existing?: StoredFarm;
+  /**
+   * Entrar derecho a los parametros, sin pedir el archivo.
+   *
+   * Cada medicion de campo corrige un numero, y obligar a re-cargar el Excel
+   * para tocarlo es fricción al pedo — y encima riesgosa: volver a pasar por la
+   * ingesta es la unica forma de que se pierda algo.
+   */
+  soloParametros?: boolean;
 }
 
-export function Setup({ onDone, onCancel, existing }: SetupProps) {
-  const [step, setStep] = useState(1);
+export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps) {
+  const [step, setStep] = useState(soloParametros ? 3 : 1);
   const [error, setError] = useState<string | null>(null);
 
   const [fileName, setFileName] = useState("");
@@ -167,6 +175,9 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
     [rawBuilt, existing],
   );
 
+  // Sin archivo, el cuadre y el dibujo se calculan sobre las filas ya cargadas.
+  const filasParaCuadre = soloParametros ? existing?.rows ?? [] : rawMerge?.rows ?? [];
+
   // Si el archivo no trae el lado de la calle, se puede sacar de la geometria:
   // las cajas DC estan en la calle del medio, asi que las filas caen en dos
   // grupos separados por ella. Es opcional y se muestra lo que dedujo.
@@ -176,6 +187,7 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
   );
 
   const merge = useMemo(() => {
+    if (soloParametros) return { rows: existing?.rows ?? [], nuevas: 0, repetidas: 0, colisiones: [] };
     if (!rawMerge) return null;
     if (!derivation) return rawMerge;
     return {
@@ -197,14 +209,14 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
   const nominalPitchMm = profileDraft.module.widthMm + profileDraft.module.gapMm;
   const offsetHint = useMemo(
     () =>
-      built?.rows.length
-        ? suggestEndpointOffsetMm(built.rows, modulesPerRowDraft, nominalPitchMm, {
+      (soloParametros ? filasParaCuadre : built?.rows)?.length
+        ? suggestEndpointOffsetMm(soloParametros ? filasParaCuadre : built!.rows, modulesPerRowDraft, nominalPitchMm, {
             moduleGapMm: profileDraft.module.gapMm,
             stringsPerRow: profileDraft.topology.stringsPerRow,
             stringGapMm: profileDraft.topology.stringGapMm ?? 0,
           })
         : null,
-    [built, modulesPerRowDraft, nominalPitchMm, profileDraft],
+    [built, filasParaCuadre, soloParametros, modulesPerRowDraft, nominalPitchMm, profileDraft],
   );
 
   // El cuadre de la fila: sumar el fierro y compararlo con lo que mide.
@@ -245,24 +257,33 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
   );
 
   const compiled: { farm: CompiledFarm } | { err: string } | null = useMemo(() => {
-    if (!built || !built.rows.length || !merge) return null;
+    // Ajustando parametros no hay archivo, asi que no se exige `built`: las
+    // filas son las que el parque ya tiene.
+    if (!merge?.rows.length) return null;
+    if (!soloParametros && !built?.rows.length) return null;
     try {
       return { farm: compileFarm(profile, merge.rows) };
     } catch (e) {
       if (e instanceof ProfileError) return { err: e.issues.join(" · ") };
       return { err: e instanceof Error ? e.message : String(e) };
     }
-  }, [merge, built, profile]);
+  }, [merge, built, profile, soloParametros]);
 
   const farm = compiled && "farm" in compiled ? compiled.farm : null;
 
   async function save() {
-    if (!farm || !built || !merge) return;
+    if (!farm || !merge) return;
+    if (!soloParametros && !built) return;
     const stored: StoredFarm = {
       profile,
       rows: merge.rows,
       savedAt: new Date().toISOString(),
-      source: { fileName, sheetName: sheet?.name ?? "", rowCount: merge.rows.length },
+      // Ajustando parametros no entro ningun archivo: se conserva de donde
+      // vinieron las filas en su momento, en vez de pisarlo con vacio.
+      source: soloParametros
+        ? existing?.source ?? { fileName: "", sheetName: "", rowCount: merge.rows.length }
+        : { fileName, sheetName: sheet?.name ?? "", rowCount: merge.rows.length },
+      ...(existing?.checks ? { checks: existing.checks } : {}),
     };
     await saveFarm(stored);
     onDone();
@@ -756,7 +777,9 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
           </p>
 
           <div className="actions">
-            <button className="ghost" onClick={() => setStep(2)}>Atras</button>
+            <button className="ghost" onClick={() => (soloParametros ? onCancel() : setStep(2))}>
+              {soloParametros ? "Cancelar" : "Atras"}
+            </button>
             <button disabled={!name.trim()} onClick={() => setStep(4)}>Siguiente</button>
           </div>
         </section>
@@ -766,6 +789,12 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
       {step === 4 && (
         <section className="card">
           <h2>4 · Revision</h2>
+          {soloParametros && (
+            <p className="note ok">
+              No se cargo ningun archivo: las {existing?.rows.length ?? 0} filas del parque siguen
+              igual y solo cambian los parametros de geometria.
+            </p>
+          )}
 
           {compiled && "err" in compiled && <p className="alert">{compiled.err}</p>}
 
@@ -827,7 +856,7 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
               <div className="actions">
                 <button className="ghost" onClick={() => setStep(3)}>Atras</button>
                 <button onClick={() => void save()}>
-                  {existing ? "Agregar al parque" : "Guardar el parque"}
+                  {soloParametros ? "Guardar los parametros" : existing ? "Agregar al parque" : "Guardar el parque"}
                 </button>
               </div>
             </>

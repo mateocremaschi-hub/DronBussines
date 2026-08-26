@@ -815,9 +815,44 @@ export function mergeRows(previas: TrackerRow[], entrantes: TrackerRow[]): Merge
   }
 
   return {
-    rows: [...previas.filter((r) => !entrantesPorId.has(r.id)), ...entrantes],
+    rows: [
+      ...previas.filter((r) => !entrantesPorId.has(r.id)),
+      ...entrantes.map((nueva) => conservarLoAplicado(previaPorId.get(nueva.id), nueva)),
+    ],
     nuevas: entrantes.filter((r) => !previaPorId.has(r.id)).length,
     repetidas: entrantes.filter((r) => previaPorId.has(r.id)).length,
     colisiones,
   };
+}
+
+/**
+ * Al reemplazar una fila, no tirar lo que se le habia aplicado aparte.
+ *
+ * Un Excel de picas trae GEOMETRIA y nada mas: dos coordenadas, el bloque, el
+ * tracker. Todo lo demas —el numero de string, la etiqueta del cliente, la
+ * posicion del tracker en su linea electrica, el lado de la calle deducido—
+ * entro por otro lado y despues de bastante trabajo.
+ *
+ * Sin esto, volver a cargar el mismo Excel para corregir un parametro borraba
+ * los 13.480 strings de Edenvale en silencio, y el unico sintoma habria sido
+ * que la app deja de dar el numero de string un tiempo despues. Se pierde algo
+ * que costo una sesion entera y no hay como recuperarlo salvo rehacerlo.
+ *
+ * La regla: la geometria la manda el archivo nuevo; lo aplicado aparte
+ * sobrevive salvo que el archivo traiga ese mismo dato.
+ */
+function conservarLoAplicado(previa: TrackerRow | undefined, nueva: TrackerRow): TrackerRow {
+  if (!previa) return nueva;
+  const out: TrackerRow = { ...nueva };
+  if (!out.stringNumbers?.length && previa.stringNumbers?.length) out.stringNumbers = previa.stringNumbers;
+  if (!out.stringLabels?.length && previa.stringLabels?.length) out.stringLabels = previa.stringLabels;
+  if (out.pos == null && previa.pos != null) out.pos = previa.pos;
+  if (out.posTotal == null && previa.posTotal != null) out.posTotal = previa.posTotal;
+  if (!out.side && previa.side) out.side = previa.side;
+  if (!out.originEnd && previa.originEnd) out.originEnd = previa.originEnd;
+  if (!out.stringInverted && previa.stringInverted) out.stringInverted = previa.stringInverted;
+  if (out.pitchMmOverride == null && previa.pitchMmOverride != null) {
+    out.pitchMmOverride = previa.pitchMmOverride;
+  }
+  return out;
 }

@@ -99,8 +99,8 @@ describe("compilacion", () => {
     expect(farm.buildWarnings).toEqual([]);
   });
 
-  it("resuelve el paso a 1150 mm a partir del modulo y el hueco", () => {
-    expect(farm.rows[0]?.pitchM).toBeCloseTo(1.15, 9);
+  it("resuelve el paso a 1155 mm a partir del modulo y el hueco", () => {
+    expect(farm.rows[0]?.pitchM).toBeCloseTo(1.155, 9);
   });
 
   it("resuelve el extremo de conteo segun el lado de la calle", () => {
@@ -273,16 +273,28 @@ describe("candidatos, confianza y avisos", () => {
     expect(res.warnings.map((w) => w.code)).not.toContain("ambiguous");
   });
 
-  it("la bahia del motor separa los strings, asi que el limite deja de ser ambiguo", () => {
-    // Antes de saber de la bahia, el ultimo modulo de un string y el primero
-    // del otro estaban a 1.15 m y confundirlos era facil. Con 3.7 m de motor
-    // en el medio, la duda desaparece — el hueco fisico desambigua solo.
+  /**
+   * El limite entre los dos strings ES ambiguo, y la app tiene que decirlo.
+   *
+   * Durante un tiempo se creyo que entre string y string habia 3,7 m de bahia
+   * de motor, y con ese hueco el ultimo modulo de uno y el primero del otro
+   * quedaban lejisimos: la duda desaparecia sola. La cinta dijo despues que la
+   * bahia mide 555 mm — medio modulo.
+   *
+   * Asi que la ambiguedad volvio, y es real: parado en el medio de la fila con
+   * el GPS de un celular, la diferencia entre el modulo 28 de un string y el 1
+   * del otro es medio metro. Lo correcto no es que la app elija con confianza,
+   * es que ofrezca los dos.
+   */
+  it("el limite entre strings es ambiguo de verdad, y ofrece los dos", () => {
     const fix = pointAtSlot(rowNorthMid, 28, profile);
     const res = locate({ ...fix, accuracyM: 3 }, farm);
     const rival = res.candidates.find(
       (c) => c.rowId === res.best!.rowId && c.stringNumber !== res.best!.stringNumber,
     );
-    expect(rival === undefined || rival.confidence < 0.6 * res.best!.confidence).toBe(true);
+    expect(rival).toBeDefined();
+    // Con medio modulo de separacion, el rival no puede quedar descartado.
+    expect(rival!.confidence).toBeGreaterThan(0.3 * res.best!.confidence);
   });
 
   it("avisa cuando la coordenada cae dentro de la bahia del motor", () => {
@@ -307,7 +319,7 @@ describe("candidatos, confianza y avisos", () => {
       inversionStrategy: "piercing-chain",
       inverted: true,
     });
-    expect(res.diagnostics.winner!.pitchM).toBeCloseTo(1.15, 9);
+    expect(res.diagnostics.winner!.pitchM).toBeCloseTo(1.155, 9);
     // Residuo por debajo de la milesima de milimetro por modulo: la geometria
     // sintetica cierra exacto contra el paso declarado.
     expect(Math.abs(res.diagnostics.winner!.lengthResidualMmPerModule)).toBeLessThan(1e-3);
