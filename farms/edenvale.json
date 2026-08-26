@@ -23,7 +23,7 @@
       "_nota": "Verificado en campo por Mateo: R1 lleva motor; R2 con motor y R3 esclava; R4 con motor y R5 esclava. La numeracion corre de corrido por bloque, asi que no hay lista de R que valga — lo que se mantiene es que la mas baja del par es la motorizada. En otra farm puede ser al reves: es un dato a declarar, no a deducir."
     },
     "stringGapMm": 555,
-    "_nota": "MEDIDO CON CINTA: 555 mm en la fila motorizada, 540-545 en la esclava. Es UN hueco por fila, entre los dos strings. Aca hubo 3713 mm durante mucho tiempo: nunca se midieron, se despejaron suponiendo que el punto del Excel era la pila de punta."
+    "_nota": "MEDIDO CON CINTA: 555 mm en la fila motorizada, 540-545 en la esclava. Es UN hueco por fila, entre los dos strings. Aca hubo 3713 mm durante mucho tiempo: nunca se midieron, se despejaron suponiendo que el punto del Excel era la pila de punta. La esclava NO se modela aparte, a proposito: 13 mm de diferencia corren cada string 6,5 mm con el modo centrado, y eso solo cambia la respuesta si estas parado sobre la junta entre dos modulos que se estan tocando (6 de 648 puntos medidos). Ver test/bahia-esclava.test.ts."
   },
   "geometry": {
     "source": "survey-stakes",
