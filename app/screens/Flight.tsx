@@ -20,6 +20,7 @@ import {
   OPCIONES_POR_DEFECTO,
   planByBlock,
   planMission,
+  SOLAPES,
   toKml,
   toWaypointCsv,
   type MissionOptions,
@@ -54,6 +55,31 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     ? plan.bloques.find((b) => b.block === bloqueAbierto)?.mission ?? null
     : entero;
   const etiqueta = porBloque && bloqueAbierto ? `bloque ${bloqueAbierto}` : "todo el parque";
+
+  /**
+   * Que cuesta cada configuracion, en horas.
+   *
+   * Sin esto hay que ir tocando numeros de a uno para descubrir que el solape
+   * lateral es el que manda. Con la tabla se ve de una.
+   */
+  const alternativas = useMemo(() => {
+    const casos: Array<[string, Partial<typeof o>]> = [
+      ["Como esta ahora", {}],
+      ["Con RTK: solape 45 %", SOLAPES.conRtk],
+      ["Con RTK + 8 m/s", { ...SOLAPES.conRtk, speedMps: 8 }],
+      ["Con RTK + 8 m/s, a 60 m", { ...SOLAPES.conRtk, speedMps: 8, altitudeM: 60 }],
+    ];
+    return casos.map(([nombre, cambio]) => {
+      const p = planByBlock(stored.rows, stored.profile, { ...opts, ...cambio }, baterias);
+      const m = planMission(stored.rows.slice(0, 1), stored.profile, { ...opts, ...cambio });
+      return {
+        nombre,
+        horas: p.totalMinutos / 60,
+        salidas: p.salidas,
+        gsdCm: m?.stats.gsdCm ?? 0,
+      };
+    });
+  }, [stored.rows, stored.profile, opts.camera, o, baterias]);
 
   if (!farm) {
     return (
@@ -123,6 +149,27 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
           <span>
             Volar a lo largo de las filas
             <em>Cruzarlas obliga a muchos mas giros, y cada giro cuesta bateria.</em>
+          </span>
+        </label>
+
+        <label className="check">
+          <input
+            type="checkbox" checked={o.rtk}
+            onChange={(e) => setO((p) => ({
+              ...p, rtk: e.target.checked,
+              ...(e.target.checked ? SOLAPES.conRtk : SOLAPES.sinRtk),
+            }))}
+          />
+          <span>
+            El dron tiene RTK
+            <em>
+              Es el interruptor que mas cambia las horas, y no por la precision sino por el SOLAPE.
+              El 70 % que viene por defecto es el que pide la fotogrametria para coser las fotos en
+              un mosaico — algo que esta app no hace: proyecta cada foto por separado sobre el
+              parque, que ya esta medido. El solape solo tiene que alcanzar para que no queden
+              huecos cuando el dron se corre de la linea. Con RTK se corre centimetros y 45 % sobra;
+              sin RTK se puede ir varios metros y hace falta el 70 %.
+            </em>
           </span>
         </label>
       </section>
@@ -204,6 +251,27 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         {porBloque && !bloqueAbierto && (
           <p className="note">Elegi un bloque de la tabla para ver su ruta y exportarla.</p>
         )}
+
+        <h3>Que cuesta cada configuracion</h3>
+        <p className="help">
+          Las horas las manda el solape lateral, no la altura ni la velocidad. Cada pasada de menos
+          es un kilometro de menos.
+        </p>
+        <div className="tablewrap">
+          <table>
+            <thead><tr><th>Configuracion</th><th>cm/px</th><th>Horas</th><th>Salidas</th></tr></thead>
+            <tbody>
+              {alternativas.map((a, i) => (
+                <tr key={a.nombre} className={i === 0 ? "top" : ""}>
+                  <td>{a.nombre}</td>
+                  <td>{a.gsdCm.toFixed(1)}</td>
+                  <td><strong>{a.horas.toFixed(1)} h</strong></td>
+                  <td>{a.salidas}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       {s && mission && (

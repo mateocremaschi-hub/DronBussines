@@ -109,15 +109,41 @@ export interface MissionOptions {
   marginM: number;
   /** Volar a lo largo de las filas. Cruzarlas obliga a mas giros. */
   alongRows: boolean;
+  /**
+   * Si el dron sigue la linea con precision de centimetros.
+   *
+   * No es un dato de lujo: es lo que decide cuanto solape hace falta, y el
+   * solape decide cuantas horas dura el trabajo. Sin RTK el dron se puede ir
+   * varios metros de la linea, y el solape tiene que absorber esa deriva.
+   */
+  rtk: boolean;
 }
 
+/**
+ * Solapes segun lo que el dron pueda seguir la linea.
+ *
+ * OJO con el numero de arriba: 70 % de solape lateral es lo que pide la
+ * FOTOGRAMETRIA para poder coser las fotos en un mosaico. Esta app no cose
+ * nada — proyecta cada foto por separado sobre el parque, que ya esta
+ * medido — asi que ese solape no hace falta. Solo tiene que alcanzar para
+ * que no queden huecos cuando el dron se corre de la linea.
+ *
+ * Con RTK se corre centimetros y 45 % sobra. Sin RTK se puede ir 2 a 5 metros,
+ * y sobre una franja de 30 m eso es un 15 % para cada lado: hace falta el 70 %.
+ * La diferencia, en un parque grande, es la mitad de los dias de trabajo.
+ */
+export const SOLAPES = {
+  conRtk: { sideOverlap: 0.45, frontOverlap: 0.5 },
+  sinRtk: { sideOverlap: 0.7, frontOverlap: 0.7 },
+};
+
 export const OPCIONES_POR_DEFECTO: Omit<MissionOptions, "camera"> = {
-  altitudeM: 40,
-  frontOverlap: 0.8,
-  sideOverlap: 0.7,
+  altitudeM: 50,
+  ...SOLAPES.sinRtk,
   speedMps: 5,
   marginM: 10,
   alongRows: true,
+  rtk: false,
 };
 
 export interface MissionLine {
@@ -242,15 +268,19 @@ export function planMission(
       `${(opts.altitudeM * GSD_MAXIMO_CM / gsdCm).toFixed(0)} m o menos.`,
     );
   }
-  if (opts.sideOverlap < 0.6) {
+  // Sin RTK el dron se va metros de la linea, y el solape tiene que absorberlo.
+  if (!opts.rtk && opts.sideOverlap < 0.6) {
     avisos.push(
-      `Con ${Math.round(opts.sideOverlap * 100)} % de solape lateral las lineas quedan justas. Si el ` +
-      `viento corre el dron, quedan huecos sin cubrir — y un hueco no se nota hasta que buscás un ` +
-      `panel y no esta.`,
+      `Con ${Math.round(opts.sideOverlap * 100)} % de solape lateral y sin RTK las lineas quedan ` +
+      `justas: el dron se puede ir varios metros y dejar huecos sin cubrir. Un hueco no se nota ` +
+      `hasta que buscás un panel y no hay foto.`,
     );
   }
-  if (opts.frontOverlap < 0.7) {
-    avisos.push(`El solape frontal de ${Math.round(opts.frontOverlap * 100)} % es bajo para termica.`);
+  if (opts.rtk && opts.sideOverlap < 0.3) {
+    avisos.push(
+      `${Math.round(opts.sideOverlap * 100)} % de solape es poco incluso con RTK: el terreno ` +
+      `desparejo cambia la altura y con ella el ancho de la franja.`,
+    );
   }
   if (minutos > 20) {
     avisos.push(

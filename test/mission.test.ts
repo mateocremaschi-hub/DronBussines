@@ -16,6 +16,7 @@ import {
   OPCIONES_POR_DEFECTO,
   planByBlock,
   planMission,
+  SOLAPES,
   toKml,
   toWaypointCsv,
   type MissionOptions,
@@ -266,5 +267,59 @@ describe("plan por bloque", () => {
     const p = planByBlock([], profile, opts());
     expect(p.bloques).toEqual([]);
     expect(p.totalMinutos).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// El solape es el que manda las horas
+//
+// El 70 % que se usaba por defecto es el que pide la FOTOGRAMETRIA para coser
+// las fotos en un mosaico. Esta app no cose nada: proyecta cada foto por
+// separado sobre el parque, que ya esta medido. Ese solape de mas se traducia
+// en el doble de dias de trabajo sin ninguna ganancia.
+// ---------------------------------------------------------------------------
+
+describe("cuanto cuesta el solape", () => {
+  it("bajar el solape lateral casi parte el vuelo al medio", () => {
+    const conservador = planMission(bloque(40), profile, opts(SOLAPES.sinRtk))!;
+    const conRtk = planMission(bloque(40), profile, opts(SOLAPES.conRtk))!;
+    expect(conRtk.stats.lineas).toBeLessThan(conservador.stats.lineas * 0.65);
+    expect(conRtk.stats.minutos).toBeLessThan(conservador.stats.minutos * 0.7);
+  });
+
+  it("y no cambia el detalle: el mismo cm por pixel", () => {
+    const a = planMission(bloque(10), profile, opts(SOLAPES.sinRtk))!;
+    const b = planMission(bloque(10), profile, opts(SOLAPES.conRtk))!;
+    expect(b.stats.gsdCm).toBeCloseTo(a.stats.gsdCm, 6);
+  });
+
+  // Con menos solape hay que seguir cubriendo todo. Es lo unico innegociable.
+  it("con el solape bajo se sigue cubriendo el parque entero", () => {
+    const m = planMission(bloque(30), profile, opts({ ...SOLAPES.conRtk, rtk: true }))!;
+    const frame = makeFrame(-27.4, 152.7);
+    const rows = bloque(30);
+    const mitad = m.stats.huellaAnchoM / 2;
+    const cubierto = rows.flatMap((r) => [
+      toLocal(frame, r.start.lat, r.start.lon), toLocal(frame, r.end.lat, r.end.lon),
+    ]).every((p) => m.lines.some((l) => {
+      const A = toLocal(frame, l.a.lat, l.a.lon), B = toLocal(frame, l.b.lat, l.b.lon);
+      const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1;
+      const t = ((p.x - A.x) * dx + (p.y - A.y) * dy) / (len * len);
+      const perp = Math.abs((p.x - A.x) * (-dy / len) + (p.y - A.y) * (dx / len));
+      return t >= -0.01 && t <= 1.01 && perp <= mitad;
+    }));
+    expect(cubierto).toBe(true);
+  });
+
+  it("sin RTK avisa que ese solape deja huecos; con RTK no", () => {
+    const sin = planMission(bloque(6), profile, opts({ ...SOLAPES.conRtk, rtk: false }))!;
+    expect(sin.stats.avisos.join(" ")).toMatch(/sin RTK/);
+    const con = planMission(bloque(6), profile, opts({ ...SOLAPES.conRtk, rtk: true }))!;
+    expect(con.stats.avisos.join(" ")).not.toMatch(/huecos/);
+  });
+
+  it("ni siquiera con RTK acepta un solape absurdo", () => {
+    const m = planMission(bloque(6), profile, opts({ sideOverlap: 0.15, rtk: true }))!;
+    expect(m.stats.avisos.join(" ")).toMatch(/incluso con RTK/);
   });
 });
