@@ -106,8 +106,15 @@ export async function readPhoto(file: File): Promise<PhotoRead> {
     ])) ?? {}) as Record<string, unknown>;
 
     // Los DJI escriben el angulo del gimbal y la altura en el XMP, no en EXIF.
+    //
+    // `chunked: false` no es un detalle: por defecto se lee solo el arranque
+    // del archivo, y en una foto termica el XMP puede quedar detras de los
+    // 650 kB de datos de temperatura. Sin esto el gimbal y la altura se
+    // pierden en silencio y la proyeccion queda sin altura.
     try {
-      const xmp = (await exifr.parse(file, { xmp: true, tiff: false, exif: false, gps: false })) as
+      // `chunked` no esta en los tipos de la libreria pero si en su API.
+      const opciones = { xmp: true, tiff: false, exif: false, gps: false, chunked: false };
+      const xmp = (await exifr.parse(file, opciones as Parameters<typeof exifr.parse>[1])) as
         | Record<string, unknown>
         | undefined;
       if (xmp) meta = { ...xmp, ...meta };

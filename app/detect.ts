@@ -52,14 +52,94 @@ export interface Muestra {
  */
 const FRACCION_UTIL = 0.6;
 
+export interface OpcionesMuestreo {
+  camera: Camera;
+  moduloAnchoM: number;
+  moduloLargoM: number;
+  ajuste?: Ajuste;
+}
+
 /**
- * Toma la temperatura de cada modulo que caiga en alguna foto.
+ * Junta las muestras de un vuelo, foto por foto.
+ *
+ * Se procesa de a una y se descarta la matriz de temperaturas apenas se midio,
+ * porque no entran todas juntas: 500 termicas de 640x512 en punto flotante son
+ * 650 MB. Lo que queda es una muestra por modulo, que son unos pocos bytes.
  *
  * Cuando un modulo sale en varias fotos —con solape siempre pasa— se queda con
  * la que lo tiene mas cerca del centro del cuadro. No es un capricho: en el
  * borde la camara lo ve de costado, y una superficie de vidrio vista de
  * costado refleja el cielo y lee mas frio de lo que esta.
  */
+export class Acumulador {
+  private mejor = new Map<string, Muestra>();
+
+  constructor(
+    private farm: CompiledFarm,
+    private frame: LocalFrame,
+    private opts: OpcionesMuestreo,
+  ) {}
+
+  /** Mide los modulos que caen en esta foto. Devuelve cuantos. */
+  agregar(foto: FotoTermica): number {
+    const { camera, moduloAnchoM, moduloLargoM } = this.opts;
+    const huella = aplicarAjuste(
+      footprint(this.frame, foto.pose, camera),
+      this.opts.ajuste ?? SIN_AJUSTE,
+    );
+
+    // Solo las filas que tocan la huella: sin esto se recorre el parque entero
+    // por cada foto, y son decenas de miles de modulos.
+    const r = Math.max(huella.anchoM, huella.altoM) / 2;
+    const cerca = this.farm.rows.filter(
+      (row) =>
+        row.bbox.minX - r <= huella.centre.x && huella.centre.x <= row.bbox.maxX + r &&
+        row.bbox.minY - r <= huella.centre.y && huella.centre.y <= row.bbox.maxY + r,
+    );
+
+    const escalaX = foto.radio.width / camera.imageW;
+    const escalaY = foto.radio.height / camera.imageH;
+    const mPorPx = huella.anchoM / camera.imageW;
+    let medidos = 0;
+
+    for (const row of cerca) {
+      for (const m of modulesOfRow(row, this.farm)) {
+        const px = pixelOf(huella, { x: m.x, y: m.y }, camera);
+        if (!px) continue;
+
+        const d = Math.hypot(m.x - huella.centre.x, m.y - huella.centre.y);
+        const clave = `${m.rowId}#${m.positionInRow}`;
+        const previo = this.mejor.get(clave);
+        if (previo && previo.distanciaAlCentroM <= d) continue;
+
+        const hit = medianaEnCaja(
+          foto.radio,
+          px.px * escalaX,
+          px.py * escalaY,
+          ((moduloAnchoM * FRACCION_UTIL) / mPorPx) * escalaX,
+          ((moduloLargoM * FRACCION_UTIL) / mPorPx) * escalaY,
+        );
+        if (!hit || hit.pixeles < 1) continue;
+
+        medidos++;
+        this.mejor.set(clave, {
+          modulo: m,
+          celsius: hit.celsius,
+          pixeles: hit.pixeles,
+          fileName: foto.fileName,
+          distanciaAlCentroM: d,
+        });
+      }
+    }
+    return medidos;
+  }
+
+  muestras(): Muestra[] {
+    return [...this.mejor.values()];
+  }
+}
+
+/** Version de una sola pasada, para cuando el lote entra en memoria. */
 export function muestrear(
   farm: CompiledFarm,
   frame: LocalFrame,
@@ -69,49 +149,9 @@ export function muestrear(
   moduloLargoM: number,
   ajuste: Ajuste = SIN_AJUSTE,
 ): Muestra[] {
-  const huellas = fotos.map((f) => ({
-    foto: f,
-    huella: aplicarAjuste(footprint(frame, f.pose, camera), ajuste),
-  }));
-
-  const mejor = new Map<string, Muestra>();
-
-  for (const row of farm.rows) {
-    for (const m of modulesOfRow(row, farm)) {
-      for (const { foto, huella } of huellas) {
-        const px = pixelOf(huella, { x: m.x, y: m.y }, camera);
-        if (!px) continue;
-
-        const escalaX = foto.radio.width / camera.imageW;
-        const escalaY = foto.radio.height / camera.imageH;
-        const mPorPx = huella.anchoM / camera.imageW;
-
-        const hit = medianaEnCaja(
-          foto.radio,
-          px.px * escalaX,
-          px.py * escalaY,
-          (moduloAnchoM * FRACCION_UTIL) / mPorPx * escalaX,
-          (moduloLargoM * FRACCION_UTIL) / mPorPx * escalaY,
-        );
-        if (!hit || hit.pixeles < 1) continue;
-
-        const d = Math.hypot(m.x - huella.centre.x, m.y - huella.centre.y);
-        const clave = `${m.rowId}#${m.positionInRow}`;
-        const previo = mejor.get(clave);
-        if (previo && previo.distanciaAlCentroM <= d) continue;
-
-        mejor.set(clave, {
-          modulo: m,
-          celsius: hit.celsius,
-          pixeles: hit.pixeles,
-          fileName: foto.fileName,
-          distanciaAlCentroM: d,
-        });
-      }
-    }
-  }
-
-  return [...mejor.values()];
+  const acc = new Acumulador(farm, frame, { camera, moduloAnchoM, moduloLargoM, ajuste });
+  for (const f of fotos) acc.agregar(f);
+  return acc.muestras();
 }
 
 // ---------------------------------------------------------------------------

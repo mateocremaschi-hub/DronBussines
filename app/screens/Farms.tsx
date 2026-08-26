@@ -11,10 +11,11 @@ interface Props {
   onStrings: (farm: StoredFarm) => void;
   onVendor: (farm: StoredFarm) => void;
   onFlight: (farm: StoredFarm) => void;
+  onAnalysis: (farm: StoredFarm) => void;
   onChanged: () => void;
 }
 
-export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onStrings, onVendor, onFlight, onChanged }: Props) {
+export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onStrings, onVendor, onFlight, onAnalysis, onChanged }: Props) {
   async function importFarm(file: File) {
     const text = await file.text();
     const farm = JSON.parse(text) as StoredFarm;
@@ -71,6 +72,7 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onString
                 </button>
                 <div className="farm-actions">
                   <button className="link" onClick={() => onFlight(f)}>Planificar vuelo</button>
+                  <button className="link" onClick={() => onAnalysis(f)}>Analizar un vuelo</button>
                   <button className="link" onClick={() => onInspect(f)}>Inspecciones</button>
                   <button className="link" onClick={() => onAddGeometry(f)}>Agregar geometria</button>
                   <button className="link" onClick={() => onStrings(f)}>Lista de strings</button>
