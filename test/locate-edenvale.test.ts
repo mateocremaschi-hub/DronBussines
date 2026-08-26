@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import profileJson from "../farms/edenvale.json" with { type: "json" };
 import { compileFarm } from "../src/profile/compile.js";
 import { locate } from "../src/locate.js";
+import { makeFrame, toGeo } from "../src/geo/frame.js";
 import type { FarmProfile } from "../src/types.js";
 import { makeRow, pointAtSlot } from "./helpers/synthetic.js";
 
@@ -378,5 +379,68 @@ describe("la cantidad de vecinos sale de la precision, no de un numero fijo", ()
     expect(w).toBeDefined();
     expect(w!.message).toMatch(/entre las posiciones \d+ y \d+/);
     expect(w!.message).toMatch(/tracker y la fila si son confiables/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Cuando no hay nada cerca, decir CUANTO de lejos.
+ *
+ * "No hay ninguna fila a menos de 30 m" es un callejon sin salida parado en el
+ * campo con el celular en la mano. Faltar 30 metros y estar a 8000 km son dos
+ * problemas distintos —uno es el GPS, el otro es la zona UTM al importar— y se
+ * arreglan de formas opuestas.
+ */
+describe("cuando la coordenada no cae en ninguna fila", () => {
+  // Un parque de una sola fila: con el parque entero, correrse cien metros
+  // perpendicular cae sobre otra fila —estan a 5,46 m— y no se puede probar
+  // el caso de "lejos de todo".
+  const sola = compileFarm(
+    profile,
+    [makeRow(
+      { id: "09-001-R1", block: "09", tracker: "09-001", row: "R1",
+        anchor: { lat: -26.5, lon: 150.1 }, azimuthDeg: 180, side: "north", pos: 1, posTotal: 1 },
+      profile,
+    )],
+  );
+
+  const lejos = (metros: number) => {
+    const r = sola.rows[0]!;
+    const f = makeFrame(sola.origin.lat, sola.origin.lon);
+    const mid = { x: (r.a.x + r.b.x) / 2, y: (r.a.y + r.b.y) / 2 };
+    // Perpendicular al eje: es la unica forma de alejarse sin quedar sobre la
+    // prolongacion del propio segmento.
+    return toGeo(f, mid.x - r.uy * metros, mid.y + r.ux * metros);
+  };
+
+  it("dice a que distancia esta la fila mas cercana", () => {
+    const res = locate({ ...lejos(120), accuracyM: 3 }, sola);
+    expect(res.best).toBeNull();
+    expect(res.diagnostics.nearestRow).toBeDefined();
+    expect(res.diagnostics.nearestRow!.distanceM).toBeCloseTo(120, -1);
+  });
+
+  it("a pocos metros, apunta al bloque sin importar o al GPS", () => {
+    const msg = locate({ ...lejos(120), accuracyM: 3 }, sola).warnings
+      .find((w) => w.code === "no-row-within-range")!.message;
+    expect(msg).toMatch(/Estas en el parque pero fuera de toda fila/);
+    expect(msg).toMatch(/no se haya importado|GPS/);
+  });
+
+  it("a kilometros, dice que esa coordenada no es de este parque", () => {
+    const msg = locate({ ...lejos(4000), accuracyM: 3 }, sola).warnings
+      .find((w) => w.code === "no-row-within-range")!.message;
+    expect(msg).toMatch(/4\.0 km/);
+    expect(msg).toMatch(/no es de este parque/);
+  });
+
+  // El sintoma clasico de importar con la zona UTM equivocada.
+  it("del otro lado del mundo, apunta a la conversion y no al GPS", () => {
+    const msg = locate({ lat: 51.5, lon: -0.12, accuracyM: 3 }, sola).warnings
+      .find((w) => w.code === "no-row-within-range")!.message;
+    expect(msg).toMatch(/del otro lado del mundo/);
+    expect(msg).toMatch(/zona UTM o el hemisferio/);
+    expect(msg).not.toMatch(/Prob[aá] de nuevo/);
   });
 });

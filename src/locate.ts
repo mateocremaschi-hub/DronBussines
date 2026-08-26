@@ -28,6 +28,49 @@ import type {
 /** Tope de vecinos por fila: con GPS muy malo, la lista deja de ser util. */
 const MAX_NEIGHBOURHOOD = 12;
 
+/** La fila mas cercana de todo el parque, sin filtrar por distancia. */
+function filaMasCercana(
+  p: { x: number; y: number },
+  farm: CompiledFarm,
+): { rowId: string; distanceM: number } | null {
+  let mejor: { rowId: string; distanceM: number } | null = null;
+  for (const row of farm.rows) {
+    const proj = projectOnSegment(p, row.a, row.b);
+    const along = Math.min(Math.max(proj.alongM, 0), row.lengthM);
+    const d = Math.hypot(p.x - (row.a.x + row.ux * along), p.y - (row.a.y + row.uy * along));
+    if (!mejor || d < mejor.distanceM) mejor = { rowId: row.source.id, distanceM: d };
+  }
+  return mejor;
+}
+
+/**
+ * Que significa esa distancia, en castellano.
+ *
+ * Un numero suelto no ayuda parado en el campo con el celular en la mano. Cada
+ * orden de magnitud es un problema distinto y se arregla de una forma distinta.
+ */
+function diagnosticoDeDistancia(m: { rowId: string; distanceM: number }): string {
+  const d = m.distanceM;
+  if (d < 200) {
+    return (
+      `La fila mas cercana ("${m.rowId}") esta a ${d.toFixed(0)} m. Estas en el parque pero ` +
+      `fuera de toda fila: puede ser que ese bloque no se haya importado todavia, o que el GPS ` +
+      `haya tomado mal la posicion. Probá de nuevo parado quieto unos segundos.`
+    );
+  }
+  if (d < 50000) {
+    return (
+      `La fila mas cercana ("${m.rowId}") esta a ${(d / 1000).toFixed(1)} km. Esa coordenada no ` +
+      `es de este parque — o todavia no estas en el, o el parque cargado es otro.`
+    );
+  }
+  return (
+    `La fila mas cercana ("${m.rowId}") esta a ${Math.round(d / 1000)} km, o sea del otro lado ` +
+    `del mundo. Eso no es un error de GPS: las coordenadas del parque estan mal convertidas. ` +
+    `Casi siempre es la zona UTM o el hemisferio equivocados al importar el archivo.`
+  );
+}
+
 export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
   const frame = makeFrame(farm.origin.lat, farm.origin.lon);
   const p = toLocal(frame, fix.lat, fix.lon);
@@ -72,11 +115,19 @@ export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
   // lejano como si fuera confiable. Una coordenada de un bloque que nunca se
   // importo tiene que decir "no tengo datos aca", no senalar el bloque vecino.
   if (near.length === 0) {
+    // A que distancia esta la fila mas cercana de TODO el parque. El filtro por
+    // caja de arriba descarta las lejanas sin medirlas, asi que sin esto el
+    // mensaje dice "no hay nada cerca" y no se puede saber si faltan 30 metros
+    // o 8000 kilometros — que son dos problemas completamente distintos y se
+    // arreglan de formas opuestas.
+    const masCerca = filaMasCercana(p, farm);
+    if (masCerca) diagnostics.nearestRow = masCerca;
+
     warnings.push({
       code: "no-row-within-range",
       message:
         `No hay ninguna fila de trackers a menos de ${farm.maxDistanceM} m de esa coordenada. ` +
-        `Puede que el bloque no este importado todavia, o que la coordenada este mal.`,
+        (masCerca ? diagnosticoDeDistancia(masCerca) : "El parque no tiene ninguna fila cargada."),
     });
     return { best: null, candidates: [], diagnostics, warnings };
   }

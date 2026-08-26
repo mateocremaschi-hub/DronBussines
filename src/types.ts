@@ -275,6 +275,13 @@ export interface Diagnostics {
   local: { x: number; y: number };
   /** Filas evaluadas tras el descarte por caja envolvente. */
   rowsConsidered: number;
+  /**
+   * La fila mas cercana de todo el parque, cuando no hubo ninguna en rango.
+   *
+   * Solo se calcula cuando hace falta: es lo que permite distinguir "te faltan
+   * 30 metros" de "estas del otro lado del mundo porque la zona UTM esta mal".
+   */
+  nearestRow?: { rowId: string; distanceM: number };
   /** Detalle del calculo sobre la fila ganadora. */
   winner?: {
     rowId: string;
