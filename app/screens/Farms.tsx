@@ -23,6 +23,10 @@ interface Props {
 export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams, onStrings, onVendor, onFlight, onAnalysis, onWarranty, onChanged }: Props) {
   const [problema, setProblema] = useState<string | null>(null);
   const [plano, setPlano] = useState<{ farm: string; notas: string[]; avisos: string[] } | null>(null);
+  // El problema del plano va aparte del de importar un parque: son dos botones
+  // en dos puntas de la pantalla, y el error aparecia abajo de todo, lejos del
+  // que lo habia apretado.
+  const [problemaPlano, setProblemaPlano] = useState<string[] | null>(null);
   const [leyendo, setLeyendo] = useState<string | null>(null);
 
   /**
@@ -38,7 +42,7 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
    * pregunta.
    */
   async function cargarPlano(farm: StoredFarm, files: File[]) {
-    setProblema(null); setPlano(null);
+    setProblema(null); setPlano(null); setProblemaPlano(null);
     const pdfs = files.filter((f) => f.name.toLowerCase().endsWith(".pdf"));
     const avisos: string[] = [];
     const previas: string[] = [];
@@ -67,13 +71,13 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
         leido = leerPlano(await f.text());
       }
     } catch (e) {
-      setProblema(`No pude leer el plano: ${e instanceof Error ? e.message : String(e)}`);
+      setProblemaPlano([`No pude leer el plano: ${e instanceof Error ? e.message : String(e)}`, ...avisos]);
       return;
     } finally {
       setLeyendo(null);
     }
 
-    if ("error" in leido) { setProblema([leido.error, ...avisos].join(" ")); return; }
+    if ("error" in leido) { setProblemaPlano([leido.error, ...avisos]); return; }
 
     const a = aplicarPlano(farm.rows, leido.plano);
     const sentido = resolverSentidoPorGeometria({ profile: farm.profile, rows: a.rows });
@@ -210,6 +214,13 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
             Se abren en este dispositivo, no se suben a ningun lado. Con los 36 planos de un
             parque tarda un rato largo — dejalo terminar.
           </p>
+        </section>
+      )}
+
+      {problemaPlano && (
+        <section className="card">
+          <h2>El plano no entro</h2>
+          {problemaPlano.map((n, i) => (<p key={i} className="alert">{n}</p>))}
         </section>
       )}
 

@@ -9,9 +9,18 @@
  * —aunque lo sea, el worker pesa mas que el resto de la app junta—: es que asi
  * el modulo se puede importar en un test sin que Node intente resolver el
  * worker, y sobre todo que el que nunca carga un plano nunca lo baja.
+ *
+ * Y se usa la version `legacy`, que no es la vieja: es la que trae adentro los
+ * rellenos de las funciones de JavaScript que los navegadores de hace un par de
+ * anios todavia no tienen. La compilacion normal llama a `Iterator.prototype`
+ * de una, y en un Safari que no lo tiene el modulo se muere ANTES de abrir el
+ * primer archivo, con un "Can't find variable: Iterator" que no se parece en
+ * nada al problema. Pasa en la Mac de todos los dias, no en un caso raro.
  */
 
 import type { Etiqueta } from "./planpdf";
+
+type Pdfjs = typeof import("pdfjs-dist");
 
 export interface LecturaDePdfs {
   etiquetas: Etiqueta[];
@@ -19,16 +28,18 @@ export interface LecturaDePdfs {
   avisos: string[];
 }
 
-let pdfjs: typeof import("pdfjs-dist") | null = null;
+let pdfjs: Pdfjs | null = null;
 
-async function motor(): Promise<typeof import("pdfjs-dist")> {
+async function motor(): Promise<Pdfjs> {
   if (pdfjs) return pdfjs;
-  const mod = await import("pdfjs-dist");
+  const mod = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as Pdfjs;
   // El worker se sirve desde el mismo origen. Con la URL construida asi, Vite
   // lo emite como un archivo mas del build, con hash, y entonces el service
-  // worker lo precachea junto con todo lo demas.
+  // worker lo precachea junto con todo lo demas. Tambien el legacy: un worker
+  // moderno con un pdf.js legacy falla igual, y del lado del worker el error ni
+  // siquiera llega a la pantalla.
   mod.GlobalWorkerOptions.workerSrc = new URL(
-    "pdfjs-dist/build/pdf.worker.min.mjs",
+    "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
     import.meta.url,
   ).toString();
   pdfjs = mod;
@@ -92,7 +103,28 @@ export async function etiquetasDePdfs(
   alAvanzar?: (hecho: number, total: number, archivo: string) => void,
 ): Promise<LecturaDePdfs> {
   const etiquetas: Etiqueta[] = [];
-  const avisos: string[] = [];
+
+  // Primero se prende el motor, una sola vez y aparte.
+  //
+  // Si el que no puede es el navegador, falla en TODOS los archivos por el
+  // mismo motivo, y repetir treinta y seis veces el mismo error de JavaScript
+  // esconde el unico dato que sirve: que no es culpa de los PDF.
+  try {
+    await motor();
+  } catch (e) {
+    return {
+      etiquetas: [],
+      avisos: [
+        "Este navegador no puede abrir PDF: se cayo al cargar el lector, antes de tocar un solo " +
+        "archivo. No es culpa de los planos. Probá con Chrome, o actualizá Safari desde " +
+        `Preferencias del Sistema. (${e instanceof Error ? e.message : String(e)})`,
+      ],
+    };
+  }
+
+  // Los fallos se juntan por motivo: treinta y seis lineas iguales no dicen mas
+  // que una, y tapan a la que es distinta.
+  const fallas = new Map<string, string[]>();
 
   for (let i = 0; i < files.length; i++) {
     const f = files[i]!;
@@ -100,10 +132,19 @@ export async function etiquetasDePdfs(
     try {
       etiquetas.push(...(await etiquetasDe(f)));
     } catch (e) {
-      avisos.push(`${f.name}: no pude abrirlo (${e instanceof Error ? e.message : String(e)}).`);
+      const motivo = e instanceof Error ? e.message : String(e);
+      const antes = fallas.get(motivo);
+      if (antes) antes.push(f.name); else fallas.set(motivo, [f.name]);
     }
   }
   alAvanzar?.(files.length, files.length, "");
+
+  const avisos = [...fallas].map(([motivo, nombres]) =>
+    nombres.length === 1
+      ? `No pude abrir ${nombres[0]}: ${motivo}.`
+      : `No pude abrir ${nombres.length} archivos, todos por lo mismo (${motivo}): ` +
+        `${nombres.slice(0, 4).join(", ")}${nombres.length > 4 ? ", …" : ""}.`,
+  );
 
   return { etiquetas, avisos };
 }

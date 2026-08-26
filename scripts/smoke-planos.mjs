@@ -71,6 +71,23 @@ const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1180, height: 1100 } });
 page.on("pageerror", (e) => { console.error("ERROR DE PAGINA:", e.message); process.exitCode = 1; });
 
+/**
+ * El navegador de la Mac, no el del que programa.
+ *
+ * La primera version de esto usaba la compilacion moderna de pdf.js, que llama
+ * a `Iterator.prototype` sin preguntar si existe. En un Safari de un par de
+ * anios atras eso no es una funcion que falta: el modulo entero se muere al
+ * cargarse, ANTES de tocar un archivo, y los 36 planos fallan con un
+ * "Can't find variable: Iterator" que no se parece en nada al problema.
+ *
+ * Correr siempre con los dos globales borrados es lo unico que impide que
+ * vuelva a pasar. Chrome de escritorio los tiene, y por eso no avisaba nada.
+ */
+await page.addInitScript(() => {
+  try { delete globalThis.Iterator; } catch {}
+  try { delete Promise.withResolvers; } catch {}
+});
+
 await page.goto(BASE, { waitUntil: "networkidle" });
 
 // Un parque con geometria, igual que en el resto de las pruebas.
