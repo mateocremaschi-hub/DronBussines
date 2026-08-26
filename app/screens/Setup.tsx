@@ -7,6 +7,7 @@
 
 import { useMemo, useState } from "react";
 import { compileFarm, ProfileError } from "@locator";
+import { cuadreDeFila } from "../rowbalance";
 import type { CompiledFarm, FarmProfile, TrackerRow } from "@locator";
 import {
   buildRows,
@@ -39,11 +40,11 @@ const PRESETS: Preset[] = [
   {
     id: "pvh-28x2",
     label: "Racking tipo PVH — 28 × 2, modulos verticales",
-    note: "Las reglas verificadas en campo en Edenvale: bahia de motor entre strings, la pica adentro del recorrido, conteo desde la caja DC y regla del piercing connector.",
+    note: "Las medidas de cinta de Edenvale: panel de 1135 mm, hueco de 20 entre paneles y un solo hueco de 555 entre los dos strings. El offset es contra el PUNTO DEL EXCEL, que marca la punta del recorrido de modulos — no contra la pila de fundacion, que esta mas adentro.",
     profile: {
-      module: { widthMm: 1130, gapMm: 20, orientation: "portrait", pitchMm: null },
-      topology: { modulesPerString: 28, stringsPerRow: 2, stringGapMm: 3713 },
-      geometry: { source: "survey-stakes", endpointOffsetMm: -1464, endpointOffsetMode: "both" },
+      module: { widthMm: 1135, gapMm: 20, orientation: "portrait", pitchMm: null },
+      topology: { modulesPerString: 28, stringsPerRow: 2, stringGapMm: 555 },
+      geometry: { source: "survey-stakes", endpointOffsetMm: -25, endpointOffsetMode: "both" },
       addressing: {
         originStrategy: "dc-box-end",
         dcBoxPlacement: "center-road",
@@ -95,6 +96,7 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
   // Al agregarle geometria a un parque que ya existe se arranca de SU perfil,
   // no de un preset: ese perfil ya esta calibrado y pisarlo con los valores por
   // defecto seria tirar a la basura las medidas de campo.
+  const [medidos, setMedidos] = useState<Record<string, boolean>>({});
   const [profileDraft, setProfileDraft] = useState(
     existing
       ? {
@@ -203,6 +205,28 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
           })
         : null,
     [built, modulesPerRowDraft, nominalPitchMm, profileDraft],
+  );
+
+  // El cuadre de la fila: sumar el fierro y compararlo con lo que mide.
+  // Es lo que habria evitado despejar una bahia de 3713 mm y creerle.
+  const cuadre = useMemo(
+    () =>
+      offsetHint
+        ? cuadreDeFila({
+            modulosPorFila: modulesPerRowDraft,
+            stringsPorFila: profileDraft.topology.stringsPerRow,
+            anchoModuloMm: profileDraft.module.widthMm,
+            huecoEntreModulosMm: profileDraft.module.gapMm,
+            bahiaMm: profileDraft.topology.stringGapMm ?? 0,
+            offsetMm: profileDraft.geometry.endpointOffsetMm,
+            largoMedidoM: offsetHint.medianLengthM,
+            medidos: {
+              ancho: !!medidos.ancho, hueco: !!medidos.hueco,
+              bahia: !!medidos.bahia, offset: !!medidos.offset,
+            },
+          })
+        : null,
+    [offsetHint, modulesPerRowDraft, profileDraft, medidos],
   );
 
   const profile: FarmProfile = useMemo(
@@ -546,6 +570,11 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
                 }))}
               />
               <span className="help">Vertical ronda 1130 mm; apaisado ronda 2280 mm.</span>
+              <label className="cinta">
+                <input type="checkbox" checked={!!medidos.ancho}
+                  onChange={(e) => setMedidos((m) => ({ ...m, ancho: e.target.checked }))} />
+                lo medí con cinta
+              </label>
             </div>
             <div className="field">
               <label>Bahia entre strings (mm)</label>
@@ -560,6 +589,11 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
                 huequito entre modulos. En Edenvale son 3713 mm — mas de tres posiciones de modulo
                 vacias, y olvidarlo corre el string lejano esa distancia entera.
               </span>
+              <label className="cinta">
+                <input type="checkbox" checked={!!medidos.bahia}
+                  onChange={(e) => setMedidos((m) => ({ ...m, bahia: e.target.checked }))} />
+                lo medí con cinta
+              </label>
             </div>
             <div className="field">
               <label>Hueco entre modulos (mm)</label>
@@ -569,9 +603,14 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
                   ...d, module: { ...d.module, gapMm: Number(e.target.value) },
                 }))}
               />
+              <label className="cinta">
+                <input type="checkbox" checked={!!medidos.hueco}
+                  onChange={(e) => setMedidos((m) => ({ ...m, hueco: e.target.checked }))} />
+                lo medí con cinta
+              </label>
             </div>
             <div className="field">
-              <label>Distancia de la pica al primer modulo (mm)</label>
+              <label>Distancia del punto del archivo al primer modulo (mm)</label>
               <input
                 type="number" value={profileDraft.geometry.endpointOffsetMm}
                 onChange={(e) => setProfileDraft((d) => ({
@@ -580,8 +619,8 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
               />
               {offsetHint && (
                 <span className="help">
-                  Tus filas miden <strong>{offsetHint.medianLengthM.toFixed(2)} m</strong> de pica a
-                  pica. Con {modulesPerRowDraft} modulos de {nominalPitchMm} mm, eso deja{" "}
+                  Tus filas miden <strong>{offsetHint.medianLengthM.toFixed(2)} m</strong> entre los
+                  dos puntos del archivo. Con {modulesPerRowDraft} modulos de {nominalPitchMm} mm, eso deja{" "}
                   <strong>{offsetHint.offsetMm.toFixed(0)} mm</strong> por punta
                   {offsetHint.offsetMm < 0 ? " (negativo: los modulos sobresalen mas alla de la pica)" : ""}.
                   {Math.abs(offsetHint.offsetMm - profileDraft.geometry.endpointOffsetMm) > 50 && (
@@ -609,7 +648,59 @@ export function Setup({ onDone, onCancel, existing }: SetupProps) {
                   )}
                 </span>
               )}
+              <label className="cinta">
+                <input type="checkbox" checked={!!medidos.offset}
+                  onChange={(e) => setMedidos((m) => ({ ...m, offset: e.target.checked }))} />
+                lo medí con cinta
+              </label>
+              <span className="help">
+                Cuidado con la palabra <em>pica</em>: no siempre es lo mismo. Esta distancia es contra
+                el punto que trae el archivo, que suele marcar la punta del recorrido de modulos. La
+                pila de fundacion puede estar bastante mas adentro —en Edenvale cae debajo del segundo
+                modulo— y medir contra ella da un numero que no es este. Confundirlas corrio el parque
+                entero mas de un modulo durante meses.
+              </span>
             </div>
+
+            {cuadre && (
+              <div className={cuadre.cierra ? "cuadre" : "cuadre no"}>
+                <h3>El cuadre de la fila</h3>
+                <p className="help">
+                  Todo esto esta atado: si dejas uno sin medir, se despeja solo para que la cuenta
+                  cierre — y entonces cerrar no prueba nada. Marca con la casilla lo que mediste
+                  de verdad.
+                </p>
+                <table>
+                  <tbody>
+                    {cuadre.partes.map((p) => (
+                      <tr key={p.concepto}>
+                        <td>{p.concepto}</td>
+                        <td className="num">{p.cantidad} × {p.cadaUnoMm.toFixed(0)}</td>
+                        <td className="num">{p.totalMm.toFixed(0)} mm</td>
+                        <td>{p.medido
+                          ? <span className="chip ver">medido</span>
+                          : <span className="chip asm">supuesto</span>}</td>
+                      </tr>
+                    ))}
+                    <tr className="top">
+                      <td><strong>Suma</strong></td><td></td>
+                      <td className="num"><strong>{cuadre.predichoMm.toFixed(0)} mm</strong></td><td></td>
+                    </tr>
+                    <tr>
+                      <td>Lo que miden tus filas de pica a pica</td><td></td>
+                      <td className="num">{cuadre.medidoMm.toFixed(0)} mm</td><td></td>
+                    </tr>
+                    <tr className="top">
+                      <td><strong>{cuadre.residuoMm >= 0 ? "Sobra" : "Falta"}</strong></td>
+                      <td className="num">{Math.abs(cuadre.residuoEnModulos).toFixed(1)} modulos</td>
+                      <td className="num"><strong>{Math.abs(cuadre.residuoMm).toFixed(0)} mm</strong></td>
+                      <td>{cuadre.medidos} de {cuadre.total} medidos</td>
+                    </tr>
+                  </tbody>
+                </table>
+                {cuadre.notas.map((n, i) => (<p key={i}>{n}</p>))}
+              </div>
+            )}
             <div className="field">
               <label>Paso entre modulos</label>
               <select

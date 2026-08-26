@@ -143,34 +143,58 @@ describe("geometria de Edenvale confirmada en campo", () => {
     return modulesPerString * w + (modulesPerString - 1) * g;
   };
 
-  it("los tres numeros cierran contra el largo real de las 3182 filas", () => {
+  /**
+   * La geometria de Edenvale, con todo medido — y la trampa que costo meses.
+   *
+   * La palabra "pica" significa dos cosas distintas en este parque y por eso el
+   * modelo estuvo mal tanto tiempo:
+   *
+   *   - El PUNTO DEL EXCEL, que marca la punta del recorrido de modulos.
+   *   - La PILA de fundacion, que en Edenvale cae 1464 mm mas adentro, debajo
+   *     del segundo modulo. Esta medida con cinta y hay foto.
+   *
+   * Las dos son ciertas. Tomar la segunda como si fuera la primera obligaba a
+   * inventar 3,7 m de hueco en el medio de la fila para que la cuenta cerrara —
+   * un hueco de tres modulos que nadie vio nunca, porque no existe.
+   */
+  it("todo medido, y la fila cierra en 25 mm sobre 65 metros", () => {
     const { modulesPerString, stringsPerRow, stringGapMm } = edenvale.topology;
 
-    expect(modulesPerString).toBe(28); // contados fisicamente
-    expect(stringsPerRow).toBe(2);
-    expect(edenvale.module.widthMm + edenvale.module.gapMm).toBe(1150); // medido a mano
-    expect(stringSpanMm()).toBe(32180);
+    expect(modulesPerString).toBe(28);            // contados fisicamente
+    expect(edenvale.module.widthMm).toBe(1135);   // cinta
+    expect(edenvale.module.gapMm).toBe(20);       // cinta
+    expect(stringGapMm).toBe(555);                // cinta: UN hueco por fila
 
-    // dos strings + la bahia del motor, menos los voladizos de cada punta.
     const extentMm = stringsPerRow * stringSpanMm() + (stringsPerRow - 1) * (stringGapMm ?? 0);
-    const picaAPicaMm = extentMm + 2 * edenvale.geometry.endpointOffsetMm;
-    expect(picaAPicaMm / 1000).toBeCloseTo(65.145, 2);
+    expect(extentMm).toBe(65195);
+
+    const puntoAPuntoMm = extentMm + 2 * edenvale.geometry.endpointOffsetMm;
+    expect(puntoAPuntoMm / 1000).toBeCloseTo(65.145, 2);
   });
 
-  it("el voladizo es negativo: la pica esta adentro del recorrido de modulos", () => {
-    // Medido con cinta: del borde del modulo 1 a la pica hay 1464 mm, y la pica
-    // queda debajo del segundo modulo. Verificado contra la segunda medicion:
-    // 1464 - 1150 = 314 mm dentro del modulo 2, y midio 335.
-    expect(edenvale.geometry.endpointOffsetMm).toBe(-1464);
-    expect(1464 - 1150).toBeGreaterThan(0);
-    expect(Math.abs(1464 - 1150 - 335)).toBeLessThan(30);
+  /**
+   * El unico numero despejado sale en 25 mm. Es lo que separa este modelo del
+   * anterior: alla habia DOS despejados uno del otro y daban 3713 y -1464.
+   */
+  it("el offset contra el punto del archivo es practicamente cero", () => {
+    expect(edenvale.geometry.endpointOffsetMm).toBe(-25);
+    const pitch = edenvale.module.widthMm + edenvale.module.gapMm;
+    expect(Math.abs(edenvale.geometry.endpointOffsetMm) / pitch).toBeLessThan(0.03);
   });
 
-  it("la bahia del motor vale mas de tres posiciones de modulo", () => {
+  it("el hueco entre strings es medio modulo, no tres", () => {
     const gap = edenvale.topology.stringGapMm ?? 0;
     const pitch = edenvale.module.widthMm + edenvale.module.gapMm;
-    // Ignorarla desplazaria el string lejano por esa distancia entera.
-    expect(gap / pitch).toBeGreaterThan(3);
+    expect(gap / pitch).toBeLessThan(0.6);
+    expect(gap / pitch).toBeGreaterThan(0.4);
+  });
+
+  // La pila esta anotada como lo que es: un dato de campo util para orientarse,
+  // que NO es el offset. Si vuelve a confundirse, que sea leyendo esto.
+  it("deja escrito que la pila y el punto del archivo son cosas distintas", () => {
+    const casos = JSON.stringify(edenvale.calibration?.verifiedCases ?? []);
+    expect(casos).toMatch(/PILA de punta esta debajo del segundo modulo/);
+    expect(casos).toMatch(/No es el punto del Excel/);
   });
 
   it("una fila del largo real compila sin avisos", () => {
@@ -186,13 +210,24 @@ describe("geometria de Edenvale confirmada en campo", () => {
     expect(compileFarm(edenvale, [row]).buildWarnings).toEqual([]);
   });
 
-  it("sin la bahia del motor, la misma fila salta el chequeo de largo", () => {
-    // Es la prueba de que el chequeo hubiera cazado esto solo.
-    const sinBahia = {
-      ...edenvale,
-      topology: { ...edenvale.topology, stringGapMm: 0 },
-    };
-    const row = makeRow(
+  /**
+   * El chequeo de largo con el modelo viejo: 3713 mm de bahia sobre una fila de
+   * 65145 mm sobran mas de tres modulos, y el compilador lo tiene que cazar.
+   * Es la prueba de que la aritmetica sola alcanzaba para desconfiar.
+   */
+  /**
+   * Hasta donde llega el chequeo aritmetico, dicho sin exagerar.
+   *
+   * El hueco fantasma de 3713 mm SI lo hubiera cazado: son mas de tres modulos
+   * de sobra en una fila de 65 m. El hueco real de 555 mm NO: es medio modulo
+   * repartido en 65 metros y entra en la tolerancia.
+   *
+   * O sea que la aritmetica alcanzaba para desconfiar del modelo viejo, pero no
+   * alcanza para validar el nuevo. Eso lo tiene que hacer alguien contando
+   * modulos parado en la fila.
+   */
+  const filaReal = () =>
+    makeRow(
       {
         id: "x", block: "01", tracker: "01-001",
         anchor: { lat: -27.4, lon: 152.7 }, azimuthDeg: 180,
@@ -201,7 +236,18 @@ describe("geometria de Edenvale confirmada en campo", () => {
       },
       edenvale,
     );
-    const w = compileFarm(sinBahia, [row]).buildWarnings.find((x) => x.code === "length-mismatch");
+
+  it("el hueco fantasma de 3713 mm sí saltaba el chequeo de largo", () => {
+    const conFantasma = { ...edenvale, topology: { ...edenvale.topology, stringGapMm: 3713 } };
+    const w = compileFarm(conFantasma, [filaReal()]).buildWarnings
+      .find((x) => x.code === "length-mismatch");
     expect(w).toBeDefined();
+  });
+
+  it("pero olvidarse del hueco real de 555 mm NO lo salta: es medio modulo", () => {
+    const sinHueco = { ...edenvale, topology: { ...edenvale.topology, stringGapMm: 0 } };
+    const w = compileFarm(sinHueco, [filaReal()]).buildWarnings
+      .find((x) => x.code === "length-mismatch");
+    expect(w).toBeUndefined();
   });
 });
