@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState } from "react";
 import { compileFarm, formatAddress, locate, parseCoordinate } from "@locator";
 import type { CompiledFarm, LocateResult } from "@locator";
 import { checkFromResult, summarize, toCalibration } from "../checks";
+import { veredictoDeOffset } from "../solveoffset";
 import { saveFarm, type StoredFarm } from "../storage";
 
 export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () => void }) {
@@ -116,6 +117,15 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
 
   const best = result?.best;
   const resumen = useMemo(() => summarize(checks, stored.rows), [checks, stored.rows]);
+
+  // Lo que los conteos dicen sobre el offset de punta. Es el unico numero del
+  // modelo que no se puede medir con cinta: la pila de punta y el punto que
+  // trae el archivo no son el mismo lugar, y solo contando modulos parado en
+  // la fila se sabe cual de los dos usa el relevamiento.
+  const offset = useMemo(
+    () => veredictoDeOffset(checks, stored.profile, stored.rows),
+    [checks, stored.profile, stored.rows],
+  );
 
   /** El rango de modulos que cubre el 85 % de la probabilidad, dentro de la fila ganadora. */
   const range = useMemo(() => {
@@ -321,6 +331,26 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             </li>
           ))}
         </ul>
+
+        {checks.length > 0 && (
+          <div className={offset.actualSirve ? "cuadre" : "cuadre no"}>
+            <h3>Que dicen tus conteos sobre el arranque de la fila</h3>
+            <p className="help">
+              A que distancia del punto que trae el archivo empieza el primer modulo es el unico
+              numero del modelo que no se puede medir con cinta — la pila de punta y el punto del
+              relevamiento no tienen por que ser el mismo lugar. Contando modulos si se despeja.
+            </p>
+            {offset.comun && (
+              <p>
+                <strong>
+                  Entre {offset.comun.desdeMm} y {offset.comun.hastaMm} mm
+                </strong>{" "}
+                · el perfil tiene {offset.actualMm} mm
+              </p>
+            )}
+            {offset.notas.map((n, i) => (<p key={i} className="small">{n}</p>))}
+          </div>
+        )}
 
         {resumen.mismatches > 0 && (
           <div className="warnbox">

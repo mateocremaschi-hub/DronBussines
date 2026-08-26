@@ -16,7 +16,7 @@ import { makeRowLayout, moduleExtentM } from "../geo/rowLayout.js";
 import { resolveInversion } from "../strategies/inversion.js";
 import { resolveOriginEnd } from "../strategies/origin.js";
 import type { CompiledFarm, CompiledRow, FarmProfile, TrackerRow, Warning } from "../types.js";
-import { validateProfile } from "./validate.js";
+import { ProfileError, validateProfile } from "./validate.js";
 
 const DEFAULTS = {
   maxDistanceM: 30,
@@ -57,6 +57,16 @@ export function compileFarm(
 
   const offsetM = profile.geometry.endpointOffsetMm / 1000;
   const offsetMode = profile.geometry.endpointOffsetMode ?? "both";
+
+  // Centrar necesita saber cuanto miden los modulos, asi que no se puede
+  // combinar con despejar el paso del largo: seria circular.
+  if (offsetMode === "centered" && declaredPitch === "derive") {
+    throw new ProfileError([
+      '`endpointOffsetMode: "centered"` no se puede usar con `module.pitchMm: "derive"`: centrar ' +
+      "necesita el paso para saber cuanto ocupan los modulos, y derivar el paso necesita saber " +
+      "donde arrancan. Declara el paso.",
+    ]);
+  }
   const tolerance =
     profile.geometry.lengthToleranceMmPerModule ?? DEFAULTS.lengthToleranceMmPerModule;
 
@@ -125,7 +135,7 @@ interface RowContext {
   nominalPitchM: number;
   declaredPitch: number | null | "derive" | undefined;
   offsetM: number;
-  offsetMode: "both" | "origin" | "none";
+  offsetMode: "both" | "origin" | "none" | "centered";
   maxDistanceM: number;
   tolerance: number;
   stringsPerRow: number;
@@ -167,8 +177,21 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
   // --- offsets de pica ------------------------------------------------------
   // Pueden ser negativos: en Edenvale los modulos sobresalen 1464 mm mas alla
   // de la pica, que queda debajo del segundo modulo.
-  const originOffsetM = ctx.offsetMode === "none" ? 0 : ctx.offsetM;
-  const farOffsetM = ctx.offsetMode === "both" ? ctx.offsetM : 0;
+  // Centrado: los modulos ocupan lo que dice el paso declarado, y lo que sobra
+  // (o falta) se reparte entre las dos puntas. El offset deja de ser un dato.
+  const centrarM =
+    ctx.offsetMode === "centered"
+      ? (lengthM -
+          (ctx.modulesPerRow * ctx.nominalPitchM -
+            ctx.stringsPerRow * ctx.moduleGapM +
+            (ctx.stringsPerRow - 1) * ctx.stringGapM)) /
+        2
+      : 0;
+
+  const originOffsetM =
+    ctx.offsetMode === "centered" ? centrarM : ctx.offsetMode === "none" ? 0 : ctx.offsetM;
+  const farOffsetM =
+    ctx.offsetMode === "centered" ? centrarM : ctx.offsetMode === "both" ? ctx.offsetM : 0;
 
   // Lo que ocupan los modulos, ya descontando (o sumando) los voladizos.
   const extentM = lengthM - originOffsetM - farOffsetM;
@@ -210,7 +233,22 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
   // Cuanto se aparta el paso declarado del que exige el largo real del
   // segmento. Es la senal mas barata de que la geometria importada esta mal:
   // un bloque con filas partidas o picas cruzadas salta aca, sin ir al campo.
-  const lengthResidualMmPerModule = (derivedPitchM - pitchM) * 1000;
+  //
+  // Centrado necesita su propia cuenta, y es importante. `extentM` ya viene con
+  // el centrado aplicado, asi que el residuo daria SIEMPRE cero y el aviso no
+  // saltaria nunca — justo el aviso que hubiera cazado el hueco fantasma de
+  // 3713 mm que tuvo mal a Edenvale durante meses. Centrar tiene que sacar el
+  // parametro de encima, no la red de seguridad: aca se compara el largo real
+  // contra lo que ocupan los modulos, sin dejar que el centrado lo absorba.
+  const lengthResidualMmPerModule =
+    ctx.offsetMode === "centered"
+      ? ((lengthM -
+          (ctx.modulesPerRow * pitchM -
+            ctx.stringsPerRow * ctx.moduleGapM +
+            (ctx.stringsPerRow - 1) * ctx.stringGapM)) /
+          ctx.modulesPerRow) *
+        1000
+      : (derivedPitchM - pitchM) * 1000;
   const predictedLengthM = originOffsetM + moduleExtentM(layout) + farOffsetM;
   if (Math.abs(lengthResidualMmPerModule) > ctx.tolerance) {
     ctx.buildWarnings.push({

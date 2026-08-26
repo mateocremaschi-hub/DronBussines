@@ -89,6 +89,18 @@ if (persistidas !== cubiertas) {
   console.error("ERROR: las verificaciones no sobrevivieron la recarga"); process.exitCode = 1;
 }
 
+// El veredicto del offset: es lo que convierte un conteo en un parametro.
+const panel = await page.locator(".cuadre").innerText().catch(() => "");
+console.log("Offset segun los conteos:\n   " + panel.split("\n").slice(2).join("\n   "));
+if (!/arranque de la fila/i.test(panel)) {
+  console.error("ERROR: no aparecio el veredicto del offset");
+  process.exitCode = 1;
+}
+if (!/Entre .* y .* mm|conteos registrados sirve|numero de modulo/.test(panel)) {
+  console.error("ERROR: el veredicto no dice nada util");
+  process.exitCode = 1;
+}
+
 await page.screenshot({ path: "shots/11-verificacion.png", fullPage: true });
 await browser.close();
 console.log(process.exitCode ? "FALLO" : "OK");

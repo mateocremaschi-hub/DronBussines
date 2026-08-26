@@ -44,7 +44,7 @@ const PRESETS: Preset[] = [
     profile: {
       module: { widthMm: 1135, gapMm: 20, orientation: "portrait", pitchMm: null },
       topology: { modulesPerString: 28, stringsPerRow: 2, stringGapMm: 555 },
-      geometry: { source: "survey-stakes", endpointOffsetMm: -25, endpointOffsetMode: "both" },
+      geometry: { source: "survey-stakes", endpointOffsetMm: -25, endpointOffsetMode: "centered" },
       addressing: {
         originStrategy: "dc-box-end",
         dcBoxPlacement: "center-road",

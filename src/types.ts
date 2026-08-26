@@ -152,10 +152,21 @@ export interface FarmProfile {
     endpointOffsetMm: number;
     /**
      * A que extremos se aplica el offset:
-     * `both` en las dos picas, `origin` solo en el extremo de conteo,
-     * `none` si los modulos arrancan pegados a la pica.
+     * `both` en las dos puntas, `origin` solo en el extremo de conteo,
+     * `none` si los modulos arrancan pegados al punto del archivo.
+     *
+     * `centered` es distinto: no usa `endpointOffsetMm` para nada. Calcula
+     * cuanto miden los modulos con el paso declarado y los centra en el largo
+     * real de cada fila, repartiendo la diferencia entre las dos puntas.
+     *
+     * Sirve para el caso mas comun y mas confuso: un archivo de replanteo que
+     * marca las PUNTAS DE LA FILA. Ahi el offset es un residuo de pocos
+     * milimetros que no vale la pena declarar, y peor todavia, invita a
+     * confundirlo con la distancia a la primera pila —que es otra cosa, porque
+     * el modulo de la punta va en voladizo sobre ella—. Centrando, ese numero
+     * deja de existir y cada fila se acomoda sola.
      */
-    endpointOffsetMode?: "both" | "origin" | "none";
+    endpointOffsetMode?: "both" | "origin" | "none" | "centered";
     /**
      * Tolerancia al comparar el largo predicho por el paso contra el largo
      * real del segmento, en mm por modulo. Arriba de esto se emite un warning.

@@ -28,9 +28,9 @@
   "geometry": {
     "source": "survey-stakes",
     "endpointOffsetMm": -25,
-    "endpointOffsetMode": "both",
+    "endpointOffsetMode": "centered",
     "lengthToleranceMmPerModule": 15,
-    "_nota": "OJO con la palabra 'pica', que significa dos cosas distintas y eso costo meses. Este offset es la distancia del PUNTO DEL EXCEL al borde del primer modulo, y es practicamente cero: 56 x 1135 + 54 x 20 + 555 = 65195 mm contra los 65145 que separan los dos puntos del relevamiento, o sea 25 mm por punta sobre 65 metros. Los dos puntos del Excel marcan las PUNTAS DEL RECORRIDO DE MODULOS. Cosa distinta es la PILA de fundacion, que esta 1464 mm mas adentro, debajo del segundo modulo — medida con cinta y fotografiada. Las dos cosas son ciertas: son puntos diferentes."
+    "_nota": "CENTRADO: el offset no se usa. Los modulos ocupan lo que dice el paso declarado (56 x 1135 + 54 x 20 + 555 = 65195 mm) y se centran en el largo real de cada fila. En las filas de 65145 eso deja 25 mm por punta, identico a declarar -25 — hay una prueba que compara modulo por modulo. Se centra y no se declara por lo que costo aprender: la palabra 'pica' nombra dos lugares distintos. El punto del archivo de replanteo marca la PUNTA DE LA FILA; la PILA de fundacion queda 1464 mm adentro, porque el modulo de punta va en voladizo sobre ella (medido con cinta, con foto, y confirmado que no hay ninguna pila mas afuera). Confundirlas corrio el parque entero mas de un modulo durante meses. Centrando, el numero deja de existir."
   },
   "addressing": {
     "originStrategy": "dc-box-end",

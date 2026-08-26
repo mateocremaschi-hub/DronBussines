@@ -82,8 +82,8 @@ export function validateProfile(input: unknown): FarmProfile {
         "`geometry.endpointOffsetMm` tiene que ser un numero (mm). Negativo si los modulos sobresalen mas alla de la pica.",
       );
     }
-    if (g.endpointOffsetMode && !["both", "origin", "none"].includes(g.endpointOffsetMode)) {
-      issues.push('`geometry.endpointOffsetMode` tiene que ser "both", "origin" o "none".');
+    if (g.endpointOffsetMode && !["both", "origin", "none", "centered"].includes(g.endpointOffsetMode)) {
+      issues.push('`geometry.endpointOffsetMode` tiene que ser "both", "origin", "none" o "centered".');
     }
   }
 

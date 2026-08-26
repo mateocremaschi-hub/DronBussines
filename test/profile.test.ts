@@ -11,6 +11,7 @@ import edenvaleJson from "../farms/edenvale.json" with { type: "json" };
 import northfieldJson from "../farms/northfield-synthetic.json" with { type: "json" };
 import { ProfileError, validateProfile } from "../src/profile/validate.js";
 import { compileFarm } from "../src/profile/compile.js";
+import { modulesOfRow } from "../src/locate.js";
 import type { FarmProfile } from "../src/types.js";
 import { makeRow, nominalLengthM } from "./helpers/synthetic.js";
 
@@ -98,7 +99,13 @@ describe("chequeo de coherencia geometrica al compilar", () => {
   });
 
   it("con pitchMm derive el paso sale del largo real y nunca hay residuo", () => {
-    const derived = { ...edenvale, module: { ...edenvale.module, pitchMm: "derive" as const } };
+    // Derivar el paso no convive con centrar —seria circular y el compilador lo
+    // rechaza— asi que aca se declara el offset a mano, que es el otro modo.
+    const derived = {
+      ...edenvale,
+      module: { ...edenvale.module, pitchMm: "derive" as const },
+      geometry: { ...edenvale.geometry, endpointOffsetMode: "both" as const },
+    };
     const odd = makeRow({ ...rowSpec, lengthM: nominalLengthM(edenvale) - 4 }, edenvale);
     const farm = compileFarm(derived, [odd]);
     expect(farm.buildWarnings).toEqual([]);
@@ -249,5 +256,72 @@ describe("geometria de Edenvale confirmada en campo", () => {
     const w = compileFarm(sinHueco, [filaReal()]).buildWarnings
       .find((x) => x.code === "length-mismatch");
     expect(w).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Centrar los modulos en la fila, para que el offset deje de ser un dato.
+ *
+ * Es la salida al lio que costo meses en Edenvale. La palabra "pica" nombra dos
+ * lugares distintos —el punto que marca el archivo de replanteo y la pila de
+ * fundacion, que queda adentro porque el modulo de punta va en voladizo sobre
+ * ella— y confundirlos corrio el parque entero mas de un modulo.
+ *
+ * Centrando, ese numero no hay que saberlo: los modulos ocupan lo que dice el
+ * paso declarado y se acomodan solos en el largo de cada fila.
+ */
+describe("centrar los modulos en la fila", () => {
+  const centrado = {
+    ...edenvale,
+    geometry: { ...edenvale.geometry, endpointOffsetMm: 999999, endpointOffsetMode: "centered" as const },
+  };
+
+  const filaDe = (lengthM: number, profile: FarmProfile) =>
+    makeRow(
+      {
+        id: "x", block: "01", tracker: "01-001",
+        anchor: { lat: -27.4, lon: 152.7 }, azimuthDeg: 180,
+        side: "north" as const, pos: 1, posTotal: 2, lengthM,
+      },
+      profile,
+    );
+
+  it("ignora por completo el offset declarado", () => {
+    // 999999 mm es un disparate a proposito: si lo mirara, la fila explotaria.
+    const farm = compileFarm(centrado, [filaDe(65.145, centrado)]);
+    expect(farm.rows).toHaveLength(1);
+    expect(farm.buildWarnings).toEqual([]);
+  });
+
+  it("pone los modulos donde los pondria el offset correcto", () => {
+    const conNumero = compileFarm(edenvale, [filaDe(65.145, edenvale)]);
+    const conCentrado = compileFarm(centrado, [filaDe(65.145, centrado)]);
+    // El -25 mm del perfil ES el centrado: tienen que dar lo mismo.
+    const a = modulesOfRow(conNumero.rows[0]!, conNumero);
+    const b = modulesOfRow(conCentrado.rows[0]!, conCentrado);
+    expect(b).toHaveLength(a.length);
+    for (let i = 0; i < a.length; i++) {
+      expect(Math.hypot(a[i]!.x - b[i]!.x, a[i]!.y - b[i]!.y)).toBeLessThan(0.05);
+    }
+  });
+
+  it("cada fila se acomoda sola aunque midan distinto", () => {
+    const corta = compileFarm(centrado, [filaDe(64.5, centrado)]);
+    const larga = compileFarm(centrado, [filaDe(65.8, centrado)]);
+    // Las dos compilan y ninguna se queda sin lugar para los modulos.
+    expect(modulesOfRow(corta.rows[0]!, corta)).toHaveLength(56);
+    expect(modulesOfRow(larga.rows[0]!, larga)).toHaveLength(56);
+  });
+
+  // Centrar necesita el paso para saber cuanto ocupan los modulos, y derivar el
+  // paso necesita saber donde arrancan. Juntos serian circulares.
+  it("se niega a combinarse con derivar el paso, en vez de dar cualquier cosa", () => {
+    const circular = {
+      ...centrado,
+      module: { ...centrado.module, pitchMm: "derive" as const },
+    };
+    expect(() => compileFarm(circular, [filaDe(65.145, circular)])).toThrow(/circular|Declara el paso/i);
   });
 });
