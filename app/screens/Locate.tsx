@@ -15,9 +15,16 @@ import { veredictoDeOffset } from "../solveoffset";
 import { calidadDeCoordenada, comoArreglarlo } from "../gpsquality";
 import { saveFarm, type StoredFarm } from "../storage";
 
+/** Por debajo de esta precision ya sirve para contar modulos. */
+const SUFICIENTE_M = 8;
+/** Cuanto se espera a que entre el satelite antes de usar lo que haya. */
+const ESPERA_MS = 20000;
+
 export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () => void }) {
   const [text, setText] = useState("");
   const [accuracy, setAccuracy] = useState<number | null>(null);
+  /** La mejor precision conseguida mientras el GPS todavia esta convergiendo. */
+  const [buscando, setBuscando] = useState<number | null>(null);
   const [result, setResult] = useState<LocateResult | null>(null);
   const [coord, setCoord] = useState<{ lat: number; lon: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -87,24 +94,69 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     setRegistrando(false);
   }
 
+  /**
+   * Esperar a que el GPS converja, en vez de quedarse con la primera lectura.
+   *
+   * `getCurrentPosition` devuelve apenas tiene ALGO, y lo primero que tiene el
+   * telefono es la posicion por antena de telefonia: 50, 90, 200 metros. El
+   * satelite tarda entre cinco y quince segundos en entrar, y recien ahi baja a
+   * 3-8 m. Con una sola lectura eso no pasa nunca — hay que tocar el boton una
+   * y otra vez a ver si sale mejor, que es lo que hacia perder la tarde.
+   *
+   * `watchPosition` entrega las lecturas a medida que mejoran. Se queda con la
+   * mejor, muestra el progreso para que se vea que esta trabajando, y corta
+   * sola cuando llega a algo que sirve para contar modulos.
+   */
   function useGps() {
     if (!navigator.geolocation) {
       setError("Este dispositivo no expone GPS al navegador.");
       return;
     }
+    setError(null);
     setGpsBusy(true);
-    navigator.geolocation.getCurrentPosition(
+    setBuscando(null);
+
+    let mejor: { lat: number; lon: number; acc: number } | null = null;
+    let id: number | null = null;
+    let corte: ReturnType<typeof setTimeout> | null = null;
+
+    const terminar = () => {
+      if (id != null) navigator.geolocation.clearWatch(id);
+      if (corte) clearTimeout(corte);
+      setGpsBusy(false);
+      setBuscando(null);
+      if (!mejor) return;
+      const t = `${mejor.lat}, ${mejor.lon}`;
+      setText(t);
+      setAccuracy(mejor.acc);
+      run(t, mejor.acc);
+    };
+
+    id = navigator.geolocation.watchPosition(
       (pos) => {
-        setGpsBusy(false);
         const acc = Math.max(1, Math.round(pos.coords.accuracy));
-        const t = `${pos.coords.latitude}, ${pos.coords.longitude}`;
-        setText(t);
-        setAccuracy(acc);
-        run(t, acc);
+        if (!mejor || acc < mejor.acc) {
+          mejor = { lat: pos.coords.latitude, lon: pos.coords.longitude, acc };
+        }
+        setBuscando(mejor.acc);
+        // Por debajo de esto ya sirve para contar: no tiene sentido hacer
+        // esperar mas a alguien parado al sol.
+        if (mejor.acc <= SUFICIENTE_M) terminar();
       },
-      (err) => { setGpsBusy(false); setError(`No pude leer el GPS: ${err.message}`); },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+      (err) => {
+        if (mejor) { terminar(); return; }
+        if (id != null) navigator.geolocation.clearWatch(id);
+        if (corte) clearTimeout(corte);
+        setGpsBusy(false);
+        setBuscando(null);
+        setError(`No pude leer el GPS: ${err.message}`);
+      },
+      { enableHighAccuracy: true, timeout: ESPERA_MS, maximumAge: 0 },
     );
+
+    // Aunque no llegue a la precision buena, en algun momento hay que cortar y
+    // usar lo mejor que haya — con el aviso de que no alcanza, si no alcanza.
+    corte = setTimeout(terminar, ESPERA_MS);
   }
 
   if (!farm) {
@@ -188,9 +240,18 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         <div className="row">
           <button onClick={() => run(text, accuracy)} disabled={!text.trim()}>Localizar</button>
           <button className="ghost" onClick={useGps} disabled={gpsBusy}>
-            {gpsBusy ? "Leyendo GPS…" : "Usar mi ubicacion"}
+            {gpsBusy
+              ? buscando != null ? `Buscando satelites… ±${buscando} m` : "Buscando satelites…"
+              : "Usar mi ubicacion"}
           </button>
           {accuracy != null && <span className="muted small">precision ±{accuracy} m</span>}
+        </div>
+        <p className="help">
+          El boton espera hasta veinte segundos a que entre el satelite. La primera lectura que da
+          el telefono es la de la antena de telefonia —cincuenta, noventa metros— y recien despues
+          baja a menos de diez. Quedate quieto mientras busca; corta solo cuando llega.
+        </p>
+        <div className="row" style={{ display: "none" }}>
         </div>
 
         {error && <p className="alert">{error}</p>}

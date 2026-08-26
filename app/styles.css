@@ -404,3 +404,16 @@ td.flojo { color: var(--warn); font-style: italic; }
 /* Pasos numerados, para instrucciones que se siguen en orden. */
 .pasos { margin: 8px 0 12px; padding-left: 20px; }
 .pasos li { margin-bottom: 5px; font-size: 14px; }
+
+/* Si la app va a abrir sin señal. Va en el pie y no en un cartel porque se
+   consulta antes de salir al campo, no durante el trabajo. */
+.sinred {
+  display: inline-block; margin-right: 8px; padding: 2px 8px; border-radius: 3px;
+  font-family: Archivo, sans-serif; font-size: 10.5px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase;
+}
+.sinred.listo { background: var(--accent-soft); color: var(--accent-ink); border: 1px solid var(--accent); }
+.sinred.preparando { background: var(--surface-2); color: var(--ink-3); border: 1px solid var(--rule-strong); }
+.sinred.fallo, .sinred\.sin-soporte, .sinred[class*="sin-soporte"] {
+  background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn);
+}

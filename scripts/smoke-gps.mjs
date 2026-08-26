@@ -28,7 +28,11 @@ await p.getByRole("button",{name:"Guardar el parque"}).click();
 await p.getByRole("heading",{name:"Parques"}).waitFor();
 await p.locator(".farm-open").first().click();
 await p.getByRole("button",{name:"Usar mi ubicacion"}).click();
-await p.waitForTimeout(1200);
+// El boton ahora espera a que converja el satelite. Con una lectura mala que
+// nunca mejora, corta sola a los veinte segundos y usa lo que haya.
+console.log("Esperando a que el GPS converja o corte solo…");
+await p.getByRole("button",{name:/Usar mi ubicacion/}).waitFor({timeout:30000});
+await p.waitForTimeout(500);
 const t=await p.locator(".screen").innerText();
 console.log("--- lo que ve el usuario ---");
 console.log(t.split("\n").filter(l=>/±|precisa|WiFi|no dice nada|fila mas cercana|km/.test(l)).join("\n"));

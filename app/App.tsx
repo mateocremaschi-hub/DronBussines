@@ -9,6 +9,7 @@ import { Flight } from "./screens/Flight";
 import { Analysis } from "./screens/Analysis";
 import { Warranty } from "./screens/Warranty";
 import { listFarms, type StoredFarm } from "./storage";
+import { detalleDe, registrarOffline, type Offline } from "./offline";
 
 type View =
   | { name: "farms" }
@@ -26,6 +27,11 @@ export function App() {
   const [farms, setFarms] = useState<StoredFarm[]>([]);
   const [view, setView] = useState<View>({ name: "farms" });
   const [ready, setReady] = useState(false);
+  const [offline, setOffline] = useState<Offline>({
+    estado: "preparando", enLinea: true, detalle: detalleDe("preparando", true),
+  });
+
+  useEffect(() => registrarOffline(setOffline), []);
 
   const refresh = useCallback(async () => {
     setFarms(await listFarms());
@@ -99,6 +105,13 @@ export function App() {
         />
       )}
       <footer className="app-foot">
+        <span className={`sinred ${offline.estado}`}>
+          {offline.estado === "listo" ? (offline.enLinea ? "lista para el campo" : "sin internet · funcionando")
+            : offline.estado === "preparando" ? "guardando la app…"
+            : "no va a abrir sin señal"}
+        </span>
+        {offline.detalle}
+        <br />
         Pica · los datos viven solo en este dispositivo · nada se sube a ningun lado
       </footer>
     </div>
