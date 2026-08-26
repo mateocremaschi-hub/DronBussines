@@ -20,7 +20,7 @@ import {
 } from "../app/projection";
 import { makeFrame, toGeo } from "../src/index.js";
 
-const camera = CAMARAS[0]!; // termica 640x512, 61° x 48°
+const camera = CAMARAS[0]!; // Mavic 3T termica: 640x512, HFOV 45.8 x VFOV 37.3
 const frame = makeFrame(-26.92, 150.58);
 
 /** Una pose sobre el origen del marco local, a plomo salvo que se diga otra cosa. */
@@ -44,9 +44,9 @@ describe("la huella de una foto", () => {
 
   it("el tamaño sale del campo de vision y la altura", () => {
     const f = footprint(frame, pose({ altitudeAglM: 40 }), camera);
-    // 2 x 40 x tan(30.5°) = 47.1 m de ancho
-    expect(f.anchoM).toBeCloseTo(47.12, 2);
-    expect(f.altoM).toBeCloseTo(35.62, 2);
+    // 2 x 40 x tan(22.9°) = 33.8 m de ancho
+    expect(f.anchoM).toBeCloseTo(33.79, 2);
+    expect(f.altoM).toBeCloseTo(27.03, 2);
   });
 
   it("al doble de altura, el doble de huella", () => {
@@ -91,8 +91,8 @@ describe("del terreno al pixel", () => {
   // Un panel al norte tiene que aparecer ARRIBA en la imagen, no abajo.
   it("no invierte el eje vertical de la imagen", () => {
     const f = footprint(frame, pose(), camera);
-    const norte = pixelOf(f, punto(0, 10), camera)!;
-    const sur = pixelOf(f, punto(0, -10), camera)!;
+    const norte = pixelOf(f, punto(0, 6), camera)!;
+    const sur = pixelOf(f, punto(0, -6), camera)!;
     expect(norte.py).toBeLessThan(camera.imageH / 2);
     expect(sur.py).toBeGreaterThan(camera.imageH / 2);
   });
@@ -101,15 +101,15 @@ describe("del terreno al pixel", () => {
     const f = footprint(frame, pose(), camera);
     expect(pixelOf(f, punto(100, 0), camera)).toBeNull();
     expect(cubre(f, punto(100, 0), camera)).toBe(false);
-    expect(cubre(f, punto(10, 10), camera)).toBe(true);
+    expect(cubre(f, punto(6, 6), camera)).toBe(true);
   });
 
   // La prueba que importa: ida y vuelta sobre una grilla de puntos.
   it("va y vuelve sin correrse, con la camara rotada y todo", () => {
     for (const yaw of [0, 37, 90, 180, 271]) {
       const f = footprint(frame, pose({ gimbalYawDeg: yaw }), camera);
-      for (let dx = -20; dx <= 20; dx += 5) {
-        for (let dy = -14; dy <= 14; dy += 7) {
+      for (let dx = -10; dx <= 10; dx += 5) {
+        for (let dy = -8; dy <= 8; dy += 4) {
           const p = pixelOf(f, punto(dx, dy), camera);
           if (!p) continue;
           // Del pixel de vuelta al terreno, deshaciendo la misma cuenta.
@@ -140,7 +140,7 @@ describe("elegir la mejor foto de un modulo", () => {
   // Con 80 % de solape un modulo sale en varias fotos, y no dan lo mismo: en
   // el borde del cuadro la termica lo ve de costado.
   it("prefiere la foto que lo tiene mas cerca del centro", () => {
-    const fotos = [enPunto(20, 0, "borde"), enPunto(1, 0, "centro"), enPunto(-18, 0, "otro-borde")];
+    const fotos = [enPunto(10, 0, "borde"), enPunto(1, 0, "centro"), enPunto(-9, 0, "otro-borde")];
     const r = fotosQueCubren(punto(0, 0), fotos, camera);
     expect(r[0]!.foto).toBe("centro");
     expect(r[0]!.distanciaAlCentroM).toBeLessThan(2);
@@ -174,9 +174,9 @@ describe("ajuste comun del vuelo", () => {
   });
 
   it("corregido, un modulo que caia afuera pasa a estar cubierto", () => {
-    const f = footprint(frame, pose({ altitudeAglM: 10 }), camera); // huella de 11.8 m
-    const modulo = punto(8, 0);
+    const f = footprint(frame, pose({ altitudeAglM: 10 }), camera); // huella de 8.4 m
+    const modulo = punto(6, 0);
     expect(cubre(f, modulo, camera)).toBe(false);
-    expect(cubre(aplicarAjuste(f, { dxM: 5, dyM: 0 }), modulo, camera)).toBe(true);
+    expect(cubre(aplicarAjuste(f, { dxM: 3, dyM: 0 }), modulo, camera)).toBe(true);
   });
 });

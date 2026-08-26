@@ -23,6 +23,21 @@ export interface PhotoFix {
 
   /** Angulo del gimbal. -90 es mirando derecho para abajo. */
   gimbalPitchDeg?: number;
+  /** Rumbo de la camara. 0 es al norte. */
+  gimbalYawDeg?: number;
+  /**
+   * Distancia focal equivalente a 35 mm, que trae toda camara en el EXIF.
+   *
+   * Es lo que permite calcular el campo de vision exacto SIN depender de la
+   * ficha del fabricante — que publica el angulo diagonal y que las paginas de
+   * terceros copian mal. Verificado con fotos reales: la visible del M3T
+   * declara 24 mm y da los 84 grados que publica DJI.
+   */
+  equiv35mm?: number;
+  imageW?: number;
+  imageH?: number;
+  /** "InfraredCamera" o "WideCamera" en los DJI. Distingue la termica. */
+  sensor?: string;
   /** Altura sobre el punto de despegue, que es lo que escriben los DJI. */
   relativeAltitudeM?: number;
   /**
@@ -83,6 +98,11 @@ export async function readPhoto(file: File): Promise<PhotoRead> {
       "CreateDate",
       "GPSAltitude",
       "GPSHPositioningError",
+      "FocalLengthIn35mmFormat",
+      "ExifImageWidth",
+      "ExifImageHeight",
+      "Make",
+      "Model",
     ])) ?? {}) as Record<string, unknown>;
 
     // Los DJI escriben el angulo del gimbal y la altura en el XMP, no en EXIF.
@@ -125,6 +145,19 @@ export async function readPhoto(file: File): Promise<PhotoRead> {
   const pitch = firstNumber(meta, [
     "GimbalPitchDegree", "drone-dji:GimbalPitchDegree", "GimbalPitch", "CameraPitch",
   ]);
+  const yaw = firstNumber(meta, [
+    "GimbalYawDegree", "drone-dji:GimbalYawDegree", "GimbalYaw",
+  ]);
+  const eq = firstNumber(meta, ["FocalLengthIn35mmFormat", "FocalLengthIn35mmFilm"]);
+  const iw = firstNumber(meta, ["ExifImageWidth", "ImageWidth"]);
+  const ih = firstNumber(meta, ["ExifImageHeight", "ImageHeight"]);
+  const src = meta["ImageSource"] ?? meta["drone-dji:ImageSource"];
+
+  if (yaw != null) fix.gimbalYawDeg = yaw;
+  if (eq != null && eq > 0) fix.equiv35mm = eq;
+  if (iw != null && iw > 0) fix.imageW = iw;
+  if (ih != null && ih > 0) fix.imageH = ih;
+  if (typeof src === "string" && src) fix.sensor = src;
   const relAlt = firstNumber(meta, [
     "RelativeAltitude", "drone-dji:RelativeAltitude", "AboveGroundAltitude",
   ]);

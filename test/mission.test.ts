@@ -25,7 +25,7 @@ import type { FarmProfile, TrackerRow } from "../src/types.js";
 import { makeRow } from "./helpers/synthetic.js";
 
 const profile = edenvaleJson as unknown as FarmProfile;
-const termica = CAMARAS[0]!;
+const termica = CAMARAS[0]!; // Mavic 3T termica: 40 mm eq -> HFOV 45.8
 const M_LAT = 110946;
 
 const opts = (o: Partial<MissionOptions> = {}): MissionOptions => ({
@@ -131,24 +131,41 @@ describe("cobertura: que no quede ningun modulo sin foto", () => {
 // ---------------------------------------------------------------------------
 
 describe("el numero que decide si el vuelo sirve", () => {
-  // De nada sirve que la foto exista si el modulo son cuatro pixeles.
+  // De nada sirve que la foto exista si la celda son dos pixeles.
   it("dice cuantos pixeles le tocan a cada modulo", () => {
+    // Con la termica real del M3T (HFOV 45.8, medida contra fotos de Edenvale)
+    // a 40 m: huella de 33.8 m sobre 640 px son 5.3 cm/px.
     const m = planMission(bloque(6), profile, opts({ altitudeM: 40 }))!;
-    // 40 m, 61 grados, 640 px -> ~7.4 cm/px; un modulo de 1130 mm son ~15 px.
-    expect(m.stats.gsdCm).toBeGreaterThan(6);
-    expect(m.stats.gsdCm).toBeLessThan(9);
-    expect(m.stats.pixelesPorModulo).toBeGreaterThan(12);
-    expect(m.stats.pixelesPorModulo).toBeLessThan(20);
+    expect(m.stats.gsdCm).toBeGreaterThan(4.5);
+    expect(m.stats.gsdCm).toBeLessThan(6);
+    expect(m.stats.pixelesPorModulo).toBeGreaterThan(18);
+    expect(m.stats.pixelesPorModulo).toBeLessThan(26);
   });
 
-  it("avisa cuando se vuela tan alto que el modulo no se distingue", () => {
-    const m = planMission(bloque(6), profile, opts({ altitudeM: 120 }))!;
-    expect(m.stats.pixelesPorModulo).toBeLessThan(8);
-    expect(m.stats.avisos.join(" ")).toMatch(/pixeles de ancho/);
+  // El caso que el limite viejo dejaba pasar. Son los numeros REALES del vuelo
+  // que ya se hizo en Edenvale: 113 m de altura, 14.9 cm por pixel. Cada modulo
+  // sale en 8 pixeles y parece razonable, pero la celda —que es donde nace el
+  // punto caliente— queda en uno solo.
+  it("avisa cuando la celda deja de resolverse, aunque el modulo parezca bien", () => {
+    const m = planMission(bloque(6), profile, opts({ altitudeM: 113 }))!;
+    expect(m.stats.pixelesPorModulo).toBeGreaterThan(7);
+    expect(m.stats.gsdCm).toBeCloseTo(14.9, 0);
+    expect(16 / m.stats.gsdCm).toBeLessThan(1.5); // la celda, en pixeles
+    expect(m.stats.avisos.join(" ")).toMatch(/celda de 16 cm/);
+  });
+
+  it("el aviso dice a que altura hay que bajar", () => {
+    const m = planMission(bloque(6), profile, opts({ altitudeM: 113 }))!;
+    const alt = Number(m.stats.avisos.join(" ").match(/Bajá a (\d+) m/)?.[1]);
+    expect(alt).toBeGreaterThan(30);
+    expect(alt).toBeLessThan(120);
+    // Y un metro por debajo de esa altura ya no avisa.
+    expect(planMission(bloque(6), profile, opts({ altitudeM: alt - 1 }))!.stats.avisos
+      .join(" ")).not.toMatch(/celda/);
   });
 
   it("no avisa de nada cuando el vuelo esta bien planteado", () => {
-    const m = planMission(bloque(4), profile, opts({ altitudeM: 30 }))!;
+    const m = planMission(bloque(4), profile, opts({ altitudeM: 25 }))!;
     expect(m.stats.avisos).toEqual([]);
   });
 

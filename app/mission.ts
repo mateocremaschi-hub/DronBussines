@@ -21,6 +21,8 @@
 import { makeFrame, toGeo, toLocal } from "@locator";
 import type { FarmProfile, LatLon, TrackerRow } from "@locator";
 
+const RAD = Math.PI / 180;
+
 // ---------------------------------------------------------------------------
 // Camara
 // ---------------------------------------------------------------------------
@@ -36,17 +38,58 @@ export interface Camera {
 }
 
 /**
- * Presets orientativos. HAY QUE VERIFICARLOS contra la ficha de la camara
- * antes de volar: un campo de vision mal cargado se traduce en huecos entre
- * lineas, y los huecos no se ven hasta que se busca un panel y no esta.
+ * Presets sacados de las fichas oficiales.
+ *
+ * OJO con el dato que se carga: las fichas publican el campo de vision
+ * DIAGONAL (DFOV) y lo que necesita el calculo es el horizontal y el vertical.
+ * Confundirlos infla la huella y separa las lineas de mas — o sea, deja
+ * HUECOS. Y un hueco no falla el dia del vuelo: aparece meses despues, cuando
+ * alguien busca un panel y no hay foto. Por eso se derivan del diagonal con
+ * la relacion de aspecto del sensor, en vez de cargarse a mano.
  */
+function desdeDiagonal(name: string, dfovDeg: number, imageW: number, imageH: number): Camera {
+  const d = Math.hypot(imageW, imageH);
+  const t = Math.tan((dfovDeg * Math.PI) / 180 / 2);
+  const grados = (x: number) => (2 * Math.atan(t * x)) / RAD;
+  return { name, imageW, imageH, hfovDeg: grados(imageW / d), vfovDeg: grados(imageH / d) };
+}
+
+/** Diagonal de un cuadro de 35 mm, que es la referencia de la equivalencia. */
+const DIAGONAL_35MM = Math.hypot(36, 24);
+
+/**
+ * La camara, sacada de la propia foto.
+ *
+ * Toda camara escribe en el EXIF su distancia focal equivalente a 35 mm, y de
+ * ahi sale el campo de vision exacto sin depender de ninguna ficha. Es la
+ * unica forma de no equivocarse: las fichas publican el angulo DIAGONAL, las
+ * paginas de terceros lo copian mal, y un angulo mal cargado separa las lineas
+ * de mas y deja huecos.
+ *
+ * Verificado contra las fotos reales de Edenvale: la camara visible del M3T
+ * declara 24 mm y da DFOV 84.1, que es exactamente lo que publica DJI. Y la
+ * termica declara 40 mm, o sea DFOV 56.8 — no los 41.2 que figuraban aca,
+ * que venian de una pagina de terceros y estaban mal.
+ */
+export function camaraDesdeEquivalente35(
+  name: string,
+  mm35: number,
+  imageW: number,
+  imageH: number,
+): Camera {
+  const t = DIAGONAL_35MM / (2 * mm35);
+  const d = Math.hypot(imageW, imageH);
+  const grados = (x: number) => (2 * Math.atan(t * x)) / RAD;
+  return { name, imageW, imageH, hfovDeg: grados(imageW / d), vfovDeg: grados(imageH / d) };
+}
+
 export const CAMARAS: Camera[] = [
-  { name: "Termica 640x512 · 61° (tipo M3T / M30T)", imageW: 640, imageH: 512, hfovDeg: 61, vfovDeg: 48 },
-  { name: "Termica 640x512 · 45°", imageW: 640, imageH: 512, hfovDeg: 45, vfovDeg: 37 },
-  { name: "Visible 4000x3000 · 84°", imageW: 4000, imageH: 3000, hfovDeg: 84, vfovDeg: 68 },
+  camaraDesdeEquivalente35("Mavic 3T · termica 640x512 (40 mm eq)", 40, 640, 512),
+  desdeDiagonal("Matrice 4T · termica 640x512 (DFOV 45°)", 45, 640, 512),
+  desdeDiagonal("Zenmuse H30T · termica 1280x1024 (DFOV 45.2°)", 45.2, 1280, 1024),
+  camaraDesdeEquivalente35("Mavic 3T · visible 4000x3000 (24 mm eq)", 24, 4000, 3000),
 ];
 
-const RAD = Math.PI / 180;
 const huella = (alturaM: number, fovDeg: number) => 2 * alturaM * Math.tan((fovDeg * RAD) / 2);
 
 // ---------------------------------------------------------------------------
@@ -109,8 +152,17 @@ export interface Mission {
   stats: MissionStats;
 }
 
-/** Pixeles de ancho por modulo por debajo de los cuales no se distingue una celda. */
-const PIXELES_MINIMOS = 8;
+/**
+ * Centimetros por pixel por encima de los cuales una celda deja de verse.
+ *
+ * El limite no lo pone el modulo sino la CELDA, que es donde nace el punto
+ * caliente. Una celda mide entre 15 y 20 cm, asi que para que se distinga del
+ * ruido hacen falta unos 3 pixeles de ancho sobre ella: unos 5 cm por pixel.
+ *
+ * Medirlo en modulos engaña: a 120 m un modulo todavia da 10 pixeles y parece
+ * suficiente, pero cada celda queda en uno y medio.
+ */
+const GSD_MAXIMO_CM = 5;
 
 export function planMission(
   rows: TrackerRow[],
@@ -181,11 +233,13 @@ export function planMission(
   const pixelesPorModulo = pasoModulo / (gsdCm / 100);
 
   const avisos: string[] = [];
-  if (pixelesPorModulo < PIXELES_MINIMOS) {
+  if (gsdCm > GSD_MAXIMO_CM) {
     avisos.push(
-      `Cada modulo va a ocupar ${pixelesPorModulo.toFixed(1)} pixeles de ancho. Es poco: un punto ` +
-      `caliente de una sola celda no se va a distinguir del ruido. Bajá la altura o usá una camara ` +
-      `de mas resolucion.`,
+      `A ${gsdCm.toFixed(1)} cm por pixel, una celda de 16 cm entra en ${(16 / gsdCm).toFixed(1)} ` +
+      `pixeles. Un punto caliente de una sola celda no se va a distinguir del ruido. ` +
+      `(El modulo entero igual da ${pixelesPorModulo.toFixed(0)} pixeles, que es el numero que ` +
+      `engaña: lo que hay que resolver es la celda.) Bajá a ` +
+      `${(opts.altitudeM * GSD_MAXIMO_CM / gsdCm).toFixed(0)} m o menos.`,
     );
   }
   if (opts.sideOverlap < 0.6) {
