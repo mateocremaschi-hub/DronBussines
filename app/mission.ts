@@ -419,3 +419,150 @@ export function planByBlock(
     salidas: Math.max(1, Math.ceil(totalBaterias / Math.max(1, bateriasDisponibles))),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Bloques que se pisan
+// ---------------------------------------------------------------------------
+
+/**
+ * Eje de vuelo y su perpendicular, en el marco local del parque.
+ *
+ * Se saca aparte porque lo necesitan tanto la planificacion como la deteccion
+ * de bloques que se solapan, y calcularlo dos veces por separado es como se
+ * desincronizan las cosas.
+ */
+function ejeDe(rows: TrackerRow[], frame: ReturnType<typeof makeFrame>, alongRows: boolean) {
+  let ux = 0, uy = 0;
+  for (const r of rows) {
+    const a = toLocal(frame, r.start.lat, r.start.lon);
+    const b = toLocal(frame, r.end.lat, r.end.lon);
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const s = dy >= 0 ? 1 : -1;
+    ux += (dx / len) * s;
+    uy += (dy / len) * s;
+  }
+  const n = Math.hypot(ux, uy) || 1;
+  ux /= n; uy /= n;
+  const [fx, fy] = alongRows ? [ux, uy] : [-uy, ux];
+  return { fx, fy, px: -fy, py: fx };
+}
+
+/** Cuanto ocupa un bloque sobre el eje perpendicular al vuelo. */
+function franjaDe(
+  rows: TrackerRow[],
+  frame: ReturnType<typeof makeFrame>,
+  eje: ReturnType<typeof ejeDe>,
+): { min: number; max: number } {
+  const v = rows.flatMap((r) => [
+    toLocal(frame, r.start.lat, r.start.lon),
+    toLocal(frame, r.end.lat, r.end.lon),
+  ]).map((p) => p.x * eje.px + p.y * eje.py);
+  return { min: Math.min(...v), max: Math.max(...v) };
+}
+
+export interface GrupoDeVuelo {
+  /** Los bloques que se vuelan juntos. */
+  bloques: string[];
+  filas: number;
+  mission: Mission;
+  baterias: number;
+}
+
+export interface PlanAgrupado {
+  grupos: GrupoDeVuelo[];
+  totalMinutos: number;
+  totalBaterias: number;
+  salidas: number;
+  /** Cuantos bloques quedaron pegados a otro por pisarse. */
+  bloquesAgrupados: number;
+  /** Minutos que se ahorran contra volar bloque por bloque. */
+  ahorroMinutos: number;
+}
+
+/**
+ * Agrupa los bloques que comparten pasada.
+ *
+ * Los bloques de una planta no son rectangulos prolijos: se escalonan y se
+ * meten unos entre otros. Cuando dos bloques ocupan la misma franja
+ * perpendicular al vuelo, volarlos por separado repite las mismas pasadas dos
+ * veces — y sumando los 36 bloques esa repeticion infla el total.
+ *
+ * Volarlos juntos no pierde nada: la unidad de REPORTE sigue siendo el bloque,
+ * porque cada foto se ubica sola contra la geometria. Lo unico que cambia es
+ * que el dron no pasa dos veces por el mismo lugar.
+ */
+export function planByGroup(
+  rows: TrackerRow[],
+  profile: FarmProfile,
+  opts: MissionOptions,
+  bateriasDisponibles = 4,
+): PlanAgrupado {
+  const porBloque = new Map<string, TrackerRow[]>();
+  for (const r of rows) porBloque.set(r.block, [...(porBloque.get(r.block) ?? []), r]);
+  const bloques = [...porBloque.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+  if (!rows.length) {
+    return { grupos: [], totalMinutos: 0, totalBaterias: 0, salidas: 1, bloquesAgrupados: 0, ahorroMinutos: 0 };
+  }
+
+  const frame = makeFrame(rows[0]!.start.lat, rows[0]!.start.lon);
+  const eje = ejeDe(rows, frame, opts.alongRows);
+  const franjas = new Map(bloques.map((b) => [b, franjaDe(porBloque.get(b)!, frame, eje)]));
+
+  // Union-find sobre "comparten franja". Dos bloques que se pisan sobre el eje
+  // perpendicular comparten pasadas, y volarlos aparte las repite.
+  const padre = new Map(bloques.map((b) => [b, b]));
+  const raiz = (b: string): string => {
+    let x = b;
+    while (padre.get(x) !== x) x = padre.get(x)!;
+    return x;
+  };
+  for (let i = 0; i < bloques.length; i++) {
+    for (let j = i + 1; j < bloques.length; j++) {
+      const a = franjas.get(bloques[i]!)!;
+      const c = franjas.get(bloques[j]!)!;
+      const solape = Math.min(a.max, c.max) - Math.max(a.min, c.min);
+      // Se agrupan solo si el solape es una parte real del bloque mas chico:
+      // rozarse por un metro no justifica juntarlos.
+      const menor = Math.min(a.max - a.min, c.max - c.min);
+      if (solape > Math.max(opts.marginM, menor * 0.25)) {
+        padre.set(raiz(bloques[i]!), raiz(bloques[j]!));
+      }
+    }
+  }
+
+  const juntos = new Map<string, string[]>();
+  for (const b of bloques) {
+    const r = raiz(b);
+    juntos.set(r, [...(juntos.get(r) ?? []), b]);
+  }
+
+  const grupos: GrupoDeVuelo[] = [];
+  for (const lista of [...juntos.values()].sort((a, b) =>
+    a[0]!.localeCompare(b[0]!, undefined, { numeric: true }),
+  )) {
+    const filas = lista.flatMap((b) => porBloque.get(b)!);
+    const mission = planMission(filas, profile, opts);
+    if (!mission) continue;
+    grupos.push({
+      bloques: lista,
+      filas: filas.length,
+      mission,
+      baterias: Math.max(1, Math.ceil(mission.stats.minutos / MINUTOS_POR_BATERIA)),
+    });
+  }
+
+  const totalMinutos = grupos.reduce((s, g) => s + g.mission.stats.minutos, 0);
+  const totalBaterias = grupos.reduce((s, g) => s + g.baterias, 0);
+  const sueltos = planByBlock(rows, profile, opts, bateriasDisponibles);
+
+  return {
+    grupos,
+    totalMinutos,
+    totalBaterias,
+    salidas: Math.max(1, Math.ceil(totalBaterias / Math.max(1, bateriasDisponibles))),
+    bloquesAgrupados: grupos.filter((g) => g.bloques.length > 1).reduce((s, g) => s + g.bloques.length, 0),
+    ahorroMinutos: sueltos.totalMinutos - totalMinutos,
+  };
+}

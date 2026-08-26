@@ -15,6 +15,7 @@ import {
   CAMARAS,
   OPCIONES_POR_DEFECTO,
   planByBlock,
+  planByGroup,
   planMission,
   SOLAPES,
   toKml,
@@ -321,5 +322,92 @@ describe("cuanto cuesta el solape", () => {
   it("ni siquiera con RTK acepta un solape absurdo", () => {
     const m = planMission(bloque(6), profile, opts({ sideOverlap: 0.15, rtk: true }))!;
     expect(m.stats.avisos.join(" ")).toMatch(/incluso con RTK/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bloques que comparten pasada
+//
+// Los bloques de una planta no son rectangulos prolijos: se escalonan y se
+// meten unos entre otros. Volando bloque por bloque, dos que ocupan la misma
+// franja repiten las mismas pasadas — y sumando 36 bloques esa repeticion
+// infla el total de horas sin que se note.
+// ---------------------------------------------------------------------------
+
+describe("bloques que se pisan", () => {
+  const mPerLon = 111320 * Math.cos((-27.4 * Math.PI) / 180);
+
+  /** Un bloque de `n` filas que arranca en la franja `desdeM`. */
+  const franja = (block: string, n: number, desdeM: number): TrackerRow[] =>
+    Array.from({ length: n }, (_, i) =>
+      makeRow(
+        {
+          id: `${block}-${i}`, block, tracker: `t${i}`,
+          anchor: { lat: -27.4, lon: 152.7 + (desdeM + i * 6) / mPerLon },
+          azimuthDeg: 180,
+        },
+        profile,
+      ),
+    );
+
+  it("los que no se tocan quedan cada uno por su lado", () => {
+    // Dos bloques separados 300 m: no comparten ninguna pasada.
+    const rows = [...franja("01", 10, 0), ...franja("02", 10, 300)];
+    const p = planByGroup(rows, profile, opts());
+    expect(p.grupos).toHaveLength(2);
+    expect(p.bloquesAgrupados).toBe(0);
+    expect(p.ahorroMinutos).toBeCloseTo(0, 1);
+  });
+
+  // El caso de Mateo: el bloque 7 se pisa con el 5 y el 19.
+  it("los que comparten franja se vuelan juntos", () => {
+    const rows = [...franja("05", 10, 0), ...franja("07", 10, 30), ...franja("19", 10, 60)];
+    const p = planByGroup(rows, profile, opts());
+    expect(p.grupos).toHaveLength(1);
+    expect(p.grupos[0]!.bloques).toEqual(["05", "07", "19"]);
+    expect(p.bloquesAgrupados).toBe(3);
+  });
+
+  // Lo que importa: el total deja de estar inflado.
+  it("agrupar ahorra tiempo real contra volar bloque por bloque", () => {
+    const rows = [...franja("05", 10, 0), ...franja("07", 10, 30), ...franja("19", 10, 60)];
+    const sueltos = planByBlock(rows, profile, opts());
+    const juntos = planByGroup(rows, profile, opts());
+    expect(juntos.totalMinutos).toBeLessThan(sueltos.totalMinutos);
+    expect(juntos.ahorroMinutos).toBeGreaterThan(0);
+    expect(juntos.ahorroMinutos).toBeCloseTo(sueltos.totalMinutos - juntos.totalMinutos, 6);
+  });
+
+  it("rozarse un poco no alcanza para juntarlos", () => {
+    // Se tocan por menos de un cuarto del bloque mas chico.
+    const rows = [...franja("01", 10, 0), ...franja("02", 10, 56)];
+    const p = planByGroup(rows, profile, opts({ marginM: 2 }));
+    expect(p.grupos).toHaveLength(2);
+  });
+
+  it("un parque vacio no rompe nada", () => {
+    const p = planByGroup([], profile, opts());
+    expect(p.grupos).toEqual([]);
+    expect(p.totalMinutos).toBe(0);
+  });
+
+  // La unidad de REPORTE sigue siendo el bloque: cada foto se ubica sola
+  // contra la geometria, asi que volar juntos no mezcla nada.
+  it("agrupado se sigue cubriendo todo", () => {
+    const rows = [...franja("05", 10, 0), ...franja("07", 10, 30)];
+    const p = planByGroup(rows, profile, opts());
+    const m = p.grupos[0]!.mission;
+    const frame = makeFrame(-27.4, 152.7);
+    const mitad = m.stats.huellaAnchoM / 2;
+    const cubierto = rows.flatMap((r) => [
+      toLocal(frame, r.start.lat, r.start.lon), toLocal(frame, r.end.lat, r.end.lon),
+    ]).every((pt) => m.lines.some((l) => {
+      const A = toLocal(frame, l.a.lat, l.a.lon), B = toLocal(frame, l.b.lat, l.b.lon);
+      const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1;
+      const t = ((pt.x - A.x) * dx + (pt.y - A.y) * dy) / (len * len);
+      const perp = Math.abs((pt.x - A.x) * (-dy / len) + (pt.y - A.y) * (dx / len));
+      return t >= -0.01 && t <= 1.01 && perp <= mitad;
+    }));
+    expect(cubierto).toBe(true);
   });
 });

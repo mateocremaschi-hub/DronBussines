@@ -19,6 +19,7 @@ import {
   MINUTOS_POR_BATERIA,
   OPCIONES_POR_DEFECTO,
   planByBlock,
+  planByGroup,
   planMission,
   SOLAPES,
   toKml,
@@ -33,6 +34,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   const [porBloque, setPorBloque] = useState(true);
   const [baterias, setBaterias] = useState(4);
   const [bloqueAbierto, setBloqueAbierto] = useState<string | null>(null);
+  const [agrupar, setAgrupar] = useState(true);
 
   const opts: MissionOptions = { camera: CAMARAS[camIndex]!, ...o };
 
@@ -45,16 +47,31 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     [stored.rows, stored.profile, opts.camera, o, baterias],
   );
 
+  const agrupado = useMemo(
+    () => planByGroup(stored.rows, stored.profile, opts, baterias),
+    [stored.rows, stored.profile, opts.camera, o, baterias],
+  );
+
   const entero = useMemo(
     () => planMission(stored.rows, stored.profile, opts),
     [stored.rows, stored.profile, opts.camera, o],
   );
 
-  // Lo que se dibuja y se exporta: un bloque si hay uno elegido, si no todo.
+  // Las salidas que se van a volar: agrupadas o bloque por bloque.
+  const salidas = porBloque
+    ? agrupar
+      ? agrupado.grupos.map((g) => ({ clave: g.bloques.join("+"), nombre: g.bloques.join(", "), filas: g.filas, mission: g.mission, baterias: g.baterias }))
+      : plan.bloques.map((b) => ({ clave: b.block, nombre: b.block, filas: b.filas, mission: b.mission, baterias: b.baterias }))
+    : [];
+  const total = porBloque ? (agrupar ? agrupado : plan) : null;
+
   const mission = porBloque
-    ? plan.bloques.find((b) => b.block === bloqueAbierto)?.mission ?? null
+    ? salidas.find((s) => s.clave === bloqueAbierto)?.mission ?? null
     : entero;
-  const etiqueta = porBloque && bloqueAbierto ? `bloque ${bloqueAbierto}` : "todo el parque";
+  const etiqueta =
+    porBloque && bloqueAbierto
+      ? `bloque${bloqueAbierto.includes("+") ? "s" : ""} ${bloqueAbierto.replace(/\+/g, ", ")}`
+      : "todo el parque";
 
   /**
    * Que cuesta cada configuracion, en horas.
@@ -70,7 +87,9 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
       ["Con RTK + 8 m/s, a 60 m", { ...SOLAPES.conRtk, speedMps: 8, altitudeM: 60 }],
     ];
     return casos.map(([nombre, cambio]) => {
-      const p = planByBlock(stored.rows, stored.profile, { ...opts, ...cambio }, baterias);
+      const p = agrupar
+        ? planByGroup(stored.rows, stored.profile, { ...opts, ...cambio }, baterias)
+        : planByBlock(stored.rows, stored.profile, { ...opts, ...cambio }, baterias);
       const m = planMission(stored.rows.slice(0, 1), stored.profile, { ...opts, ...cambio });
       return {
         nombre,
@@ -185,11 +204,29 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         </p>
 
         <div className="stats">
-          <div><b>{plan.bloques.length}</b><span>bloques</span></div>
-          <div><b>{(plan.totalMinutos / 60).toFixed(1)} h</b><span>de vuelo en total</span></div>
-          <div><b>{plan.totalBaterias}</b><span>baterias</span></div>
-          <div><b>{plan.salidas}</b><span>salidas de campo</span></div>
+          <div><b>{salidas.length || plan.bloques.length}</b><span>vuelos</span></div>
+          <div><b>{((total?.totalMinutos ?? plan.totalMinutos) / 60).toFixed(1)} h</b><span>de vuelo en total</span></div>
+          <div><b>{total?.totalBaterias ?? plan.totalBaterias}</b><span>baterias</span></div>
+          <div><b>{total?.salidas ?? plan.salidas}</b><span>salidas de campo</span></div>
         </div>
+
+        {agrupado.bloquesAgrupados > 0 && (
+          <p className={agrupar ? "note good" : "note bad"}>
+            {agrupar ? (
+              <>
+                {agrupado.bloquesAgrupados} bloques comparten pasada con algun vecino y se vuelan
+                juntos. Eso ahorra <strong>{(agrupado.ahorroMinutos / 60).toFixed(1)} horas</strong>{" "}
+                contra volarlos por separado.
+              </>
+            ) : (
+              <>
+                {agrupado.bloquesAgrupados} bloques se pisan con algun vecino. Volandolos por
+                separado se repiten las mismas pasadas:{" "}
+                <strong>{(agrupado.ahorroMinutos / 60).toFixed(1)} horas de mas</strong>.
+              </>
+            )}
+          </p>
+        )}
 
         <div className="grid-2">
           <div className="field">
@@ -219,23 +256,41 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
           </span>
         </label>
 
-        {porBloque && plan.bloques.length > 0 && (
+        {porBloque && (
+          <label className="check">
+            <input
+              type="checkbox" checked={agrupar}
+              onChange={(e) => { setAgrupar(e.target.checked); setBloqueAbierto(null); }}
+            />
+            <span>
+              Juntar los bloques que comparten pasada
+              <em>
+                Los bloques de una planta no son rectangulos prolijos: se escalonan y se meten unos
+                entre otros. Dos que ocupan la misma franja repiten las mismas pasadas si se vuelan
+                por separado. Volarlos juntos no mezcla nada — cada foto se ubica sola contra la
+                geometria, asi que el informe sigue saliendo por bloque.
+              </em>
+            </span>
+          </label>
+        )}
+
+        {porBloque && salidas.length > 0 && (
           <div className="tablewrap">
             <table>
               <thead>
-                <tr><th></th><th>Bloque</th><th>Filas</th><th>Pasadas</th><th>Fotos</th><th>Minutos</th><th>Baterias</th></tr>
+                <tr><th></th><th>{agrupar ? "Bloques" : "Bloque"}</th><th>Filas</th><th>Pasadas</th><th>Fotos</th><th>Minutos</th><th>Baterias</th></tr>
               </thead>
               <tbody>
-                {plan.bloques.map((b) => (
-                  <tr key={b.block} className={bloqueAbierto === b.block ? "top" : ""}>
+                {salidas.map((b) => (
+                  <tr key={b.clave} className={bloqueAbierto === b.clave ? "top" : ""}>
                     <td>
                       <input
-                        type="radio" name="bloque" checked={bloqueAbierto === b.block}
-                        onChange={() => setBloqueAbierto(b.block)}
-                        aria-label={`Bloque ${b.block}`}
+                        type="radio" name="bloque" checked={bloqueAbierto === b.clave}
+                        onChange={() => setBloqueAbierto(b.clave)}
+                        aria-label={`Bloque ${b.nombre}`}
                       />
                     </td>
-                    <td><code>{b.block}</code></td>
+                    <td><code>{b.nombre}</code></td>
                     <td>{b.filas}</td>
                     <td>{b.mission.stats.lineas}</td>
                     <td>{b.mission.stats.fotos}</td>
@@ -249,7 +304,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         )}
 
         {porBloque && !bloqueAbierto && (
-          <p className="note">Elegi un bloque de la tabla para ver su ruta y exportarla.</p>
+          <p className="note">Elegi una fila de la tabla para ver su ruta y exportarla.</p>
         )}
 
         <h3>Que cuesta cada configuracion</h3>
