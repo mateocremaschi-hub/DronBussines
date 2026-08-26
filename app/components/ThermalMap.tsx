@@ -25,6 +25,9 @@ interface Props {
   seleccion?: Hallazgo | null;
 }
 
+const ESCALA: Severidad[] = ["normal", "leve", "moderada", "critica"];
+const gravedad = (h: Hallazgo) => ESCALA.indexOf(h.peor);
+
 const COLORES: Record<Severidad, string> = {
   normal: "#3b6ea5",
   leve: "#d9a441",
@@ -81,10 +84,12 @@ export function ThermalMap({
 
     // Los normales primero y los calientes despues: un modulo critico no puede
     // quedar tapado por el vecino sano que se dibujo despues.
-    const orden = [...hallazgos].sort((a, b) => a.deltaT - b.deltaT);
+    // Ordenados por la peor de las dos comparaciones, para que un modulo con una
+    // celda en corto no quede tapado por el vecino sano dibujado despues.
+    const orden = [...hallazgos].sort((a, b) => gravedad(a) - gravedad(b));
     for (const h of orden) {
-      ctx.fillStyle = COLORES[h.severidad];
-      ctx.globalAlpha = h.severidad === "normal" ? 0.5 : 1;
+      ctx.fillStyle = COLORES[h.peor];
+      ctx.globalAlpha = h.peor === "normal" ? 0.5 : 1;
       ctx.fillRect(v.px(h.modulo.x) - w / 2, v.py(h.modulo.y) - l / 2, w, l);
     }
     ctx.globalAlpha = 1;

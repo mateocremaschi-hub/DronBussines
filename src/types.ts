@@ -99,6 +99,17 @@ export interface FarmProfile {
      * `"derive"` = calcularlo del largo real de cada segmento.
      */
     pitchMm?: number | null | "derive";
+    /**
+     * Lado de una celda, en mm. Por defecto 160.
+     *
+     * No es decorativo: es lo que decide si un vuelo puede ver un punto
+     * caliente de una sola celda o no. Una celda de 160 mm a 10 cm por pixel
+     * entra en un pixel y medio, y a esa resolucion el defecto llega al sensor
+     * ya promediado con lo que lo rodea. Se declara porque cambia entre
+     * fabricantes —M6 son 166, M10 son 182, las de media celda la mitad— y
+     * porque de aca sale el limite de altura del vuelo.
+     */
+    cellMm?: number;
   };
 
   topology: {

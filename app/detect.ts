@@ -20,7 +20,7 @@
 
 import { modulesOfRow } from "@locator";
 import type { CompiledFarm, LocalFrame, ModuleRef } from "@locator";
-import { medianaEnCaja, percentil, type Radiometric } from "./thermal";
+import { medirCaja, percentil, type Radiometric } from "./thermal";
 import { aplicarAjuste, footprint, pixelOf, type Ajuste, type PhotoPose } from "./projection";
 import type { Camera } from "./mission";
 import { SIN_AJUSTE } from "./projection";
@@ -39,6 +39,10 @@ export interface Muestra {
   modulo: ModuleRef;
   celsius: number;
   pixeles: number;
+  /** La zona mas caliente del modulo, del tamaño de una celda. */
+  puntoCalienteC?: number;
+  /** Cuantos pixeles cubre una celda en esta foto. Menos de 2 y no se resuelve. */
+  pixelesPorCelda?: number;
   fileName: string;
   /** Distancia del modulo al centro del cuadro. Cerca del borde la termica miente mas. */
   distanciaAlCentroM: number;
@@ -57,7 +61,12 @@ export interface OpcionesMuestreo {
   moduloAnchoM: number;
   moduloLargoM: number;
   ajuste?: Ajuste;
+  /** Lado de una celda en metros. Decide si el punto caliente se puede ver. */
+  celdaM?: number;
 }
+
+/** Lado de celda por defecto, en metros. Una celda entera tipica. */
+export const CELDA_M = 0.16;
 
 /**
  * Que fraccion del modulo tiene que haber entrado de verdad en el cuadro.
@@ -148,7 +157,11 @@ export class Acumulador {
         const anchoCaja = ((moduloAnchoM * FRACCION_UTIL) / mPorPx) * escalaX;
         const altoCaja = ((moduloLargoM * FRACCION_UTIL) / mPorPx) * escalaY;
 
-        const hit = medianaEnCaja(foto.radio, cx, cy, anchoCaja, altoCaja);
+        // Cuantos pixeles cubre una celda: es el tamaño del parche mas caliente
+        // que se busca adentro del modulo, y tambien el que decide si se puede
+        // ver o no.
+        const ladoCeldaPx = ((this.opts.celdaM ?? CELDA_M) / mPorPx) * escalaX;
+        const hit = medirCaja(foto.radio, cx, cy, anchoCaja, altoCaja, ladoCeldaPx * ladoCeldaPx);
         // El modulo tiene que haber entrado casi entero. Medio modulo apoyado
         // en el borde del sensor no es una medicion, es el borde del cuadro.
         if (!hit || hit.pixeles < pixelesEsperados(cx, cy, anchoCaja, altoCaja) * FRACCION_MINIMA_MEDIDA) {
@@ -161,6 +174,8 @@ export class Acumulador {
           modulo: m,
           celsius: hit.celsius,
           pixeles: hit.pixeles,
+          puntoCalienteC: hit.puntoCalienteC,
+          pixelesPorCelda: ladoCeldaPx * ladoCeldaPx,
           fileName: foto.fileName,
           distanciaAlCentroM: d,
         });
@@ -216,6 +231,25 @@ export interface Hallazgo extends Muestra {
   vecinos: number;
   ambito: "string" | "fila" | "vuelo";
   severidad: Severidad;
+
+  /**
+   * Cuanto se despega el punto mas caliente del propio modulo.
+   *
+   * Es la otra mitad de la deteccion y mide algo distinto: `deltaT` compara el
+   * modulo entero contra sus hermanos y encuentra diodos de bypass y modulos
+   * desconectados; `deltaInterno` mira adentro de un solo modulo y encuentra
+   * la celda caliente, que es el defecto mas comun y el que la mediana del
+   * modulo esconde por definicion.
+   *
+   * `undefined` cuando la foto no resuelve una celda: a esa altura el defecto
+   * llega al sensor ya promediado, y afirmar algo seria inventar.
+   */
+  deltaInterno?: number;
+  severidadInterna?: Severidad;
+  /** La peor de las dos. Es la que ordena la lista. */
+  peor: Severidad;
+  /** Cual de las dos comparaciones la disparo. */
+  origen: "modulo" | "celda" | "ninguno";
 }
 
 /**
@@ -234,12 +268,37 @@ export interface Umbrales {
 
 export const UMBRALES: Umbrales = { leve: 3, moderada: 10, critica: 20 };
 
+/**
+ * Umbrales del punto caliente contra el propio modulo, en grados.
+ *
+ * Son mas altos que los de modulo contra string y tienen que serlo: adentro de
+ * un modulo sano ya hay varios grados de diferencia entre la celda mas
+ * caliente y la mediana —el marco disipa, los bordes ven cielo, la union de
+ * celdas conduce distinto—. Una celda de verdad en corto corre veinte grados
+ * o mas por encima de su modulo.
+ *
+ * Igual que los otros, son una convencion de trabajo declarada, no una cita
+ * de la norma.
+ */
+export const UMBRALES_INTERNOS: Umbrales = { leve: 8, moderada: 15, critica: 25 };
+
+/**
+ * Cuantos pixeles por celda hacen falta para creerle al punto caliente.
+ *
+ * Con menos de cuatro pixeles —dos de lado— el defecto llega al sensor
+ * mezclado con lo que lo rodea y lo que se mida no es la celda. Por debajo de
+ * esto no se emite ningun hallazgo interno: es exactamente el error de medir
+ * el borde del cuadro, con otro disfraz.
+ */
+export const PIXELES_POR_CELDA_MINIMO = 4;
+
 /** Minimo de vecinos para que una mediana signifique algo. */
 const VECINOS_MINIMOS = 5;
 
 export function comparar(
   muestras: Muestra[],
   umbrales: Umbrales = UMBRALES,
+  internos: Umbrales = UMBRALES_INTERNOS,
 ): Hallazgo[] {
   // Vecindarios, del mas significativo al mas suelto.
   const porString = new Map<string, number[]>();
@@ -272,16 +331,56 @@ export function comparar(
     }
 
     const deltaT = m.celsius - referenciaC;
+    const severidad = severidadDe(deltaT, umbrales);
+
+    /**
+     * El punto caliente adentro del modulo, con dos condiciones.
+     *
+     * La primera es que la foto resuelva la celda. La segunda es menos
+     * evidente y sale de mirar los datos: un modulo que lee MAS FRIO que sus
+     * hermanos de string no esta midiendo bien el panel.
+     *
+     * Pasa en las puntas de las filas. La caja de medicion queda medio sobre
+     * el modulo y medio sobre el pasto; la mediana entonces es la del pasto
+     * —varios grados por debajo del string— y la zona "mas caliente" que
+     * aparece adentro es simplemente el panel. El resultado tiene la firma
+     * inconfundible: delta T de modulo muy negativo y delta interno positivo
+     * por casi exactamente lo mismo.
+     *
+     * Un modulo con una celda en corto nunca esta mas frio que sus hermanos.
+     * Si lo esta, lo que sobra en la caja no es un defecto: es pasto.
+     */
+    const resuelve = (m.pixelesPorCelda ?? 0) >= PIXELES_POR_CELDA_MINIMO;
+    const mideElPanel = deltaT > -umbrales.leve;
+    const deltaInterno =
+      resuelve && mideElPanel && m.puntoCalienteC != null
+        ? m.puntoCalienteC - m.celsius
+        : undefined;
+    const severidadInterna =
+      deltaInterno != null ? severidadDe(deltaInterno, internos) : undefined;
+
+    const peor = peorDe(severidad, severidadInterna ?? "normal");
     return {
       ...m,
       deltaT,
       referenciaC,
       vecinos,
       ambito,
-      severidad: severidadDe(deltaT, umbrales),
+      severidad,
+      ...(deltaInterno != null ? { deltaInterno } : {}),
+      ...(severidadInterna ? { severidadInterna } : {}),
+      peor,
+      origen:
+        peor === "normal" ? "ninguno"
+        : peor === severidad ? "modulo"
+        : "celda",
     };
   });
 }
+
+const ESCALA: Severidad[] = ["normal", "leve", "moderada", "critica"];
+const peorDe = (a: Severidad, b: Severidad): Severidad =>
+  ESCALA.indexOf(a) >= ESCALA.indexOf(b) ? a : b;
 
 function severidadDe(deltaT: number, u: Umbrales): Severidad {
   if (deltaT >= u.critica) return "critica";
@@ -357,6 +456,20 @@ function push2<K, V>(m: Map<K, V[]>, k: K, v: V): void {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * A que fraccion de la altura hay que volar para resolver una celda.
+ *
+ * La resolucion es proporcional a la altura, asi que es una regla de tres: si
+ * hoy la celda entra en 1.5 pixeles y hacen falta 4, hay que bajar a la raiz
+ * de 1.5/4 de la altura. Se da como fraccion y no como metros porque la altura
+ * del vuelo la sabe el que volo, no este resumen.
+ */
+function alturaParaCelda(gsdCm: number): string {
+  const ladoPx = (CELDA_M * 100) / Math.max(gsdCm, 0.01);
+  const factor = Math.sqrt((ladoPx * ladoPx) / PIXELES_POR_CELDA_MINIMO);
+  return `${Math.round(Math.min(1, factor) * 100)} %`;
+}
+
 export interface ResumenDeteccion {
   modulosMedidos: number;
   sinMedir: number;
@@ -364,6 +477,8 @@ export interface ResumenDeteccion {
   moderadas: number;
   criticas: number;
   eventosDeString: number;
+  /** Cuantos pudieron chequearse por adentro, buscando la celda caliente. */
+  conChequeoDeCelda: number;
   /** Lo que la resolucion del vuelo NO permite afirmar. */
   limitaciones: string[];
 }
@@ -375,15 +490,32 @@ export function resumir(
   gsdCm: number,
   soloEnElBorde = 0,
 ): ResumenDeteccion {
-  const n = (s: Severidad) => hallazgos.filter((h) => h.severidad === s).length;
+  // Se cuenta por la PEOR de las dos comparaciones: al que tiene que salir a
+  // caminar el parque no le importa cual de los dos chequeos disparo.
+  const n = (s: Severidad) => hallazgos.filter((h) => h.peor === s).length;
   const limitaciones: string[] = [];
 
-  const pxPorCelda = 16 / gsdCm;
-  if (pxPorCelda < 3) {
+  // Cuantos modulos pudieron chequearse por adentro. Es lo que decide si este
+  // vuelo puede hablar de celdas o solo de modulos y strings.
+  const conCelda = hallazgos.filter((h) => h.deltaInterno != null).length;
+  const ladoPx = (CELDA_M * 100) / Math.max(gsdCm, 0.01);
+  const pxPorCelda = ladoPx * ladoPx;
+
+  // Dos cosas distintas y conviene no mezclarlas. La primera es fisica y sale
+  // de la altura del vuelo: a esta resolucion, ¿una celda llega al sensor o
+  // llega promediada? La segunda es de este lote de muestras.
+  if (pxPorCelda < PIXELES_POR_CELDA_MINIMO) {
     limitaciones.push(
-      `A ${gsdCm.toFixed(1)} cm por pixel una celda de 16 cm entra en ${pxPorCelda.toFixed(1)} ` +
-      `pixeles. Los puntos calientes de una sola celda quedan promediados con lo que los rodea: ` +
-      `este vuelo detecta modulos y strings, no celdas.`,
+      `A ${gsdCm.toFixed(1)} cm por pixel una celda de ${(CELDA_M * 100).toFixed(0)} cm entra en ` +
+      `${pxPorCelda.toFixed(1)} pixeles. Por debajo de ${PIXELES_POR_CELDA_MINIMO} el defecto ` +
+      `llega al sensor ya promediado con lo que lo rodea, asi que NO se busco el punto caliente ` +
+      `de celda: este vuelo detecta modulos y strings, no celdas. Para verlas hay que volar a ` +
+      `${alturaParaCelda(gsdCm)} de la altura de este vuelo.`,
+    );
+  } else if (hallazgos.length && conCelda < hallazgos.length / 2) {
+    limitaciones.push(
+      `La altura daba para buscar celdas calientes, pero solo ${conCelda} de ${hallazgos.length} ` +
+      `modulos traen la medicion del punto caliente. En el resto no se busco.`,
     );
   }
   const flojos = hallazgos.filter((h) => h.ambito !== "string").length;
@@ -429,6 +561,7 @@ export function resumir(
     moderadas: n("moderada"),
     criticas: n("critica"),
     eventosDeString: eventos.length,
+    conChequeoDeCelda: conCelda,
     limitaciones,
   };
 }

@@ -39,14 +39,26 @@ const farm = compileFarm(profile, conStrings);
 const modulos = modulesOfRow(farm.rows[0]!, farm);
 
 /** Muestras de toda la fila a una temperatura base, con los retoques que se pidan. */
-const muestras = (base: number, retoques: Record<number, number> = {}): Muestra[] =>
-  modulos.map((m) => ({
-    modulo: m,
-    celsius: base + (retoques[m.positionInRow] ?? 0),
-    pixeles: 40,
-    fileName: "DJI_0001_T.JPG",
-    distanciaAlCentroM: 3,
-  }));
+const muestras = (
+  base: number,
+  retoques: Record<number, number> = {},
+  /** Cuanto se despega el punto mas caliente del propio modulo. */
+  calientes: Record<number, number> = {},
+): Muestra[] =>
+  modulos.map((m) => {
+    const celsius = base + (retoques[m.positionInRow] ?? 0);
+    return {
+      modulo: m,
+      celsius,
+      pixeles: 40,
+      // Una muestra real siempre trae las dos cosas. Por defecto el modulo es
+      // parejo por dentro: su zona mas caliente esta a su propia temperatura.
+      puntoCalienteC: celsius + (calientes[m.positionInRow] ?? 0),
+      pixelesPorCelda: 12,
+      fileName: "DJI_0001_T.JPG",
+      distanciaAlCentroM: 3,
+    };
+  });
 
 // ---------------------------------------------------------------------------
 
@@ -148,7 +160,7 @@ describe("declarar lo que el vuelo NO permite afirmar", () => {
   it("avisa que a esa resolucion no se ven celdas", () => {
     // 14.9 cm/px: el vuelo real de Edenvale a 113 m.
     const r = resumir(comparar(muestras(40)), 56, [], 14.9);
-    expect(r.limitaciones.join(" ")).toMatch(/una celda de 16 cm entra en 1\.1/);
+    expect(r.limitaciones.join(" ")).toMatch(/una celda de 16 cm entra en 1\.2 pixeles/);
     expect(r.limitaciones.join(" ")).toMatch(/no celdas/);
   });
 
@@ -268,5 +280,119 @@ describe("el borde del cuadro", () => {
     const cortadosSolo = acc.soloEnElBorde();
     acc.agregar({ fileName: "alta.JPG", radio: termicaPareja(45), pose: pose(200) });
     expect(acc.soloEnElBorde()).toBeLessThan(cortadosSolo);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// La celda caliente
+// ---------------------------------------------------------------------------
+
+/**
+ * El defecto mas comun de todos, y el que la otra comparacion no puede ver.
+ *
+ * Un modulo se mide por su MEDIANA, que es lo correcto para ignorar el pasto y
+ * el marco de aluminio. Pero por eso mismo es ciega a una celda caliente: una
+ * celda ocupa el 3 % del area del modulo y la mediana no se mueve un decimo de
+ * grado. Un modulo con una celda en corto se ve, contra sus 27 hermanos de
+ * string, exactamente igual que uno sano.
+ *
+ * Por eso hace falta la segunda comparacion, y es contra el PROPIO modulo: la
+ * suciedad, la irradiancia y la edad afectan al modulo entero por igual y se
+ * cancelan solas en la resta.
+ */
+describe("la celda caliente adentro del modulo", () => {
+  it("la mediana del modulo no la ve — por eso hace falta la otra comparacion", () => {
+    const h = comparar(muestras(40, {}, { 7: 30 }));
+    const m = h.find((x) => x.modulo.positionInRow === 7)!;
+    // Contra sus hermanos de string el modulo esta impecable...
+    expect(m.deltaT).toBeCloseTo(0, 1);
+    expect(m.severidad).toBe("normal");
+    // ...y sin embargo tiene una celda 30 grados por encima de si mismo.
+    expect(m.deltaInterno).toBeCloseTo(30, 1);
+    expect(m.severidadInterna).toBe("critica");
+    expect(m.peor).toBe("critica");
+    expect(m.origen).toBe("celda");
+  });
+
+  it("un modulo parejo por dentro no dispara nada", () => {
+    const h = comparar(muestras(40));
+    expect(h.every((x) => x.peor === "normal")).toBe(true);
+    expect(h.every((x) => x.origen === "ninguno")).toBe(true);
+  });
+
+  // Adentro de un modulo sano ya hay varios grados entre la celda mas caliente
+  // y la mediana: el marco disipa y los bordes ven cielo. Por eso el umbral
+  // interno es mas alto que el de modulo contra string.
+  it("no confunde la dispersion normal de un modulo con un defecto", () => {
+    const h = comparar(muestras(40, {}, { 7: 5 }));
+    const m = h.find((x) => x.modulo.positionInRow === 7)!;
+    expect(m.deltaInterno).toBeCloseTo(5, 1);
+    expect(m.peor).toBe("normal");
+  });
+
+  /**
+   * La regla que evita repetir el error del borde del cuadro: si la foto no
+   * resuelve la celda, no se afirma nada sobre celdas.
+   */
+  it("sin resolucion para ver la celda, no inventa el hallazgo", () => {
+    const flojas = muestras(40, {}, { 7: 30 }).map((m) => ({ ...m, pixelesPorCelda: 1.5 }));
+    const m = comparar(flojas).find((x) => x.modulo.positionInRow === 7)!;
+    expect(m.deltaInterno).toBeUndefined();
+    expect(m.severidadInterna).toBeUndefined();
+    expect(m.peor).toBe("normal");
+  });
+
+  it("cuando las dos disparan, manda la peor y dice cual fue", () => {
+    // Modulo entero 12 grados arriba (moderada) y ademas celda a 30 (critica).
+    const h = comparar(muestras(40, { 7: 12 }, { 7: 30 }));
+    const m = h.find((x) => x.modulo.positionInRow === 7)!;
+    expect(m.severidad).toBe("moderada");
+    expect(m.severidadInterna).toBe("critica");
+    expect(m.peor).toBe("critica");
+    expect(m.origen).toBe("celda");
+  });
+
+  it("el resumen cuenta por la peor de las dos y dice cuantos chequeo", () => {
+    const h = comparar(muestras(40, {}, { 7: 30 }));
+    const r = resumir(h, 56, [], 4.5);
+    expect(r.criticas).toBe(1);
+    expect(r.conChequeoDeCelda).toBe(h.length);
+    expect(r.limitaciones.join(" ")).not.toMatch(/celda/);
+  });
+
+  it("a poca resolucion avisa a cuanto de la altura hay que volar", () => {
+    // A 14.9 cm por pixel una celda de 16 cm entra en poco mas de un pixel:
+    // la muestra tiene que decir eso, no un numero de otro vuelo.
+    const flojas = muestras(40).map((m) => ({ ...m, pixelesPorCelda: 1.15 }));
+    const r = resumir(comparar(flojas), 56, [], 14.9);
+    expect(r.conChequeoDeCelda).toBe(0);
+    expect(r.limitaciones.join(" ")).toMatch(/volar a 5[0-9] % de la altura/);
+  });
+});
+
+/**
+ * La punta de la fila: la misma trampa que el borde del cuadro, corrida de lugar.
+ *
+ * En el ultimo modulo de una fila la caja de medicion queda medio sobre el
+ * panel y medio sobre el pasto. La mediana sale la del pasto —varios grados
+ * por debajo del string— y la zona mas caliente de adentro es, simplemente, el
+ * panel. Sin esta regla el vuelo de prueba devolvia diez "leves" que eran
+ * todos modulo 1 o modulo 28.
+ */
+describe("un modulo mas frio que su string no esta midiendo el panel", () => {
+  it("no le busca la celda caliente al que lee mas frio que sus hermanos", () => {
+    // La firma exacta: 10 grados por debajo del string, 10 por encima adentro.
+    const h = comparar(muestras(40, { 1: -10 }, { 1: 10.5 }));
+    const punta = h.find((x) => x.modulo.positionInRow === 1)!;
+    expect(punta.deltaT).toBeCloseTo(-10, 1);
+    expect(punta.deltaInterno).toBeUndefined();
+    expect(punta.peor).toBe("normal");
+  });
+
+  it("pero al que esta a la par de sus hermanos si", () => {
+    const h = comparar(muestras(40, {}, { 1: 30 }));
+    const m = h.find((x) => x.modulo.positionInRow === 1)!;
+    expect(m.deltaInterno).toBeCloseTo(30, 1);
+    expect(m.peor).toBe("critica");
   });
 });

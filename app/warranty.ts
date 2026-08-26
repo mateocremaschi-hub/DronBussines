@@ -213,7 +213,7 @@ export const claveDe = (h: Hallazgo) => `${h.modulo.rowId}#${h.modulo.positionIn
 
 export function armarPaquete(hallazgos: Hallazgo[], opts: OpcionesPaquete): ItemDeGarantia[] {
   return hallazgos
-    .filter((h) => h.severidad !== "normal")
+    .filter((h) => h.peor !== "normal")
     .map((h) => {
       const k = claveDe(h);
       const anomalia = opts.anomalias?.get(k);

@@ -21,6 +21,7 @@ import { readPhoto, type PhotoFix } from "../photos";
 import { readRadiometric } from "../thermal";
 import {
   Acumulador,
+  CELDA_M,
   comparar,
   eventosDeString,
   resumir,
@@ -84,7 +85,7 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
    * clasifican. Lo que se guarda es lo que despues se mira de a uno.
    */
   useEffect(() => {
-    const cortos = hallazgos.filter((h) => h.severidad !== "normal");
+    const cortos = hallazgos.filter((h) => h.peor !== "normal");
     if (!cortos.length) return;
     void saveAnalysis({
       farmId: stored.profile.id,
@@ -134,6 +135,9 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
             moduloAnchoM: anchoM,
             moduloLargoM: LARGO_MODULO_M,
             ajuste: conAjuste,
+            // El lado de la celda lo declara el perfil del parque: cambia
+            // entre fabricantes y decide si este vuelo puede ver una celda.
+            celdaM: (stored.profile.module.cellMm ?? CELDA_M * 1000) / 1000,
           });
         }
 
@@ -232,7 +236,10 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
             </div>
             <p className="muted small">
               Camara deducida de las propias fotos: {camera.hfovDeg.toFixed(1)}° de campo horizontal
-              sobre {camera.imageW}×{camera.imageH} px · {gsdCm.toFixed(1)} cm por pixel en este vuelo.
+              sobre {camera.imageW}×{camera.imageH} px · {gsdCm.toFixed(1)} cm por pixel en este vuelo ·{" "}
+              {resumen.conChequeoDeCelda
+                ? `${resumen.conChequeoDeCelda} modulos chequeados tambien por adentro`
+                : "sin resolucion para buscar celdas calientes"}.
             </p>
 
             {resumen.eventosDeString > 0 && (
@@ -287,6 +294,14 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
                 {elegido.deltaT.toFixed(1)} °C</strong> contra sus {elegido.vecinos} vecinos
                 {elegido.ambito === "string" ? " del mismo string" : ` (comparado por ${elegido.ambito})`}
                 {" "}· medido sobre {elegido.pixeles} pixeles de <code>{elegido.fileName}</code>
+                {elegido.deltaInterno != null && (
+                  <>
+                    <br />
+                    Su zona mas caliente esta <strong>+{elegido.deltaInterno.toFixed(1)} °C</strong>{" "}
+                    por encima del propio modulo
+                    {elegido.origen === "celda" && " — eso es una celda, no el modulo entero"}.
+                  </>
+                )}
               </div>
             )}
 
@@ -330,13 +345,14 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
                 <thead>
                   <tr>
                     <th>Bloque</th><th>Tracker</th><th>String</th><th>Modulo</th>
-                    <th>°C</th><th>ΔT</th><th>Comparado contra</th><th></th>
+                    <th>°C</th><th>ΔT modulo</th><th>ΔT celda</th>
+                    <th>Comparado contra</th><th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {hallazgos
-                    .filter((h) => h.severidad !== "normal")
-                    .sort((a, b) => b.deltaT - a.deltaT)
+                    .filter((h) => h.peor !== "normal")
+                    .sort((a, b) => Math.max(b.deltaT, b.deltaInterno ?? -99) - Math.max(a.deltaT, a.deltaInterno ?? -99))
                     .slice(0, 30)
                     .map((h) => (
                       <tr
@@ -349,13 +365,20 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
                         <td><code>{h.modulo.stringLabel ?? h.modulo.stringNumber}</code></td>
                         <td>{h.modulo.module}</td>
                         <td>{h.celsius.toFixed(1)}</td>
-                        <td><strong>+{h.deltaT.toFixed(1)}</strong></td>
+                        <td className={h.origen === "modulo" ? "top" : ""}>
+                          <strong>{h.deltaT >= 0 ? "+" : ""}{h.deltaT.toFixed(1)}</strong>
+                        </td>
+                        <td className={h.origen === "celda" ? "top" : "flojo"}>
+                          {h.deltaInterno != null
+                            ? <strong>+{h.deltaInterno.toFixed(1)}</strong>
+                            : "no resuelve"}
+                        </td>
                         <td className={h.ambito === "string" ? "" : "flojo"}>
                           {h.ambito === "string"
                             ? `su string (${h.vecinos})`
                             : `${h.ambito} (${h.vecinos}) — flojo`}
                         </td>
-                        <td>{h.severidad}</td>
+                        <td>{h.peor}</td>
                       </tr>
                     ))}
                 </tbody>
@@ -398,15 +421,21 @@ function toCsv(hallazgos: Hallazgo[]): string {
   const head = [
     "bloque", "tracker", "fila", "string", "modulo_desde_caja_dc",
     "celsius", "delta_t", "referencia_c", "vecinos", "comparado_por", "severidad",
+    "punto_caliente_c", "delta_interno", "severidad_celda", "que_lo_disparo",
     "pixeles", "foto",
   ];
   const lines = [head.join(",")];
-  for (const h of [...hallazgos].sort((a, b) => b.deltaT - a.deltaT)) {
+  for (const h of [...hallazgos].sort(
+    (a, b) => Math.max(b.deltaT, b.deltaInterno ?? -99) - Math.max(a.deltaT, a.deltaInterno ?? -99),
+  )) {
     lines.push([
       h.modulo.block, h.modulo.tracker, h.modulo.row ?? "",
       h.modulo.stringLabel ?? h.modulo.stringNumber, h.modulo.module,
       h.celsius.toFixed(1), h.deltaT.toFixed(1), h.referenciaC.toFixed(1),
-      h.vecinos, h.ambito, h.severidad, h.pixeles, h.fileName,
+      h.vecinos, h.ambito, h.severidad,
+      h.puntoCalienteC?.toFixed(1) ?? "", h.deltaInterno?.toFixed(1) ?? "",
+      h.severidadInterna ?? "no resuelve", h.origen,
+      h.pixeles, h.fileName,
     ].map(esc).join(","));
   }
   return lines.join("\n");

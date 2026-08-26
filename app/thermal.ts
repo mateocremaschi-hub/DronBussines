@@ -154,6 +154,79 @@ export function readRadiometric(buf: ArrayBuffer): Radiometric | null {
  * del suelo, que al sol esta mucho mas frio o mas caliente. Un solo pixel de
  * suelo corre el promedio varios grados; a la mediana no la mueve.
  */
+export interface Medicion {
+  /** La temperatura de trabajo del modulo: la mediana de su parte util. */
+  celsius: number;
+  /**
+   * La temperatura de la zona mas caliente del tamaño de una celda.
+   *
+   * Es la mediana de los `kCaliente` pixeles mas calientes de la caja, no el
+   * maximo. El maximo de una termica es un pixel de ruido; la mediana del
+   * conjunto mas caliente del tamaño de una celda es una celda caliente.
+   */
+  puntoCalienteC: number;
+  pixeles: number;
+}
+
+/**
+ * Mide un modulo: su temperatura de trabajo y su punto mas caliente.
+ *
+ * Las dos cosas hacen falta y miden cosas distintas.
+ *
+ * La MEDIANA es la temperatura del modulo. Es la que sirve para compararlo
+ * contra sus hermanos de string, y es mediana y no promedio porque un pixel de
+ * pasto o de marco de aluminio corre un promedio varios grados.
+ *
+ * Pero por eso mismo la mediana es CIEGA al defecto mas comun de todos. Una
+ * celda caliente ocupa el 3 % del area del modulo: la mediana no se mueve ni
+ * un decimo de grado. Para verla hay que mirar la parte mas caliente del
+ * modulo y compararla contra el propio modulo — que ademas es como lo plantea
+ * la norma, y tiene la ventaja de no depender de ningun vecino: la suciedad,
+ * la irradiancia y la edad afectan al modulo entero por igual y se cancelan.
+ */
+export function medirCaja(
+  r: Radiometric,
+  cx: number,
+  cy: number,
+  anchoPx: number,
+  altoPx: number,
+  kCaliente: number,
+): Medicion | null {
+  const vals = pixelesDeCaja(r, cx, cy, anchoPx, altoPx);
+  if (!vals) return null;
+
+  const orden = Array.from(vals).sort((a, b) => a - b);
+  const k = Math.max(1, Math.min(Math.round(kCaliente), Math.floor(orden.length / 4)));
+  const calientes = orden.slice(orden.length - k);
+
+  return {
+    celsius: percentil(orden, 50),
+    puntoCalienteC: percentil(calientes, 50),
+    pixeles: orden.length,
+  };
+}
+
+function pixelesDeCaja(
+  r: Radiometric,
+  cx: number,
+  cy: number,
+  anchoPx: number,
+  altoPx: number,
+): number[] | null {
+  const x0 = Math.max(0, Math.round(cx - anchoPx / 2));
+  const x1 = Math.min(r.width - 1, Math.round(cx + anchoPx / 2));
+  const y0 = Math.max(0, Math.round(cy - altoPx / 2));
+  const y1 = Math.min(r.height - 1, Math.round(cy + altoPx / 2));
+  if (x1 < x0 || y1 < y0) return null;
+
+  const vals: number[] = [];
+  for (let y = y0; y <= y1; y++) {
+    const fila = y * r.width;
+    for (let x = x0; x <= x1; x++) vals.push(r.celsius[fila + x]!);
+  }
+  return vals.length ? vals : null;
+}
+
 export function medianaEnCaja(
   r: Radiometric,
   cx: number,
