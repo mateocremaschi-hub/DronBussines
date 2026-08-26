@@ -1,6 +1,6 @@
 export * from "./types.js";
 
-export { locate } from "./locate.js";
+export { locate, modulesOfRow, allModules, type ModuleRef } from "./locate.js";
 export { compileFarm, type CompileOptions } from "./profile/compile.js";
 export { validateProfile, ProfileError } from "./profile/validate.js";
 

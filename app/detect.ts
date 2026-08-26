@@ -1,0 +1,323 @@
+/**
+ * Deteccion de anomalias comparando cada modulo con sus vecinos.
+ *
+ * Esta es la pieza que se terceriza por megavatio, y no hace falta.
+ *
+ * Los detectores comerciales resuelven un problema dificil: encontrar manchas
+ * calientes en una imagen sin saber que hay ahi. Tienen que segmentar modulos,
+ * reconocer filas, descartar el suelo. Por eso usan redes neuronales.
+ *
+ * Aca el problema es mucho mas facil, porque el parque ya esta cargado. La
+ * pregunta no es "que veo en esta foto" sino "este modulo, que se donde esta,
+ * a que temperatura esta comparado con los otros 27 de su mismo string". Eso
+ * es una resta.
+ *
+ * Y la comparacion es mejor que la de ellos, porque el vecindario es
+ * ELECTRICO. Un modulo se compara contra los de su propio string —los que
+ * comparten corriente, orientacion, edad y suciedad— y no contra lo que
+ * casualmente cayo cerca en el cuadro.
+ */
+
+import { modulesOfRow } from "@locator";
+import type { CompiledFarm, LocalFrame, ModuleRef } from "@locator";
+import { medianaEnCaja, percentil, type Radiometric } from "./thermal";
+import { aplicarAjuste, footprint, pixelOf, type Ajuste, type PhotoPose } from "./projection";
+import type { Camera } from "./mission";
+import { SIN_AJUSTE } from "./projection";
+
+// ---------------------------------------------------------------------------
+// Muestreo
+// ---------------------------------------------------------------------------
+
+export interface FotoTermica {
+  fileName: string;
+  pose: PhotoPose;
+  radio: Radiometric;
+}
+
+export interface Muestra {
+  modulo: ModuleRef;
+  celsius: number;
+  pixeles: number;
+  fileName: string;
+  /** Distancia del modulo al centro del cuadro. Cerca del borde la termica miente mas. */
+  distanciaAlCentroM: number;
+}
+
+/**
+ * Que fraccion del modulo se mide, para no tocar el marco ni el suelo.
+ *
+ * El borde de un modulo tiene marco de aluminio, que al sol esta a otra
+ * temperatura que la celda. Midiendo el 60 % central se evita.
+ */
+const FRACCION_UTIL = 0.6;
+
+/**
+ * Toma la temperatura de cada modulo que caiga en alguna foto.
+ *
+ * Cuando un modulo sale en varias fotos —con solape siempre pasa— se queda con
+ * la que lo tiene mas cerca del centro del cuadro. No es un capricho: en el
+ * borde la camara lo ve de costado, y una superficie de vidrio vista de
+ * costado refleja el cielo y lee mas frio de lo que esta.
+ */
+export function muestrear(
+  farm: CompiledFarm,
+  frame: LocalFrame,
+  fotos: FotoTermica[],
+  camera: Camera,
+  moduloAnchoM: number,
+  moduloLargoM: number,
+  ajuste: Ajuste = SIN_AJUSTE,
+): Muestra[] {
+  const huellas = fotos.map((f) => ({
+    foto: f,
+    huella: aplicarAjuste(footprint(frame, f.pose, camera), ajuste),
+  }));
+
+  const mejor = new Map<string, Muestra>();
+
+  for (const row of farm.rows) {
+    for (const m of modulesOfRow(row, farm)) {
+      for (const { foto, huella } of huellas) {
+        const px = pixelOf(huella, { x: m.x, y: m.y }, camera);
+        if (!px) continue;
+
+        const escalaX = foto.radio.width / camera.imageW;
+        const escalaY = foto.radio.height / camera.imageH;
+        const mPorPx = huella.anchoM / camera.imageW;
+
+        const hit = medianaEnCaja(
+          foto.radio,
+          px.px * escalaX,
+          px.py * escalaY,
+          (moduloAnchoM * FRACCION_UTIL) / mPorPx * escalaX,
+          (moduloLargoM * FRACCION_UTIL) / mPorPx * escalaY,
+        );
+        if (!hit || hit.pixeles < 1) continue;
+
+        const d = Math.hypot(m.x - huella.centre.x, m.y - huella.centre.y);
+        const clave = `${m.rowId}#${m.positionInRow}`;
+        const previo = mejor.get(clave);
+        if (previo && previo.distanciaAlCentroM <= d) continue;
+
+        mejor.set(clave, {
+          modulo: m,
+          celsius: hit.celsius,
+          pixeles: hit.pixeles,
+          fileName: foto.fileName,
+          distanciaAlCentroM: d,
+        });
+      }
+    }
+  }
+
+  return [...mejor.values()];
+}
+
+// ---------------------------------------------------------------------------
+// Comparacion
+// ---------------------------------------------------------------------------
+
+export type Severidad = "normal" | "leve" | "moderada" | "critica";
+
+export interface Hallazgo extends Muestra {
+  /** Cuantos grados por encima de sus vecinos del mismo string. */
+  deltaT: number;
+  /** Contra que se comparo. */
+  referenciaC: number;
+  vecinos: number;
+  ambito: "string" | "fila" | "vuelo";
+  severidad: Severidad;
+}
+
+/**
+ * Umbrales de delta T, en grados.
+ *
+ * Son una CONVENCION de trabajo, no una cita de la norma: la IEC TS 62446-3
+ * clasifica por patron y contexto, no por un numero suelto. Sirven para
+ * ordenar la lista y decidir a que se le presta atencion primero; la
+ * clasificacion final la pone una persona mirando la foto.
+ */
+export interface Umbrales {
+  leve: number;
+  moderada: number;
+  critica: number;
+}
+
+export const UMBRALES: Umbrales = { leve: 3, moderada: 10, critica: 20 };
+
+/** Minimo de vecinos para que una mediana signifique algo. */
+const VECINOS_MINIMOS = 5;
+
+export function comparar(
+  muestras: Muestra[],
+  umbrales: Umbrales = UMBRALES,
+): Hallazgo[] {
+  // Vecindarios, del mas significativo al mas suelto.
+  const porString = new Map<string, number[]>();
+  const porFila = new Map<string, number[]>();
+  const todo: number[] = [];
+
+  const claveString = (m: Muestra) => `${m.modulo.rowId}#${m.modulo.chunkIndex}`;
+
+  for (const m of muestras) {
+    push(porString, claveString(m), m.celsius);
+    push(porFila, m.modulo.rowId, m.celsius);
+    todo.push(m.celsius);
+  }
+
+  const medianaGlobal = percentil(todo, 50);
+
+  return muestras.map((m) => {
+    const s = porString.get(claveString(m)) ?? [];
+    const f = porFila.get(m.modulo.rowId) ?? [];
+
+    let referenciaC: number;
+    let vecinos: number;
+    let ambito: Hallazgo["ambito"];
+    if (s.length >= VECINOS_MINIMOS) {
+      referenciaC = percentil(s, 50); vecinos = s.length - 1; ambito = "string";
+    } else if (f.length >= VECINOS_MINIMOS) {
+      referenciaC = percentil(f, 50); vecinos = f.length - 1; ambito = "fila";
+    } else {
+      referenciaC = medianaGlobal; vecinos = todo.length - 1; ambito = "vuelo";
+    }
+
+    const deltaT = m.celsius - referenciaC;
+    return {
+      ...m,
+      deltaT,
+      referenciaC,
+      vecinos,
+      ambito,
+      severidad: severidadDe(deltaT, umbrales),
+    };
+  });
+}
+
+function severidadDe(deltaT: number, u: Umbrales): Severidad {
+  if (deltaT >= u.critica) return "critica";
+  if (deltaT >= u.moderada) return "moderada";
+  if (deltaT >= u.leve) return "leve";
+  return "normal";
+}
+
+function push<K>(m: Map<K, number[]>, k: K, v: number): void {
+  const a = m.get(k);
+  if (a) a.push(v); else m.set(k, [v]);
+}
+
+// ---------------------------------------------------------------------------
+// Lo que se junta en un solo problema
+// ---------------------------------------------------------------------------
+
+export interface EventoDeString {
+  rowId: string;
+  block: string;
+  tracker: string;
+  row?: string;
+  stringNumber: number;
+  stringLabel?: string;
+  modulos: number;
+  /** Cuantos de los modulos del string estan calientes. */
+  fraccion: number;
+  deltaTMedio: number;
+}
+
+/**
+ * Junta los strings donde la anomalia no es de un modulo sino de todo el string.
+ *
+ * Un modulo caliente es un modulo. Un STRING entero caliente es otra cosa: una
+ * conexion, un fusible, un tramo desconectado. Se arregla en otro lado y a
+ * veces lo paga otro. Reportar 28 hallazgos donde hay uno solo es lo que hace
+ * que un informe de 3000 filas sea inutilizable.
+ */
+export function eventosDeString(
+  hallazgos: Hallazgo[],
+  modulosPorString: number,
+  fraccionMinima = 0.5,
+): EventoDeString[] {
+  const grupos = new Map<string, Hallazgo[]>();
+  for (const h of hallazgos) {
+    if (h.severidad === "normal") continue;
+    push2(grupos, `${h.modulo.rowId}#${h.modulo.chunkIndex}`, h);
+  }
+
+  const out: EventoDeString[] = [];
+  for (const g of grupos.values()) {
+    const fraccion = g.length / modulosPorString;
+    if (fraccion < fraccionMinima) continue;
+    const m = g[0]!.modulo;
+    const ev: EventoDeString = {
+      rowId: m.rowId, block: m.block, tracker: m.tracker,
+      stringNumber: m.stringNumber,
+      modulos: g.length,
+      fraccion,
+      deltaTMedio: g.reduce((s, h) => s + h.deltaT, 0) / g.length,
+    };
+    if (m.row) ev.row = m.row;
+    if (m.stringLabel) ev.stringLabel = m.stringLabel;
+    out.push(ev);
+  }
+  return out.sort((a, b) => b.modulos - a.modulos);
+}
+
+function push2<K, V>(m: Map<K, V[]>, k: K, v: V): void {
+  const a = m.get(k);
+  if (a) a.push(v); else m.set(k, [v]);
+}
+
+// ---------------------------------------------------------------------------
+
+export interface ResumenDeteccion {
+  modulosMedidos: number;
+  sinMedir: number;
+  leves: number;
+  moderadas: number;
+  criticas: number;
+  eventosDeString: number;
+  /** Lo que la resolucion del vuelo NO permite afirmar. */
+  limitaciones: string[];
+}
+
+export function resumir(
+  hallazgos: Hallazgo[],
+  totalModulos: number,
+  eventos: EventoDeString[],
+  gsdCm: number,
+): ResumenDeteccion {
+  const n = (s: Severidad) => hallazgos.filter((h) => h.severidad === s).length;
+  const limitaciones: string[] = [];
+
+  const pxPorCelda = 16 / gsdCm;
+  if (pxPorCelda < 3) {
+    limitaciones.push(
+      `A ${gsdCm.toFixed(1)} cm por pixel una celda de 16 cm entra en ${pxPorCelda.toFixed(1)} ` +
+      `pixeles. Los puntos calientes de una sola celda quedan promediados con lo que los rodea: ` +
+      `este vuelo detecta modulos y strings, no celdas.`,
+    );
+  }
+  const flojos = hallazgos.filter((h) => h.ambito !== "string").length;
+  if (flojos) {
+    limitaciones.push(
+      `${flojos} modulos se compararon contra un vecindario mas suelto que su propio string, ` +
+      `porque no habia suficientes vecinos medidos. Su delta T es menos confiable.`,
+    );
+  }
+  if (totalModulos > hallazgos.length) {
+    limitaciones.push(
+      `${totalModulos - hallazgos.length} modulos del parque no cayeron en ninguna foto. ` +
+      `No se puede afirmar nada sobre ellos.`,
+    );
+  }
+
+  return {
+    modulosMedidos: hallazgos.length,
+    sinMedir: Math.max(0, totalModulos - hallazgos.length),
+    leves: n("leve"),
+    moderadas: n("moderada"),
+    criticas: n("critica"),
+    eventosDeString: eventos.length,
+    limitaciones,
+  };
+}

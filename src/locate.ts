@@ -300,3 +300,74 @@ function makeAddress(
   if (label) address.stringLabel = label;
   return address;
 }
+
+// ---------------------------------------------------------------------------
+// Los modulos, uno por uno
+// ---------------------------------------------------------------------------
+
+/** Un modulo con su direccion y su centro, para recorrer el parque entero. */
+export interface ModuleRef {
+  rowId: string;
+  block: string;
+  tracker: string;
+  row?: string;
+  chunkIndex: number;
+  stringNumber: number;
+  stringLabel?: string;
+  module: number;
+  positionInRow: number;
+  /** Centro en el marco local del parque, en metros. */
+  x: number;
+  y: number;
+}
+
+/**
+ * Todos los modulos de una fila, con su direccion ya resuelta.
+ *
+ * Es el recorrido inverso al de `locate`: en vez de preguntar que hay en una
+ * coordenada, enumera donde esta cada modulo. Lo necesita cualquier analisis
+ * que quiera mirar el parque modulo por modulo — por ejemplo comparar la
+ * temperatura de cada uno contra sus vecinos del mismo string.
+ *
+ * Usa las mismas funciones que `locate`, a proposito: si el recorrido de ida y
+ * el de vuelta se calcularan por separado podrian discrepar, y la discrepancia
+ * seria invisible.
+ */
+export function modulesOfRow(row: CompiledRow, farm: CompiledFarm): ModuleRef[] {
+  const modulesPerString = farm.profile.topology.modulesPerString;
+  const total = modulesPerString * farm.profile.topology.stringsPerRow;
+  const layout = layoutOf(row, farm);
+  const out: ModuleRef[] = [];
+
+  for (let positionInRow = 1; positionInRow <= total; positionInRow++) {
+    const chunkIndex = chunkOf(positionInRow, modulesPerString);
+    const inverted = row.inverted[chunkIndex] ?? false;
+    const { module } = splitPosition(positionInRow, modulesPerString, inverted);
+
+    const centreFromOrigin = distanceAtPosition(layout, positionInRow);
+    const centreFromStart =
+      row.originEnd === "start" ? centreFromOrigin : row.lengthM - centreFromOrigin;
+
+    const ref: ModuleRef = {
+      rowId: row.source.id,
+      block: row.source.block,
+      tracker: row.source.tracker,
+      chunkIndex,
+      stringNumber: row.stringNumbers[chunkIndex] ?? chunkIndex + 1,
+      module,
+      positionInRow,
+      x: row.a.x + row.ux * centreFromStart,
+      y: row.a.y + row.uy * centreFromStart,
+    };
+    if (row.source.row) ref.row = row.source.row;
+    const label = row.stringLabels?.[chunkIndex];
+    if (label) ref.stringLabel = label;
+    out.push(ref);
+  }
+  return out;
+}
+
+/** Todos los modulos del parque. Ojo: son decenas de miles en una planta grande. */
+export function allModules(farm: CompiledFarm): ModuleRef[] {
+  return farm.rows.flatMap((r) => modulesOfRow(r, farm));
+}
