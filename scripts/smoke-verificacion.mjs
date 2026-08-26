@@ -90,7 +90,9 @@ if (persistidas !== cubiertas) {
 }
 
 // El veredicto del offset: es lo que convierte un conteo en un parametro.
-const panel = await page.locator(".cuadre").innerText().catch(() => "");
+// Por el titulo y no por la clase: ahora hay dos recuadros de diagnostico
+// en la pantalla y el de las reglas viene primero.
+const panel = await page.locator(".cuadre", { hasText: "arranque de la fila" }).innerText().catch(() => "");
 console.log("Offset segun los conteos:\n   " + panel.split("\n").slice(2).join("\n   "));
 if (!/arranque de la fila/i.test(panel)) {
   console.error("ERROR: no aparecio el veredicto del offset");

@@ -13,6 +13,7 @@ import type { CompiledFarm, LocateResult } from "@locator";
 import { checkFromResult, summarize, toCalibration } from "../checks";
 import { veredictoDeOffset } from "../solveoffset";
 import { calidadDeCoordenada, comoArreglarlo } from "../gpsquality";
+import { diagnosticoDeReglas, pareceEspejado } from "../diagnostico";
 import { saveFarm, type StoredFarm } from "../storage";
 
 /** Por debajo de esta precision ya sirve para contar modulos. */
@@ -177,6 +178,17 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
       ? calidadDeCoordenada(accuracy, stored.profile.matching?.maxDistanceM ?? 30)
       : null),
     [result, accuracy, stored.profile.matching?.maxDistanceM],
+  );
+
+  // Que regla explica los desacuerdos. Es la promesa que la app venia haciendo
+  // —"un desacuerdo es un dato, no un error"— y que hasta ahora no cumplia.
+  const diag = useMemo(
+    () => diagnosticoDeReglas(checks, stored.profile, stored.rows),
+    [checks, stored.profile, stored.rows],
+  );
+  const espejo = useMemo(
+    () => pareceEspejado(checks, stored.profile.topology.modulesPerString),
+    [checks, stored.profile.topology.modulesPerString],
   );
 
   const resumen = useMemo(() => summarize(checks, stored.rows), [checks, stored.rows]);
@@ -438,6 +450,36 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
               </p>
             )}
             {offset.notas.map((n, i) => (<p key={i} className="small">{n}</p>))}
+          </div>
+        )}
+
+        {diag.usados > 0 && diag.actual < diag.usados && (
+          <div className={diag.mejor ? "cuadre" : "cuadre no"}>
+            <h3>Que regla explica los desacuerdos</h3>
+            {espejo.espejado && (
+              <p>
+                <strong>Esta espejado.</strong> En un string de{" "}
+                {stored.profile.topology.modulesPerString} modulos, contar desde la otra punta
+                convierte el modulo k en el {espejo.esperada} − k. Tus sumas dan{" "}
+                <strong>{espejo.sumas.join(", ")}</strong> — o sea {espejo.esperada}, con el ruido
+                del GPS. Y como los conteos cubren las dos puntas de la fila, eso ademas descarta
+                un error de paso: si el paso estuviera mal, las sumas se irian corriendo.
+              </p>
+            )}
+            <div className="tablewrap">
+              <table>
+                <thead><tr><th>Hipotesis</th><th className="num">Explica</th></tr></thead>
+                <tbody>
+                  {diag.hipotesis.map((h) => (
+                    <tr key={h.id} className={diag.mejor?.id === h.id ? "top" : ""}>
+                      <td>{h.titulo}</td>
+                      <td className="num">{h.aciertos} de {h.total}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {diag.notas.map((n, i) => (<p key={i} className="small">{n}</p>))}
           </div>
         )}
 
