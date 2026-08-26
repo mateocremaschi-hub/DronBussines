@@ -129,32 +129,44 @@ export function aplicarPlano(rows: TrackerRow[], plano: PlanoDeParque): Aplicaci
   let conLado = 0;
   let conCajaDc = 0;
 
-  // El plano indexa por tracker ("04-018") y lista que filas R tiene cada uno.
+  // El cruce va por TRACKER, no por fila.
   //
-  // El cruce va por tracker + fila, NO por el id de la fila. El id que arma la
-  // importacion es `bloque-tracker-fila`, y como el tracker ya trae el bloque
-  // adentro eso da "05-05-001-R1", que no se parece a nada del plano. Cruzar
-  // por id parecia andar mientras las dos puntas eran de laboratorio y no
-  // cruzaba una sola fila con los archivos de verdad — sin error, sin excepcion:
-  // el plano entraba, se aplicaba a nada, y decia que habia resuelto cero.
-  const porFila = new Map<string, { side?: TrackerRow["side"]; dcbox?: string }>();
-  for (const bloque of Object.values(plano)) {
+  // No es un atajo: en el plano el lado y la caja de continua son datos del
+  // tracker, iguales para todas sus filas R. Meter la fila en la clave solo
+  // agrega una manera de no encontrarse.
+  //
+  // Y la clave se normaliza a numeros porque los dos archivos escriben el
+  // mismo tracker distinto. El plano dice "04-018"; la planilla de coordenadas
+  // trae el bloque en una columna y el tracker en otra, y segun el parque eso
+  // puede ser "04-018", "4-18" o "18" pelado. Comparar los textos parecia
+  // andar en el ejemplo y cruzaba CERO de 6748 filas con Edenvale entero, sin
+  // error y sin excepcion: el plano entraba, se aplicaba a nada, y lo decia
+  // con un numero que era facil leer como "faltan PDF".
+  const porTracker = new Map<string, { side?: TrackerRow["side"]; dcbox?: string }>();
+  const ejemplosPlano: string[] = [];
+  for (const [bloqueId, bloque] of Object.entries(plano)) {
     for (const [tracker, t] of Object.entries(bloque.trackers ?? {})) {
+      const clave = claveDeTracker(bloqueId, tracker);
+      if (!clave) continue;
       const lado = t.side ? LADOS[t.side.toLowerCase()] : undefined;
       const caja = t.dcbox ?? undefined;
-      const dato = { ...(lado ? { side: lado } : {}), ...(caja ? { dcbox: caja } : {}) };
-      for (const r of t.rows ?? []) porFila.set(`${tracker}-${r}`, dato);
-      // Y el tracker pelado, para las filas que no tienen etiqueta R.
-      porFila.set(tracker, dato);
+      porTracker.set(clave, {
+        ...(lado ? { side: lado } : {}),
+        ...(caja ? { dcbox: caja } : {}),
+      });
+      if (ejemplosPlano.length < 3) ejemplosPlano.push(`${bloqueId} / ${tracker}`);
     }
   }
 
+  const ejemplosGeometria: string[] = [];
   const out = rows.map((r) => {
-    const p =
-      (r.row ? porFila.get(`${r.tracker}-${r.row}`) : undefined) ??
-      porFila.get(r.tracker) ??
-      porFila.get(r.id);
-    if (!p) { sinPlano.push(r.id); return r; }
+    const clave = claveDeTracker(r.block, r.tracker);
+    const p = clave ? porTracker.get(clave) : undefined;
+    if (!p) {
+      sinPlano.push(r.id);
+      if (ejemplosGeometria.length < 3) ejemplosGeometria.push(`${r.block} / ${r.tracker}`);
+      return r;
+    }
 
     const next: TrackerRow = { ...r };
     if (p.side) {
@@ -174,12 +186,37 @@ export function aplicarPlano(rows: TrackerRow[], plano: PlanoDeParque): Aplicaci
     conCajaDc,
     sinPlano,
     conflictos,
-    notas: notasDe(conLado, conCajaDc, sinPlano.length, conflictos.length, rows.length),
+    notas: notasDe(conLado, conCajaDc, sinPlano.length, conflictos.length, rows.length,
+                   ejemplosPlano, ejemplosGeometria),
   };
+}
+
+/**
+ * La misma clave de tracker aunque los dos archivos lo escriban distinto.
+ *
+ * Se queda con el ULTIMO grupo de digitos de cada uno y los compara como
+ * numeros. Asi "04" + "04-018", "4" + "4-18" y "04" + "18" caen todos en la
+ * misma clave, que es lo que son: el tracker 18 del bloque 4. Los ceros a la
+ * izquierda son formato, no identidad.
+ *
+ * El ultimo grupo y no el primero porque el prefijo suele ser el que sobra: un
+ * bloque escrito "T2-05" es el bloque 5 del transformador 2, y quedarse con el
+ * primer numero lo mandaria al bloque 2.
+ */
+function claveDeTracker(block: string | undefined, tracker: string | undefined): string | null {
+  const ultimo = (s: string | undefined): string | undefined => {
+    const d = (s ?? "").match(/\d+/g);
+    return d ? d[d.length - 1] : undefined;
+  };
+  const b = ultimo(block);
+  const t = ultimo(tracker);
+  if (b == null || t == null) return null;
+  return `${Number(b)}-${Number(t)}`;
 }
 
 function notasDe(
   conLado: number, conCaja: number, sinPlano: number, conflictos: number, total: number,
+  ejemplosPlano: string[] = [], ejemplosGeometria: string[] = [],
 ): string[] {
   const notas: string[] = [];
 
@@ -187,6 +224,22 @@ function notasDe(
     `El plano resolvio el lado de ${conLado} de ${total} filas. Eso deja de ser una deduccion ` +
     "geometrica y pasa a ser un dato dibujado.",
   );
+
+  /**
+   * Cero es un caso aparte, no "pocas".
+   *
+   * Si no cruzo NINGUNA, no faltan PDF: los dos archivos nombran los trackers
+   * de maneras que no se tocan. Decirlo con un ejemplo de cada lado convierte
+   * media hora de adivinar en diez segundos de mirar.
+   */
+  if (!conLado && total) {
+    notas.push(
+      "No cruzo ni una sola fila, asi que no es que falten planos: los dos archivos escriben el " +
+      "tracker distinto. El plano dice " + (ejemplosPlano.join(", ") || "(nada)") +
+      " y la geometria cargada dice " + (ejemplosGeometria.join(", ") || "(nada)") +
+      " (bloque / tracker). Mandame esos dos ejemplos y lo emparejo.",
+    );
+  }
 
   if (conCaja) {
     notas.push(

@@ -130,3 +130,58 @@ describe("cruzar el plano con la geometria", () => {
     expect(aplicarPlano(otras, PLANO).rows[0]!.side).toBe("east");
   });
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * El plano escribe "04-018". La planilla de coordenadas trae el bloque en una
+ * columna y el tracker en otra, y segun el parque eso puede ser "04-018",
+ * "4-18" o "18" pelado. Son el mismo fierro. Comparar los textos cruzaba CERO
+ * de 6748 filas en Edenvale entero, sin error y sin excepcion.
+ */
+describe("el mismo tracker escrito de tres maneras", () => {
+  const conTracker = (block: string, tracker: string, row: string): TrackerRow => ({
+    id: `${block}-${tracker}-${row}`, block, tracker, row,
+    start: { lat: -26.9, lon: 150.58 }, end: { lat: -26.8994, lon: 150.58 },
+  });
+
+  it("cruza igual con el bloque adentro, sin el bloque, y sin ceros", () => {
+    const rows = [
+      conTracker("04", "04-018", "R2"),   // como el ejemplo
+      conTracker("4", "4-18", "R2"),      // sin ceros a la izquierda
+      conTracker("04", "18", "R2"),       // el tracker pelado
+    ];
+    const a = aplicarPlano(rows, PLANO);
+    expect(a.conLado).toBe(3);
+    for (const r of a.rows) expect(r.side, `fila ${r.id}`).toBe("north");
+  });
+
+  /**
+   * Y cruza aunque la etiqueta de fila no sea la del plano. En Edenvale la
+   * columna MOTOR ROW trae una bandera, no un R: las filas se llaman
+   * "motorizada" y "esclava". El lado y la caja son datos del TRACKER, iguales
+   * para sus dos filas, asi que la fila no tiene por que entrar en la clave.
+   */
+  it("cruza aunque las filas se llamen motorizada y esclava en vez de R2 y R3", () => {
+    const rows = [
+      conTracker("04", "04-018", "motorizada"),
+      conTracker("04", "04-018", "esclava"),
+    ];
+    const a = aplicarPlano(rows, PLANO);
+    expect(a.conLado).toBe(2);
+    expect(a.sinPlano).toEqual([]);
+  });
+
+  // Cero no es "pocas": si no cruza ninguna, no faltan PDF.
+  it("cuando no cruza nada muestra un ejemplo de cada lado", () => {
+    // Otra numeracion de verdad: el tracker corre de corrido en todo el
+    // parque en vez de reiniciar en cada bloque.
+    const rows = [conTracker("04", "1247", "R2")];
+    const a = aplicarPlano(rows, PLANO);
+    expect(a.conLado).toBe(0);
+    const notas = a.notas.join(" ");
+    expect(notas).toMatch(/no es que falten planos/);
+    expect(notas).toMatch(/04 \/ 04-018/);
+    expect(notas).toMatch(/04 \/ 1247/);
+  });
+});
