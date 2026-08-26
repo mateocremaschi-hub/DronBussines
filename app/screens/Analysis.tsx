@@ -11,7 +11,7 @@
  * una resta.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { compileFarm, makeFrame } from "@locator";
 import type { CompiledFarm } from "@locator";
 import { ThermalMap } from "../components/ThermalMap";
@@ -30,12 +30,19 @@ import {
   type Umbrales,
 } from "../detect";
 import type { Ajuste } from "../projection";
-import type { StoredFarm } from "../storage";
+import { saveAnalysis, type StoredFarm } from "../storage";
 
 /** Largo del modulo sobre el eje corto de la fila, en metros. Un panel tipico. */
 const LARGO_MODULO_M = 2.28;
 
-export function Analysis({ farm: stored, onBack }: { farm: StoredFarm; onBack: () => void }) {
+interface Props {
+  farm: StoredFarm;
+  onBack: () => void;
+  /** Ir a armar los reclamos con lo que salio de este vuelo. */
+  onWarranty?: () => void;
+}
+
+export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
   const [archivos, setArchivos] = useState<File[]>([]);
   const [muestras, setMuestras] = useState<Muestra[]>([]);
   const [camera, setCamera] = useState<Camera | null>(null);
@@ -68,6 +75,24 @@ export function Analysis({ farm: stored, onBack }: { farm: StoredFarm; onBack: (
     () => (hallazgos.length ? resumir(hallazgos, totalModulos, eventos, gsdCm) : null),
     [hallazgos, totalModulos, eventos, gsdCm],
   );
+
+  /**
+   * Guarda la lista corta apenas termina el analisis.
+   *
+   * Solo lo que no es normal: los sanos son cientos de miles y no se
+   * clasifican. Lo que se guarda es lo que despues se mira de a uno.
+   */
+  useEffect(() => {
+    const cortos = hallazgos.filter((h) => h.severidad !== "normal");
+    if (!cortos.length) return;
+    void saveAnalysis({
+      farmId: stored.profile.id,
+      hallazgos: cortos,
+      gsdCm,
+      fotos: archivos.length,
+      savedAt: new Date().toISOString(),
+    });
+  }, [hallazgos, gsdCm, archivos.length, stored.profile.id]);
 
   /**
    * Procesa el vuelo foto por foto.
@@ -331,7 +356,16 @@ export function Analysis({ farm: stored, onBack }: { farm: StoredFarm; onBack: (
               <button onClick={() => download(`${stored.profile.id}-hallazgos.csv`, toCsv(hallazgos), "text/csv")}>
                 Exportar CSV
               </button>
+              {onWarranty && (
+                <button className="ghost" onClick={onWarranty}>
+                  Armar los reclamos →
+                </button>
+              )}
             </div>
+            <p className="help">
+              La lista de arriba dice que esta caliente. Lo que le devuelve plata al cliente es la
+              de al lado: quien lo paga. Esta guardada, asi que podes cerrar y seguir despues.
+            </p>
           </section>
         </>
       )}
