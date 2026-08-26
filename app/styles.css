@@ -400,3 +400,7 @@ td.flojo { color: var(--warn); font-style: italic; }
   font-size: 12.5px; color: var(--ink-3);
 }
 .cinta input { width: 15px; height: 15px; accent-color: var(--accent); }
+
+/* Pasos numerados, para instrucciones que se siguen en orden. */
+.pasos { margin: 8px 0 12px; padding-left: 20px; }
+.pasos li { margin-bottom: 5px; font-size: 14px; }

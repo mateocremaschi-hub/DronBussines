@@ -111,11 +111,16 @@ export async function loadWarranty(farmId: string): Promise<StoredWarranty | und
 
 /** Exporta un parque a un archivo, para pasarlo a otro dispositivo o guardarlo. */
 export function downloadFarm(farm: StoredFarm): void {
-  const blob = new Blob([JSON.stringify(farm, null, 2)], { type: "application/json" });
+  // Sin sangria: un parque son miles de filas y el archivo se manda por mail o
+  // por WhatsApp de la compu al celular. Con sangria pesa el triple y no
+  // aporta nada — no es un archivo para leer a mano.
+  const blob = new Blob([JSON.stringify(farm)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${farm.profile.id}.pica.json`;
+  // Una sola extension: en iOS un nombre con dos puntos hace que el selector
+  // de archivos no lo reconozca y lo muestre en gris.
+  a.download = `${farm.profile.id}-pica.json`;
   a.click();
   URL.revokeObjectURL(url);
 }

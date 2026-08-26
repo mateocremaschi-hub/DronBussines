@@ -1,5 +1,6 @@
 /** Lista de parques cargados en este dispositivo. */
 
+import { useState } from "react";
 import { deleteFarm, downloadFarm, saveFarm, type StoredFarm } from "../storage";
 
 interface Props {
@@ -18,11 +19,23 @@ interface Props {
 }
 
 export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams, onStrings, onVendor, onFlight, onAnalysis, onWarranty, onChanged }: Props) {
+  const [problema, setProblema] = useState<string | null>(null);
+
   async function importFarm(file: File) {
-    const text = await file.text();
-    const farm = JSON.parse(text) as StoredFarm;
-    await saveFarm(farm);
-    onChanged();
+    setProblema(null);
+    try {
+      const farm = JSON.parse(await file.text()) as StoredFarm;
+      // Sin esto, elegir el archivo equivocado no hace nada visible y parece
+      // que la app se colgo.
+      if (!farm?.profile?.id || !Array.isArray(farm.rows)) {
+        setProblema(`"${file.name}" no es un parque exportado. Tiene que ser el .json que sale del boton Exportar.`);
+        return;
+      }
+      await saveFarm(farm);
+      onChanged();
+    } catch {
+      setProblema(`No pude leer "${file.name}". Si lo mandaste por mail o por chat, fijate que haya llegado entero.`);
+    }
   }
 
   return (
@@ -100,14 +113,28 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
         </ul>
       )}
 
-      <label className="import">
-        Importar un parque exportado desde otro dispositivo
-        <input
-          type="file"
-          accept=".json"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) void importFarm(f); }}
-        />
-      </label>
+      <section className="card">
+        <h2>Pasar un parque de un dispositivo a otro</h2>
+        <p>
+          Los parques viven en el navegador donde los cargaste y no se suben a ningun lado — por
+          eso la app funciona sin señal en el campo. Para tener el mismo parque en la compu y en
+          el celular hay que pasarlo a mano, y va entero: las filas, la lista de strings, los
+          parametros y los conteos de campo.
+        </p>
+        <ol className="pasos">
+          <li>En el dispositivo que ya lo tiene, <strong>Exportar</strong>. Baja un archivo .json.</li>
+          <li>Mandatelo al otro: AirDrop, mail o mensaje a vos mismo.</li>
+          <li>Abrilo desde acá con el boton de abajo.</li>
+        </ol>
+        <label className="import">
+          Importar un parque exportado
+          <input
+            type="file"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) void importFarm(f); }}
+          />
+        </label>
+        {problema && <p className="alert">{problema}</p>}
+      </section>
     </div>
   );
 }
