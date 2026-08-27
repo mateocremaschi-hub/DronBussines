@@ -265,7 +265,11 @@ export function planMission(
       `pixeles. Un punto caliente de una sola celda no se va a distinguir del ruido. ` +
       `(El modulo entero igual da ${pixelesPorModulo.toFixed(0)} pixeles, que es el numero que ` +
       `engaña: lo que hay que resolver es la celda.) Bajá a ` +
-      `${(opts.altitudeM * GSD_MAXIMO_CM / gsdCm).toFixed(0)} m o menos.`,
+      // Hacia ABAJO, no al entero mas cercano. Redondeando al mas cercano el
+      // consejo se pasa de largo: a 70 m decia "bajá a 38" y a 38 m volvia a
+      // avisar. Un consejo que, seguido al pie de la letra, sigue quejandose
+      // no es un consejo — es ruido, y el que lo lee deja de leer los avisos.
+      `${Math.floor(opts.altitudeM * GSD_MAXIMO_CM / gsdCm)} m o menos.`,
     );
   }
   // Sin RTK el dron se va metros de la linea, y el solape tiene que absorberlo.
