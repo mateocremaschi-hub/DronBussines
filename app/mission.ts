@@ -257,23 +257,75 @@ export function planMission(
   const sobra = (cantidad - 1) * separacion - (c1 - c0);
   const inicio = c0 - sobra / 2;
 
+  /**
+   * Cada linea se recorta a las filas que de verdad pasa por encima.
+   *
+   * Antes todas las lineas iban de punta a punta del rectangulo que envuelve al
+   * bloque. Pero un bloque no es un rectangulo: se escalona, tiene caminos,
+   * subestaciones, una laguna. Barrer el rectangulo entero manda al dron a
+   * sacar fotos de tierra — sobre Edenvale, el 14 % de los disparos no tenian
+   * un solo modulo debajo. Una hora de vuelo por medio parque, que es una
+   * bateria entera.
+   *
+   * Se proyecta cada fila sobre los dos ejes una sola vez: dentro del bucle
+   * seria recorrer las 3182 filas por cada linea.
+   */
+  const proy = rows.map((r) => {
+    const a = toLocal(frame, r.start.lat, r.start.lon);
+    const b = toLocal(frame, r.end.lat, r.end.lon);
+    const aA = a.x * fx + a.y * fy, aB = b.x * fx + b.y * fy;
+    const cA = a.x * px + a.y * py, cB = b.x * px + b.y * py;
+    return {
+      a0: Math.min(aA, aB), a1: Math.max(aA, aB),
+      c0: Math.min(cA, cB), c1: Math.max(cA, cB),
+    };
+  });
+
   const lines: MissionLine[] = [];
   const waypoints: LatLon[] = [];
+  let distancia = 0;
+  let fotos = 0;
   for (let i = 0; i < cantidad; i++) {
     const c = inicio + i * separacion;
+
+    // Que filas caen bajo la huella de esta linea, y hasta donde llegan.
+    const medio = anchoHuella / 2;
+    let desde = Infinity, hasta = -Infinity;
+    for (const r of proy) {
+      if (r.c1 < c - medio || r.c0 > c + medio) continue;
+      if (r.a0 < desde) desde = r.a0;
+      if (r.a1 > hasta) hasta = r.a1;
+    }
+    // Una linea que no pasa por encima de ninguna fila no se vuela.
+    if (desde === Infinity) continue;
+
+    desde = Math.max(a0, desde - opts.marginM);
+    hasta = Math.min(a1, hasta + opts.marginM);
+
     // Serpenteo: cada linea al reves de la anterior, para no volver en vacio.
-    const [d0, d1] = i % 2 === 0 ? [a0, a1] : [a1, a0];
+    const [d0, d1] = lines.length % 2 === 0 ? [desde, hasta] : [hasta, desde];
     const A = toGeo(frame, fx * d0 + px * c, fy * d0 + py * c);
     const B = toGeo(frame, fx * d1 + px * c, fy * d1 + py * c);
-    lines.push({ a: A, b: B, largoM: Math.abs(a1 - a0) });
+    const largo = hasta - desde;
+    lines.push({ a: A, b: B, largoM: largo });
     waypoints.push(A, B);
+    distancia += largo;
+    fotos += Math.floor(largo / disparoCada) + 1;
   }
 
-  const largoLinea = a1 - a0;
-  const distancia = cantidad * largoLinea + (cantidad - 1) * separacion;
-  const fotos = cantidad * (Math.floor(largoLinea / disparoCada) + 1);
+  if (!lines.length) return null;
+
+  // El traslado entre lineas: separacion mas lo que se corrio el arranque.
+  for (let i = 1; i < lines.length; i++) {
+    const p1 = toLocal(frame, lines[i - 1]!.b.lat, lines[i - 1]!.b.lon);
+    const p2 = toLocal(frame, lines[i]!.a.lat, lines[i]!.a.lon);
+    distancia += Math.hypot(p2.x - p1.x, p2.y - p1.y);
+  }
+
+  const cantidadReal = lines.length;
+  const largoLinea = lines.reduce((s2, l) => s2 + l.largoM, 0) / cantidadReal;
   // Los giros no son gratis: se asume medio minuto por giro entre lineas.
-  const minutos = distancia / opts.speedMps / 60 + ((cantidad - 1) * 30) / 60;
+  const minutos = distancia / opts.speedMps / 60 + ((cantidadReal - 1) * 30) / 60;
 
   const gsdCm = (anchoHuella * 100) / opts.camera.imageW;
   const pasoModulo = profile.module.widthMm / 1000;
@@ -318,7 +370,7 @@ export function planMission(
     lines,
     waypoints,
     stats: {
-      lineas: cantidad,
+      lineas: cantidadReal,
       separacionM: separacion,
       disparoCadaM: disparoCada,
       fotos,
