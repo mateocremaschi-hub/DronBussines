@@ -10,7 +10,13 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { huecoInterior, planoDeEtiquetas, type Etiqueta } from "../app/planpdf";
+import {
+  analizarEtiqueta,
+  formaEstructural,
+  huecoInterior,
+  planoDeEtiquetas,
+  type Etiqueta,
+} from "../app/planpdf";
 
 /**
  * Un bloque como los del plano: dos alas de trackers con la calle en el medio,
@@ -420,12 +426,120 @@ describe("cuando ningun formato conocido engancha", () => {
 
   it("un ejemplo que no tiene forma de etiqueta lo dice, en vez de fallar callado", () => {
     const r = planoDeEtiquetas(raras(), { ejemploDeTracker: "el tracker de la esquina" });
-    expect(r.avisos.join(" ")).toMatch(/no puedo sacar un formato/);
+    expect(r.avisos.join(" ")).toMatch(/no puedo sacar una etiqueta de tracker/);
   });
 
   it("un PDF escaneado se distingue de uno con etiquetas que no entiendo", () => {
     const r = planoDeEtiquetas([{ x: 1, y: 1, t: "SHEET 3 OF 12" }]);
     expect(r.avisos.join(" ")).toMatch(/se escaneo o se aplano/);
     expect(r.avisos.join(" ")).toMatch(/SHEET 3 OF 12/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Las etiquetas de Wellington North, tal cual salen del PDF.
+ *
+ * Este es el caso que tumbo el diseño anterior. El lector tenia primero UN
+ * formato (`bb-ttt-Rz`, el de Edenvale) y despues una LISTA de formatos
+ * conocidos. Ninguna de las dos cosas alcanza, porque cada proyecto le agrega a
+ * la etiqueta los campos que se le ocurren:
+ *
+ *     17-017-INT-R1-C-L-S2
+ *
+ * bloque, tracker, tipo de pila, fila, y tres codigos mas atras. Por eso ahora
+ * no se enumera: se parte la etiqueta por sus separadores y se lee por lo que
+ * significa cada pedazo.
+ */
+describe("etiquetas de un plano de fundaciones real", () => {
+  it("saca bloque, tracker y fila de una etiqueta larga", () => {
+    expect(analizarEtiqueta("17-017-INT-R1-C-L-S2")).toEqual({
+      tipo: "tracker", bloque: "17", tracker: "17", fila: "R1",
+    });
+    expect(analizarEtiqueta("19-062-INT-R1-P1S-S-S2")).toEqual({
+      tipo: "tracker", bloque: "19", tracker: "62", fila: "R1",
+    });
+    expect(analizarEtiqueta("19-061-EXT-R2-L-S2")).toEqual({
+      tipo: "tracker", bloque: "19", tracker: "61", fila: "R2",
+    });
+  });
+
+  /**
+   * La fila del tracker es la PRIMERA R+numero. Mas atras vienen codigos de
+   * pila como P1S y P1N que no son filas, y tomarlos partiria cada tracker en
+   * filas que no existen.
+   */
+  it("no confunde los codigos de pila de atras con la fila", () => {
+    expect(analizarEtiqueta("17-050-INT-R1-P1S-L-S1")!.fila).toBe("R1");
+    expect(analizarEtiqueta("17-072-INT-R2-P1N-L-S1")!.fila).toBe("R2");
+  });
+
+  it("Edenvale se lee exactamente igual que antes", () => {
+    expect(analizarEtiqueta("05-042-R1")).toEqual({
+      tipo: "tracker", bloque: "05", tracker: "42", fila: "R1",
+    });
+    expect(analizarEtiqueta("DCB-5.1.3")).toEqual({ tipo: "caja", bloque: "05" });
+    expect(analizarEtiqueta("S-5.1.3.2.1")).toEqual({ tipo: "string", bloque: "05" });
+  });
+
+  /**
+   * Lo que NO tiene que entrar. Una lamina esta llena de textos con numeros, y
+   * cada falso positivo es un bloque fantasma en el parque.
+   */
+  it("el texto de la lamina no entra como tracker", () => {
+    for (const basura of [
+      "SHEET 3 OF 12",   // dos numeros, pero no empieza por el bloque
+      "Fan 9",
+      "1200-500",        // una cota
+      "40",
+      "REV. C",
+      "R1-C",
+      "A1",
+    ]) {
+      expect(analizarEtiqueta(basura), `"${basura}" no es un tracker`).toBeNull();
+    }
+  });
+
+  /**
+   * "R1-P2" es un rotulo de pila, y entraba como el tracker 2 del bloque 1: la
+   * "R" pasaba por prefijo de letras y el "1" por numero de bloque. En los tres
+   * planos reales eso creaba seis bloques fantasma con un tracker cada uno.
+   */
+  it("un rotulo de pila que empieza con R no es el bloque 1", () => {
+    expect(analizarEtiqueta("R1-P2")).toBeNull();
+    expect(analizarEtiqueta("R2-P2")).toBeNull();
+    expect(analizarEtiqueta("R1-P1N")).toBeNull();
+  });
+
+  it("la forma estructural distingue familias de rotulo", () => {
+    expect(formaEstructural("17-017-INT-R1-C-L-S2")).toBe("#2-#3-A-R-A-A-A#1");
+    expect(formaEstructural("05-042-R1")).toBe("#2-#3-R");
+    // Dos etiquetas de la misma familia comparten forma; de familias distintas, no.
+    expect(formaEstructural("17-017-INT-R1-C-L-S2"))
+      .toBe(formaEstructural("03-116-INT-R2-C-L-S1"));
+    expect(formaEstructural("17-050-INT-R1-P1S-L-S1"))
+      .not.toBe(formaEstructural("17-017-INT-R1-C-L-S2"));
+  });
+
+  /**
+   * Un plano de fundaciones no trae cajas de continua ni strings. Eso NO es un
+   * error —de ahi salen el lado y las filas R, que es la mayor parte del valor—
+   * pero hay que decir que falta, y que falta se arregla con otros planos.
+   */
+  it("un plano sin cajas dice que sirve igual y que le falta", () => {
+    const e: Etiqueta[] = [];
+    for (let n = 1; n <= 24; n++) {
+      const izq = n <= 12;
+      const i = izq ? n - 1 : n - 13;
+      e.push({ x: (izq ? 60 : 400) + i * 12, y: 400, t: `17-${String(n).padStart(3, "0")}-INT-R1-C-L-S2` });
+    }
+    const r = planoDeEtiquetas(e);
+    expect(r.leidas.trackers).toBe(24);
+    expect(r.plano["17"]).toBeDefined();
+    const texto = r.avisos.join(" ");
+    expect(texto).toMatch(/ninguna caja de continua ni ningun string/);
+    expect(texto).toMatch(/sirven igual/);
+    expect(texto).toMatch(/INTERCONEXION/);
   });
 });

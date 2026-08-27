@@ -44,82 +44,164 @@ import type { PlanoDeParque } from "./plans";
  * reconoci nada": muestra las formas de texto que si encontro, con ejemplos,
  * para que se vea de una que hay adentro del PDF.
  */
-export interface Patrones {
-  nombre: string;
-  /** Grupos: 1 = bloque, 2 = tracker, 3 = fila (opcional). */
-  tracker: RegExp;
-  /** Grupos: 1 = bloque/inversor, 2 = columna, 3 = numero de caja. */
-  caja: RegExp;
-  /** Grupos: 1 = bloque/inversor, 2 = columna, 3 = caja. */
-  string: RegExp;
+export interface Analisis {
+  tipo: "tracker" | "caja" | "string";
+  /** Bloque, ya normalizado a dos digitos. */
+  bloque: string;
+  /** Numero de tracker, sin ceros a la izquierda. Solo para trackers. */
+  tracker?: string;
+  /** Fila dentro del tracker: "R1", "R2"… Solo si la etiqueta la trae. */
+  fila?: string;
 }
 
 /**
- * Los separadores que aparecen en planos reales: guion, punto, guion bajo,
- * barra y espacio. Un mismo proyecto usa uno, pero no siempre el mismo.
+ * Como se lee UNA etiqueta del plano.
+ *
+ * Esto ESTABA escrito como tres expresiones regulares fijas —`bb-ttt-Rz`,
+ * `DCB-i.c.n`, `S-i.c.n.x.y`—, que son los formatos de Edenvale. Cargar los
+ * planos de otro parque devolvia "el archivo no tiene ningun bloque", que suena
+ * a que el PDF esta mal cuando lo que estaba mal era la herramienta.
+ *
+ * El segundo intento fue una LISTA de formatos conocidos. Tampoco alcanza, y
+ * los planos de Wellington North lo demuestran: sus etiquetas son
+ *
+ *     17-017-INT-R1-C-L-S2
+ *
+ * o sea bloque, tracker, tipo de pila, fila, y tres codigos mas atras. No hay
+ * lista de formatos que cubra eso, porque cada proyecto agrega los campos que
+ * se le ocurren.
+ *
+ * Asi que no se enumera: se PARSEA. Una etiqueta se parte por sus separadores y
+ * se lee por lo que significa cada pedazo —el primer numero es el bloque, el
+ * segundo el tracker, y el pedazo con forma de R+numero es la fila—, ignorando
+ * todo lo demas. Eso lee Edenvale, Wellington, y los que vengan.
  */
-const SEP = "[-._/ ]";
+export function analizarEtiqueta(
+  texto: string,
+  /**
+   * La forma de una etiqueta que la persona copio del plano.
+   *
+   * Cambia el modo de lectura: sin ella se es ESTRICTO —la etiqueta tiene que
+   * empezar por el numero de bloque— porque una lamina esta llena de textos que
+   * traen numeros y no son etiquetas ("SHEET 3 OF 12", "Fan 9", una cota). Con
+   * ella se es amplio, porque ya no hay que adivinar: se leen solo las
+   * etiquetas que tienen exactamente esa forma.
+   */
+  forma?: string,
+): Analisis | null {
+  const t = texto.trim();
+  if (!t || t.length > 60) return null;
 
-export const PATRONES_CONOCIDOS: Patrones[] = [
-  {
-    // Edenvale y compania: 05-042-R1 · DCB-5.1.3 · S-5.1.3.2.1
-    nombre: "bloque-tracker-Rfila",
-    tracker: new RegExp(`^(\\d{1,3})${SEP}(\\d{1,4})${SEP}R\\s?(\\d{1,2})$`, "i"),
-    caja: new RegExp(`^[A-Z]{0,4}CB${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)$`, "i"),
-    string: new RegExp(`^S[A-Z]?${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)(?:${SEP}\\d+)*$`, "i"),
-  },
-  {
-    // Sin la R: 05-042-1, o con la fila pegada al tracker.
-    nombre: "bloque-tracker-fila",
-    tracker: new RegExp(`^(\\d{1,3})${SEP}(\\d{1,4})${SEP}(\\d{1,2})$`),
-    caja: new RegExp(`^[A-Z]{0,4}CB${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)$`, "i"),
-    string: new RegExp(`^S[A-Z]?${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)(?:${SEP}\\d+)*$`, "i"),
-  },
-  {
-    // Un tracker por fila: 05-042, sin fila R. El bloque sigue adelante.
-    nombre: "bloque-tracker",
-    tracker: new RegExp(`^(\\d{1,3})${SEP}(\\d{2,4})$`),
-    caja: new RegExp(`^[A-Z]{0,4}CB${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)$`, "i"),
-    string: new RegExp(`^S[A-Z]?${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)(?:${SEP}\\d+)*$`, "i"),
-  },
-  {
-    // Con letras adelante: T05-042-R1, TRK-05-042-R1, MESA 05-042-R1.
-    nombre: "prefijo-bloque-tracker-Rfila",
-    tracker: new RegExp(`^[A-Z]{1,4}${SEP}?(\\d{1,3})${SEP}(\\d{1,4})${SEP}R\\s?(\\d{1,2})$`, "i"),
-    caja: new RegExp(`^[A-Z]{0,4}CB${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)$`, "i"),
-    string: new RegExp(`^S[A-Z]?${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)(?:${SEP}\\d+)*$`, "i"),
-  },
-];
+  const dosDigitos = (n: number) => String(n).padStart(2, "0");
+
+  /*
+    Primero los strings y las cajas, que TAMBIEN traen numeros separados por
+    puntos. Si se probara el tracker primero, "S-4.2.15.1.1" entraria como el
+    tracker 2 del bloque 4 — un tracker que no existe, con toda confianza.
+  */
+  const mS = /^S[A-Z]?[-._/ ](\d+)[-._/ ](\d+)[-._/ ](\d+)(?:[-._/ ]\d+)*$/i.exec(t);
+  if (mS) return { tipo: "string", bloque: dosDigitos(+mS[1]!) };
+
+  const mC = /^[A-Z]{0,4}(?:CB|BOX)[-._/ ](\d+)[-._/ ](\d+)[-._/ ](\d+)$/i.exec(t);
+  if (mC) return { tipo: "caja", bloque: dosDigitos(+mC[1]!) };
+
+  // --- tracker: se lee por partes, no por formato ---------------------------
+  const partes = t.split(/[-._/ ]+/).filter(Boolean);
+  if (partes.length < 2) return null;
+  if (forma && formaEstructural(t) !== forma) return null;
+
+  /*
+    Un pedazo que ES la fila no puede ser tambien el bloque.
+
+    "R1-P2" —un rotulo de pila del plano de fundaciones— entraba como el tracker
+    2 del bloque 1: la "R" pasaba por prefijo de letras y el "1" por numero de
+    bloque. Seis bloques fantasma con un tracker cada uno, en un plano por lo
+    demas perfecto.
+  */
+  if (/^R(?:OW)?\d{1,2}$/i.test(partes[0]!)) return null;
+
+  /** La fila del TRACKER: la primera R+numero. Las de atras son codigos de pila. */
+  let fila: string | undefined;
+  for (const p of partes) {
+    const mr = /^R(?:OW)?(\d{1,2})$/i.exec(p);
+    if (mr) { fila = `R${Number(mr[1])}`; break; }
+  }
+
+  /*
+    De donde salen el bloque y el tracker.
+
+    Sin ejemplo: los dos primeros pedazos, y el primero tiene que EMPEZAR con el
+    numero de bloque —admitiendo un prefijo corto de letras, como "T04"—. Es lo
+    que separa una etiqueta de un texto de la lamina: "SHEET 3 OF 12" tambien
+    tiene dos numeros, pero no empieza por uno.
+
+    Con ejemplo: los dos primeros pedazos que traigan digitos, esten donde
+    esten y mezclados con las letras que sea. Ahi ya no hace falta ser estricto
+    porque la forma de la etiqueta la dio la persona.
+  */
+  const digitos = (p: string): string | null => {
+    const m = /\d+/.exec(p);
+    return m ? m[0]! : null;
+  };
+
+  let bNum: string | null;
+  let tNum: string | null;
+  if (forma) {
+    const conDigitos = partes.map(digitos).filter((x): x is string => x != null);
+    bNum = conDigitos[0] ?? null;
+    tNum = conDigitos[1] ?? null;
+  } else {
+    // El bloque tiene que ser el primer pedazo, con a lo sumo unas letras adelante.
+    if (!/^[A-Z]{0,3}\d{1,3}$/i.test(partes[0]!)) return null;
+    bNum = digitos(partes[0]!);
+    tNum = /^[A-Z]{0,3}\d{1,4}$/i.test(partes[1]!) ? digitos(partes[1]!) : null;
+  }
+  if (bNum == null || tNum == null) return null;
+
+  const bloque = Number(bNum);
+  const tracker = Number(tNum);
+  if (!Number.isFinite(bloque) || !Number.isFinite(tracker)) return null;
+  if (bloque < 1 || bloque > 999) return null;
+  if (tracker < 1 || tracker > 9999) return null;
+
+  /*
+    El caso mas facil de confundir con una cota: dos pedazos, sin fila, como
+    "1200-500". Se pide que el numero de tracker venga con ceros adelante, que
+    es como se escriben en los planos y como no se escribe una medida.
+  */
+  if (!forma && !fila && partes.length < 3 && tNum.length < 2) return null;
+
+  return {
+    tipo: "tracker",
+    bloque: dosDigitos(bloque),
+    tracker: String(tracker),
+    ...(fila ? { fila } : {}),
+  };
+}
 
 /**
- * El formato deducido de UNA etiqueta que la persona lee del plano.
+ * La forma estructural de una etiqueta, pedazo por pedazo.
  *
- * La salida de emergencia que hace que esto no dependa de que yo haya previsto
- * el formato de tu parque: parado frente al plano, se copia una etiqueta de
- * tracker —la que sea— y de ahi sale el patron. Dos grupos de digitos son
- * bloque y tracker; tres, bloque, tracker y fila.
+ * Cada pedazo se resume: los digitos a `#` con su cantidad, las letras a `A`,
+ * y un pedazo que sea R+numero a `R`. Asi:
+ *
+ *     17-017-INT-R1-C-L-S2   ->  #2-#3-A-R-A-A-A#1
+ *     TRK/B7/M01/W1          ->  A-A#1-A#2-A#1
+ *
+ * Comparar formas es lo que deja acotar la lectura a las etiquetas que se
+ * parecen a la que la persona copio del plano.
  */
-export function patronDesdeEjemplo(ejemplo: string): Patrones | null {
-  const t = ejemplo.trim();
-  if (!t) return null;
-
-  // Se reemplaza cada grupo de digitos por una captura y se escapa el resto,
-  // asi el patron respeta EXACTAMENTE los separadores y las letras del ejemplo.
-  const partes = t.split(/(\d+)/).filter((x) => x !== "");
-  const grupos = partes.filter((x) => /^\d+$/.test(x)).length;
-  if (grupos < 2 || grupos > 3) return null;
-
-  const cuerpo = partes
-    .map((x) => (/^\d+$/.test(x) ? "(\\d+)" : x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
-    .join("");
-
-  const base = PATRONES_CONOCIDOS[0]!;
-  return {
-    nombre: `como "${t}"`,
-    tracker: new RegExp(`^${cuerpo}$`, "i"),
-    caja: base.caja,
-    string: base.string,
-  };
+export function formaEstructural(texto: string): string {
+  return texto
+    .trim()
+    .split(/[-._/ ]+/)
+    .filter(Boolean)
+    .map((p) =>
+      /^R(?:OW)?\d{1,2}$/i.test(p)
+        ? "R"
+        : p.replace(/\d+/g, (d) => `#${d.length}`).replace(/[A-Za-z]+/g, "A"),
+    )
+    .join("-");
 }
 
 /** Una etiqueta de texto del plano, con su centro. Y crece hacia abajo. */
@@ -233,8 +315,8 @@ export function huecoInterior(vals: number[]): { hueco: number; pos: number } {
  * las cajas quedan en null. Por eso se avisa cuando un bloque no encontro
  * ninguna, en vez de devolver el plano a medias en silencio.
  */
-/** Reparte las etiquetas en trackers, cajas y strings con un formato dado. */
-function repartir(etiquetas: Etiqueta[], pat: Patrones) {
+/** Reparte las etiquetas en trackers, cajas y strings. */
+function repartir(etiquetas: Etiqueta[], soloComo?: string) {
   const trackers = new Map<string, Etiqueta[]>();
   const cajas = new Map<string, Etiqueta[]>();
   const strings = new Map<string, Etiqueta[]>();
@@ -245,21 +327,22 @@ function repartir(etiquetas: Etiqueta[], pat: Patrones) {
   };
 
   for (const e of etiquetas) {
-    const t = e.t.trim();
-    const mt = pat.tracker.exec(t);
-    if (mt) { empujar(trackers, String(+mt[1]!).padStart(2, "0"), e); continue; }
-    const mc = pat.caja.exec(t);
-    if (mc) { empujar(cajas, String(+mc[1]!).padStart(2, "0"), e); continue; }
-    const ms = pat.string.exec(t);
-    if (ms) empujar(strings, String(+ms[1]!).padStart(2, "0"), e);
+    const a = analizarEtiqueta(e.t, soloComo);
+    if (!a) continue;
+    if (a.tipo === "tracker") empujar(trackers, a.bloque, e);
+    else if (a.tipo === "caja") empujar(cajas, a.bloque, e);
+    else empujar(strings, a.bloque, e);
   }
   return { trackers, cajas, strings };
 }
 
 export interface OpcionesDePlano {
   /**
-   * Una etiqueta de tracker copiada del plano, cuando ninguno de los formatos
-   * conocidos engancha. De ahi sale el patron.
+   * Una etiqueta de tracker copiada del plano.
+   *
+   * Con el lector parseando por partes casi nunca hace falta: sirve para acotar
+   * la lectura a las etiquetas que se parecen a esa, cuando el plano mezcla
+   * varias familias de rotulo y se colo alguna que no era un tracker.
    */
   ejemploDeTracker?: string;
 }
@@ -271,29 +354,27 @@ export function planoDeEtiquetas(
   const avisos: string[] = [];
 
   /*
-    Se prueban todos los formatos conocidos y gana el que reconoce mas
-    trackers. Antes habia UN formato —el de Edenvale— escrito como constante:
-    en otro parque no enganchaba una sola etiqueta y la app contestaba "el
-    archivo no tiene ningun bloque", que suena a que el PDF esta mal cuando lo
-    que estaba mal era la herramienta.
+    No se prueban formatos: se parsea cada etiqueta por sus partes. El detalle
+    esta en `analizarEtiqueta`, y el motivo tambien.
   */
-  const delEjemplo = opts.ejemploDeTracker ? patronDesdeEjemplo(opts.ejemploDeTracker) : null;
-  if (opts.ejemploDeTracker && !delEjemplo) {
-    avisos.push(
-      `De "${opts.ejemploDeTracker}" no puedo sacar un formato: una etiqueta de tracker tiene que ` +
-      "traer dos o tres grupos de numeros (bloque y tracker, o bloque, tracker y fila). " +
-      "Copiá una etiqueta tal cual está en el plano.",
-    );
+  const ejemplo = opts.ejemploDeTracker?.trim();
+  let forma: string | undefined;
+  if (ejemplo) {
+    // Se valida el ejemplo con SU PROPIA forma: si se lo pasa por el lector
+    // estricto, cualquier etiqueta que no empiece por el numero de bloque se
+    // rechaza — y esas son justo las que hacen falta enseñar.
+    const a = analizarEtiqueta(ejemplo, formaEstructural(ejemplo));
+    if (!a || a.tipo !== "tracker") {
+      avisos.push(
+        `De "${ejemplo}" no puedo sacar una etiqueta de tracker: tiene que traer al menos dos ` +
+        "grupos de numeros — el bloque y el numero de tracker. Copiala tal cual esta en el plano.",
+      );
+    } else {
+      forma = formaEstructural(ejemplo);
+    }
   }
 
-  const candidatos = delEjemplo ? [delEjemplo, ...PATRONES_CONOCIDOS] : PATRONES_CONOCIDOS;
-  let mejor = { pat: candidatos[0]!, r: repartir(etiquetas, candidatos[0]!), n: 0 };
-  for (const pat of candidatos) {
-    const r = repartir(etiquetas, pat);
-    const n = [...r.trackers.values()].reduce((s, v) => s + v.length, 0);
-    if (n > mejor.n) mejor = { pat, r, n };
-  }
-  const { trackers, cajas, strings } = mejor.r;
+  const { trackers, cajas, strings } = repartir(etiquetas, forma);
 
   const cuenta = (m: Map<string, Etiqueta[]>) =>
     [...m.values()].reduce((s, v) => s + v.length, 0);
@@ -352,7 +433,6 @@ export function planoDeEtiquetas(
       trackers.get(bloque)!,
       cajas.get(bloque) ?? [],
       strings.get(bloque) ?? [],
-      mejor.pat,
     );
     if ("aviso" in armado) { avisos.push(`Bloque ${bloque}: ${armado.aviso}`); continue; }
     plano[bloque] = armado.bloque;
@@ -363,7 +443,7 @@ export function planoDeEtiquetas(
     plano,
     leidas,
     avisos,
-    patron: mejor.pat.nombre,
+    patron: forma ? `etiquetas como "${ejemplo}"` : "leido por partes",
     ...(leidas.trackers ? {} : { formas }),
   };
 }
@@ -381,15 +461,18 @@ interface Tk {
 }
 
 function armarBloque(
-  bnum: string, T: Etiqueta[], D: Etiqueta[], S: Etiqueta[], pat: Patrones,
+  bnum: string, T: Etiqueta[], D: Etiqueta[], S: Etiqueta[],
 ): { bloque: PlanoDeParque[string]; avisos: string[] } | { aviso: string } {
   const avisos: string[] = [];
   const tmap = new Map<string, Tk>();
 
   for (const e of T) {
-    const m = pat.tracker.exec(e.t.trim())!;
-    const k = `${m[1]}-${m[2]}`;
-    const row = `R${m[3]}`;
+    const a = analizarEtiqueta(e.t) ?? analizarEtiqueta(e.t, formaEstructural(e.t))!;
+    const k = `${a.bloque}-${a.tracker!.padStart(3, "0")}`;
+    // Un plano sin filas R —hay parques donde el tracker es una sola fila— se
+    // modela como si todos tuvieran R1: el resto del pipeline espera al menos
+    // una, y inventar mas seria inventar geometria.
+    const row = a.fila ?? "R1";
     let t = tmap.get(k);
     if (!t) { t = { rows: [], pts: [], rowy: {}, cx: 0, cy: 0 }; tmap.set(k, t); }
     t.rows.push(row);
@@ -453,11 +536,11 @@ function armarBloque(
     if (!sl.length || !nombres.size) { t.dcbox = null; continue; }
     const s = sl.reduce((a, b) =>
       (b.x - t.cx) ** 2 + (b.y - t.cy) ** 2 < (a.x - t.cx) ** 2 + (a.y - t.cy) ** 2 ? b : a);
-    const m = pat.string.exec(s.n.trim());
+    const m = /^S[A-Z]?[-._/ ](\d+)[-._/ ](\d+)[-._/ ](\d+)(?:[-._/ ]\d+)*$/i.exec(s.n.trim());
     if (!m) { t.dcbox = null; continue; }
     const [inv, col, caja] = [+m[1]!, +m[2]!, +m[3]!];
     const cands = dl.filter((d) => {
-      const mm = pat.caja.exec(d.name.trim());
+      const mm = /^[A-Z]{0,4}(?:CB|BOX)[-._/ ](\d+)[-._/ ](\d+)[-._/ ](\d+)$/i.exec(d.name.trim());
       return mm && +mm[1]! === inv && +mm[2]! === col && Math.abs(+mm[3]! - caja) <= 2;
     });
     if (cands.length) {
@@ -550,10 +633,18 @@ function armarBloque(
 
   const sinCaja = [...tmap.values()].filter((t) => !t.dcbox).length;
   if (!dl.length) {
+    /*
+      Sin cajas de continua NI strings, lo que se cargo no es el plano de
+      interconexion: es el de fundaciones, el de montaje o el de implantacion.
+      Eso NO es un error —de ahi salen el lado de la calle y las filas R, que es
+      la mayor parte del valor— pero hay que decir que falta, porque el dato que
+      no viene es justamente por donde se entra caminando.
+    */
     avisos.push(
-      `${tmap.size} trackers, pero ninguna caja de continua que empiece con DCB-${+bnum}. En ` +
-      "estos planos el primer numero de la caja es el del bloque; si este parque numera los " +
-      "inversores aparte, el lado y las filas R salen igual pero falta por donde se entra caminando.",
+      `${tmap.size} trackers, pero ninguna caja de continua ni ningun string. Estos planos ` +
+      "sirven igual: de aca salen el lado de la calle de cada tracker y sus filas R. Lo que no " +
+      "sale es por que caja de continua se entra caminando — para eso hacen falta los planos de " +
+      "INTERCONEXION, que son los que dibujan las cajas (DCB, CB) y los segmentos de string.",
     );
   } else if (sinCaja) {
     avisos.push(
