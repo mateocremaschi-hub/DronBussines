@@ -77,11 +77,39 @@ export function StringList({ farm, onDone, onCancel }: {
 
   // --- pipeline ------------------------------------------------------------
 
+  /**
+   * Las columnas que pueden venir COMBINADAS en estas planillas.
+   *
+   * Se rellenaba hacia abajo solo la caja DC. Pero en la lista de strings de
+   * Wellington la celda del TRACKER tambien esta combinada —sobre dos filas,
+   * porque cada fila de modulos lleva dos strings— y `readEntries` descarta las
+   * filas sin tracker. Resultado: de 26792 strings se leian 13606, exactamente
+   * la mitad, y la pantalla decia "13606 strings leidos" como si eso fuera el
+   * archivo entero. Media lista tirada sin un solo aviso.
+   *
+   * Las coordenadas nunca entran acá: copiar la de arriba pondria dos trackers
+   * en el mismo lugar. En esta pantalla no hay coordenadas, pero la regla vale
+   * igual — se rellenan las columnas de identidad, no las de medida.
+   */
+  const columnasCombinables = [mapping.tracker, mapping.row, mapping.dcBox]
+    .filter((c): c is string => !!c);
+
   const entries = useMemo(() => {
     if (!sheet || !mapping.label || !mapping.tracker) return null;
-    const usable = rellenar && mapping.dcBox ? forwardFill(sheet, [mapping.dcBox]) : sheet;
+    const usable = rellenar && columnasCombinables.length
+      ? forwardFill(sheet, columnasCombinables)
+      : sheet;
     return readEntries(usable, mapping);
   }, [sheet, mapping, rellenar]);
+
+  /**
+   * Cuantos strings se recuperan al rellenar. Es el numero que delata una
+   * columna combinada, y el que hacia falta ver.
+   */
+  const sinRellenar = useMemo(
+    () => (sheet && mapping.label && mapping.tracker ? readEntries(sheet, mapping).length : 0),
+    [sheet, mapping],
+  );
 
   const match = useMemo(
     () =>
@@ -269,17 +297,32 @@ export function StringList({ farm, onDone, onCancel }: {
             ))}
           </div>
 
-          {mapping.dcBox && (
+          {columnasCombinables.length > 0 && (
             <label className="check">
               <input type="checkbox" checked={rellenar} onChange={(e) => setRellenar(e.target.checked)} />
               <span>
-                Rellenar hacia abajo la caja DC
+                Rellenar hacia abajo las celdas combinadas
                 <em>
-                  En estas planillas la caja suele estar combinada sobre muchas filas y solo aparece
-                  en la primera de cada bloque. Sin esto, casi todos los strings quedan sin caja.
+                  En estas planillas el tracker y la caja DC suelen estar combinados sobre varias
+                  filas y solo aparecen en la primera. Sin esto, las filas de abajo quedan sin ese
+                  dato — y las que quedan sin tracker se descartan enteras.
                 </em>
               </span>
             </label>
+          )}
+
+          {/*
+            El numero que delata la columna combinada. Sin esto, "13606 strings
+            leidos" sobre un archivo de 26792 se lee como si fuera el archivo
+            entero.
+          */}
+          {entries && rellenar && entries.length > sinRellenar && (
+            <p className="note ok">
+              La columna de tracker viene combinada: sin rellenar hacia abajo se leerian{" "}
+              <strong>{sinRellenar}</strong> strings y rellenando se leen{" "}
+              <strong>{entries.length}</strong>. Los {entries.length - sinRellenar} de diferencia
+              son los que la planilla escribe debajo de la celda combinada.
+            </p>
           )}
         </section>
       )}

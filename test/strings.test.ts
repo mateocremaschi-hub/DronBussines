@@ -570,3 +570,57 @@ describe("cruce completo con las etiquetas de Wellington", () => {
     expect(m.byRow.has("01-005-R1")).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * La celda del tracker viene COMBINADA sobre varias filas.
+ *
+ * En la lista de strings de Wellington cada fila de modulos lleva DOS strings,
+ * y el tracker esta escrito una sola vez, en la primera de las dos. Se rellenaba
+ * hacia abajo solo la caja DC, asi que `readEntries` descartaba la segunda fila
+ * de cada par: de 26792 strings entraban 13606 — exactamente la mitad — y la
+ * pantalla decia "13606 strings leidos" como si ese fuera el archivo entero.
+ */
+describe("columnas combinadas en la lista de strings", () => {
+  /** Como sale del Excel: el tracker solo en la primera de cada dos filas. */
+  const hoja = {
+    name: "s",
+    headers: ["STRING", "TRACKER", "DC BOX"],
+    rows: [
+      { STRING: "S-1.1.1.1", TRACKER: "01-005-EXT-R1-L-S2", "DC BOX": "DCB-1.1.1" },
+      { STRING: "S-1.1.1.2", TRACKER: null, "DC BOX": null },
+      { STRING: "S-1.1.1.3", TRACKER: "01-005-EXT-R2-L-S2", "DC BOX": null },
+      { STRING: "S-1.1.1.4", TRACKER: null, "DC BOX": null },
+      { STRING: "S-1.1.1.5", TRACKER: "01-006-MED-R1-P1N-L-S2", "DC BOX": null },
+      { STRING: "S-1.1.1.6", TRACKER: null, "DC BOX": null },
+    ],
+  };
+  const mapa = { label: "STRING", tracker: "TRACKER", dcBox: "DC BOX" };
+
+  it("sin rellenar se pierde la mitad del archivo", () => {
+    expect(readEntries(hoja, mapa)).toHaveLength(3);
+  });
+
+  it("rellenando el tracker entran los seis", () => {
+    const lleno = forwardFill(hoja, ["TRACKER", "DC BOX"]);
+    const e = readEntries(lleno, mapa);
+    expect(e).toHaveLength(6);
+    expect(e.map((x) => x.label)).toEqual([
+      "S-1.1.1.1", "S-1.1.1.2", "S-1.1.1.3", "S-1.1.1.4", "S-1.1.1.5", "S-1.1.1.6",
+    ]);
+  });
+
+  it("y los dos strings de cada fila quedan en SU fila", () => {
+    const e = readEntries(forwardFill(hoja, ["TRACKER", "DC BOX"]), mapa);
+    const porTracker = new Map<string, string[]>();
+    for (const x of e) porTracker.set(x.tracker, [...(porTracker.get(x.tracker) ?? []), x.label]);
+    expect(porTracker.get("01-005-EXT-R1-L-S2")).toEqual(["S-1.1.1.1", "S-1.1.1.2"]);
+    expect(porTracker.get("01-005-EXT-R2-L-S2")).toEqual(["S-1.1.1.3", "S-1.1.1.4"]);
+  });
+
+  it("la caja DC combinada se sigue rellenando como antes", () => {
+    const e = readEntries(forwardFill(hoja, ["TRACKER", "DC BOX"]), mapa);
+    expect(e.every((x) => x.dcBox === "DCB-1.1.1")).toBe(true);
+  });
+});
