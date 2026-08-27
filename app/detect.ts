@@ -65,6 +65,8 @@ export interface OpcionesMuestreo {
   celdaM?: number;
 }
 
+/** Una foto termica con su pose. */
+
 /** Lado de celda por defecto, en metros. Una celda entera tipica. */
 export const CELDA_M = 0.16;
 
@@ -90,12 +92,6 @@ export const CELDA_M = 0.16;
  */
 const FRACCION_MINIMA_MEDIDA = 0.9;
 
-/** Cuantos pixeles tendria la caja si entrara entera en el cuadro. */
-function pixelesEsperados(cx: number, cy: number, anchoPx: number, altoPx: number): number {
-  const spanX = Math.round(cx + anchoPx / 2) - Math.round(cx - anchoPx / 2) + 1;
-  const spanY = Math.round(cy + altoPx / 2) - Math.round(cy - altoPx / 2) + 1;
-  return Math.max(1, spanX) * Math.max(1, spanY);
-}
 
 /**
  * Junta las muestras de un vuelo, foto por foto.
@@ -111,6 +107,8 @@ function pixelesEsperados(cx: number, cy: number, anchoPx: number, altoPx: numbe
  */
 export class Acumulador {
   private mejor = new Map<string, Muestra>();
+  /** Fotos que llegaron sin rumbo o sin angulo de gimbal, por motivo. */
+  private posesIncompletas = new Map<string, number>();
   /** Modulos que quedaron cortados por el borde del cuadro y no se midieron. */
   private recortados = new Set<string>();
 
@@ -121,12 +119,24 @@ export class Acumulador {
   ) {}
 
   /** Mide los modulos que caen en esta foto. Devuelve cuantos. */
-  agregar(foto: FotoTermica): number {
-    const { camera, moduloAnchoM, moduloLargoM } = this.opts;
+  /**
+   * @param acortamiento Cuanto se ve del ancho transversal del modulo, de 0 a 1.
+   *   Es el coseno del angulo del tracker en el momento de la foto: 1 con los
+   *   trackers planos, 0.57 con el tracker contra su tope de 55 grados. Sin
+   *   esto, la caja de medicion se dibuja del ancho del modulo acostado, y con
+   *   el tracker inclinado casi la mitad de esa caja cae sobre el SUELO — que
+   *   al sol lee muy distinto y le baja la mediana al modulo entero.
+   */
+  agregar(foto: FotoTermica, acortamiento = 1): number {
+    const { camera, moduloAnchoM } = this.opts;
+    const moduloLargoM = this.opts.moduloLargoM * Math.min(1, Math.max(0.2, acortamiento));
     const huella = aplicarAjuste(
       footprint(this.frame, foto.pose, camera),
       this.opts.ajuste ?? SIN_AJUSTE,
     );
+    for (const f of huella.faltantes) {
+      this.posesIncompletas.set(f, (this.posesIncompletas.get(f) ?? 0) + 1);
+    }
 
     // Solo las filas que tocan la huella: sin esto se recorre el parque entero
     // por cada foto, y son decenas de miles de modulos.
@@ -143,6 +153,24 @@ export class Acumulador {
     let medidos = 0;
 
     for (const row of cerca) {
+      /**
+       * Hacia donde corre esta fila DENTRO de la imagen.
+       *
+       * No se deduce del rumbo: se proyecta el propio vector de la fila con la
+       * misma cuenta que ubica los pixeles, asi que cualquier convencion de
+       * signo o de yaw sale igual de los dos lados. Razonarlo aparte es como se
+       * desincronizan estas cosas.
+       */
+      const yawRad = (huella.rotacionDeg * Math.PI) / 180;
+      const cosY = Math.cos(yawRad), sinY = Math.sin(yawRad);
+      const uImg = row.ux * cosY - row.uy * sinY;    // hacia la derecha de la imagen
+      const vImg = row.ux * sinY + row.uy * cosY;    // hacia arriba de la imagen
+      // px crece con u; py crece con -v.
+      const anguloEnImagen = Math.atan2(
+        (-vImg / huella.altoM) * camera.imageH * escalaY,
+        (uImg / huella.anchoM) * camera.imageW * escalaX,
+      );
+
       for (const m of modulesOfRow(row, this.farm)) {
         const px = pixelOf(huella, { x: m.x, y: m.y }, camera);
         if (!px) continue;
@@ -154,17 +182,35 @@ export class Acumulador {
 
         const cx = px.px * escalaX;
         const cy = px.py * escalaY;
-        const anchoCaja = ((moduloAnchoM * FRACCION_UTIL) / mPorPx) * escalaX;
-        const altoCaja = ((moduloLargoM * FRACCION_UTIL) / mPorPx) * escalaY;
+        /**
+         * La caja del modulo, en el marco de la FILA.
+         *
+         * `largoCaja` va a lo largo de la fila —es `widthMm`, lo que ocupa cada
+         * modulo entre sus vecinos— y `cruzadoCaja` hacia los costados.
+         *
+         * Estaban puestas sobre los ejes de la IMAGEN y cambiadas entre si: el
+         * ancho sobre X y el largo sobre Y. En un parque de filas norte-sur
+         * —Edenvale— la caja de 2,28 m caia A LO LARGO de la fila y cubria casi
+         * dos modulos. Medido con un solo modulo caliente en una escena
+         * sintetica: el vecino SANO salia con severidad moderada. La cuadrilla
+         * sale a caminar hasta el panel equivocado, no lo encuentra roto, y
+         * deja de creerle al informe.
+         */
+        const mPorPxRadio = huella.anchoM / (camera.imageW * escalaX);
+        const largoCaja = (moduloAnchoM * FRACCION_UTIL) / mPorPxRadio;
+        const cruzadoCaja = (moduloLargoM * FRACCION_UTIL) / mPorPxRadio;
 
         // Cuantos pixeles cubre una celda: es el tamaño del parche mas caliente
         // que se busca adentro del modulo, y tambien el que decide si se puede
         // ver o no.
+        // La celda tambien se acorta: es cuadrada sobre el modulo, asi que
+        // vista desde arriba es un rectangulo del mismo largo y mas angosto.
         const ladoCeldaPx = ((this.opts.celdaM ?? CELDA_M) / mPorPx) * escalaX;
-        const hit = medirCaja(foto.radio, cx, cy, anchoCaja, altoCaja, ladoCeldaPx * ladoCeldaPx);
+        const celdaPx = ladoCeldaPx * ladoCeldaPx * Math.min(1, Math.max(0.2, acortamiento));
+        const hit = medirCaja(foto.radio, cx, cy, largoCaja, cruzadoCaja, celdaPx, anguloEnImagen);
         // El modulo tiene que haber entrado casi entero. Medio modulo apoyado
         // en el borde del sensor no es una medicion, es el borde del cuadro.
-        if (!hit || hit.pixeles < pixelesEsperados(cx, cy, anchoCaja, altoCaja) * FRACCION_MINIMA_MEDIDA) {
+        if (!hit || hit.pixeles < hit.esperados * FRACCION_MINIMA_MEDIDA) {
           this.recortados.add(clave);
           continue;
         }
@@ -195,6 +241,18 @@ export class Acumulador {
    * un modulo cortado en el borde de una cae comodo en el centro de la
    * siguiente, y ese es justo el trabajo que hace el solape.
    */
+  /**
+   * Fotos que se ubicaron con un supuesto en vez de con el dato.
+   *
+   * No cambia ningun numero: cambia si se le puede creer. Una foto sin rumbo de
+   * gimbal se ubica como si mirara al norte, y si el vuelo no era norte-sur los
+   * modulos del borde caen en la fila de al lado — con la misma confianza que
+   * los buenos.
+   */
+  posesSupuestas(): Array<{ motivo: string; fotos: number }> {
+    return [...this.posesIncompletas].map(([motivo, fotos]) => ({ motivo, fotos }));
+  }
+
   soloEnElBorde(): number {
     let n = 0;
     for (const k of this.recortados) if (!this.mejor.has(k)) n++;
@@ -464,8 +522,8 @@ function push2<K, V>(m: Map<K, V[]>, k: K, v: V): void {
  * de 1.5/4 de la altura. Se da como fraccion y no como metros porque la altura
  * del vuelo la sabe el que volo, no este resumen.
  */
-function alturaParaCelda(gsdCm: number): string {
-  const ladoPx = (CELDA_M * 100) / Math.max(gsdCm, 0.01);
+function alturaParaCelda(gsdCm: number, celdaM: number): string {
+  const ladoPx = (celdaM * 100) / Math.max(gsdCm, 0.01);
   const factor = Math.sqrt((ladoPx * ladoPx) / PIXELES_POR_CELDA_MINIMO);
   return `${Math.round(Math.min(1, factor) * 100)} %`;
 }
@@ -489,16 +547,37 @@ export function resumir(
   eventos: EventoDeString[],
   gsdCm: number,
   soloEnElBorde = 0,
+  posesSupuestas: Array<{ motivo: string; fotos: number }> = [],
+  /**
+   * Lado de la celda del parque, en metros.
+   *
+   * Es el MISMO numero que usa el `Acumulador` para medir. Aca estaba fijo en
+   * la constante de 160 mm mientras la medicion usaba el del perfil: en un
+   * parque de celdas M10 (182 mm) la app buscaba puntos calientes con una caja
+   * y despues informaba si se podian ver o no con otra. Los dos numeros tienen
+   * que ser uno solo, y ese es el del perfil.
+   */
+  celdaM = CELDA_M,
 ): ResumenDeteccion {
   // Se cuenta por la PEOR de las dos comparaciones: al que tiene que salir a
   // caminar el parque no le importa cual de los dos chequeos disparo.
   const n = (s: Severidad) => hallazgos.filter((h) => h.peor === s).length;
   const limitaciones: string[] = [];
 
+  // Primero lo que afecta a DONDE estan las cosas: si la foto se ubico con un
+  // supuesto, todo lo demas de este resumen habla de modulos que pueden no ser
+  // los que se midieron.
+  for (const p of posesSupuestas) {
+    limitaciones.push(
+      `${p.fotos} ${p.fotos === 1 ? "foto" : "fotos"}: ${p.motivo}. Revisá que el vuelo sea el ` +
+      "correcto antes de mandar a nadie a caminar con esta lista.",
+    );
+  }
+
   // Cuantos modulos pudieron chequearse por adentro. Es lo que decide si este
   // vuelo puede hablar de celdas o solo de modulos y strings.
   const conCelda = hallazgos.filter((h) => h.deltaInterno != null).length;
-  const ladoPx = (CELDA_M * 100) / Math.max(gsdCm, 0.01);
+  const ladoPx = (celdaM * 100) / Math.max(gsdCm, 0.01);
   const pxPorCelda = ladoPx * ladoPx;
 
   // Dos cosas distintas y conviene no mezclarlas. La primera es fisica y sale
@@ -506,11 +585,11 @@ export function resumir(
   // llega promediada? La segunda es de este lote de muestras.
   if (pxPorCelda < PIXELES_POR_CELDA_MINIMO) {
     limitaciones.push(
-      `A ${gsdCm.toFixed(1)} cm por pixel una celda de ${(CELDA_M * 100).toFixed(0)} cm entra en ` +
+      `A ${gsdCm.toFixed(1)} cm por pixel una celda de ${(celdaM * 100).toFixed(0)} cm entra en ` +
       `${pxPorCelda.toFixed(1)} pixeles. Por debajo de ${PIXELES_POR_CELDA_MINIMO} el defecto ` +
       `llega al sensor ya promediado con lo que lo rodea, asi que NO se busco el punto caliente ` +
       `de celda: este vuelo detecta modulos y strings, no celdas. Para verlas hay que volar a ` +
-      `${alturaParaCelda(gsdCm)} de la altura de este vuelo.`,
+      `${alturaParaCelda(gsdCm, celdaM)} de la altura de este vuelo.`,
     );
   } else if (hallazgos.length && conCelda < hallazgos.length / 2) {
     limitaciones.push(

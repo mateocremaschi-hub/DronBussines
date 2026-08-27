@@ -217,6 +217,9 @@ describe("el borde del cuadro", () => {
     width: 640, height: 512,
     celsius: new Float32Array(640 * 512).fill(c),
     escala: "de prueba",
+    escalaAuto: "de prueba",
+    topeC: 999,
+    fraccionEnElTope: 0,
   });
 
   /** El centro geometrico de la fila, en latitud y longitud. */
@@ -405,5 +408,43 @@ describe("un modulo mas frio que su string no esta midiendo el panel", () => {
     const m = h.find((x) => x.modulo.positionInRow === 1)!;
     expect(m.deltaInterno).toBeCloseTo(30, 1);
     expect(m.peor).toBe("critica");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("un solo lado de celda para todo", () => {
+  /**
+   * El lado de la celda se usaba para dos cosas con dos numeros distintos: la
+   * medicion tomaba el del perfil del parque y el informe la constante de
+   * 160 mm. En un parque de celdas M10 (182 mm) la app buscaba puntos calientes
+   * con una caja y despues informaba si se podian ver o no con otra.
+   */
+  it("por defecto sigue hablando de la celda de 16 cm", () => {
+    expect(resumir([], 100, [], 9.0).limitaciones.join(" ")).toMatch(/celda de 16 cm/);
+  });
+
+  it("con celdas M10 el informe habla de 18 cm, no de 16", () => {
+    expect(resumir([], 100, [], 15, 0, [], 0.182).limitaciones.join(" ")).toMatch(/celda de 18 cm/);
+  });
+
+  /**
+   * Y no es cosmetico: con celdas mas grandes el mismo vuelo SI las resuelve.
+   * A 9 cm por pixel una celda de 16 cm entra en 3,2 pixeles de area —no
+   * alcanza— y una de 18,2 en 4,1, que si. La frontera se mueve con la celda,
+   * y el informe tiene que moverse con ella.
+   */
+  it("la misma altura resuelve una celda M10 y no una de 16 cm", () => {
+    expect(resumir([], 100, [], 9.0).limitaciones.join(" ")).toMatch(/NO se busco el punto caliente/);
+    expect(resumir([], 100, [], 9.0, 0, [], 0.182).limitaciones.join(" "))
+      .not.toMatch(/NO se busco el punto caliente/);
+  });
+
+  it("y la altura que hace falta se calcula con la celda del parque", () => {
+    const chica = resumir([], 100, [], 15).limitaciones.join(" ");
+    const grande = resumir([], 100, [], 15, 0, [], 0.182).limitaciones.join(" ");
+    expect(chica).toMatch(/de la altura de este vuelo/);
+    expect(grande).toMatch(/de la altura de este vuelo/);
+    expect(chica).not.toBe(grande);
   });
 });

@@ -27,20 +27,68 @@ export function App() {
   const [farms, setFarms] = useState<StoredFarm[]>([]);
   const [view, setView] = useState<View>({ name: "farms" });
   const [ready, setReady] = useState(false);
+  /** Por que no se pudo leer la base local, si no se pudo. */
+  const [falloBase, setFalloBase] = useState<string | null>(null);
   const [offline, setOffline] = useState<Offline>({
     estado: "preparando", enLinea: true, detalle: detalleDe("preparando", true),
   });
 
   useEffect(() => registrarOffline(setOffline), []);
 
+  /**
+   * Si la base local no abre, hay que DECIRLO.
+   *
+   * `listFarms` va a IndexedDB, y IndexedDB se cae sola en casos que no son
+   * raros: Safari en navegacion privada, el disco lleno, el navegador con los
+   * datos de sitio bloqueados. La promesa quedaba rechazada sin nadie que la
+   * escuchara, `ready` no se ponia nunca en true, y la app se quedaba en
+   * "Cargando…" para siempre. Parado en el parque, eso es una app rota sin una
+   * sola pista de por que.
+   */
   const refresh = useCallback(async () => {
-    setFarms(await listFarms());
-    setReady(true);
+    try {
+      setFarms(await listFarms());
+      setFalloBase(null);
+    } catch (e) {
+      setFalloBase(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReady(true);
+    }
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
   if (!ready) return <div className="screen"><p className="muted">Cargando…</p></div>;
+
+  if (falloBase) {
+    return (
+      <div className="screen">
+        <h1>No se puede abrir la base de datos del telefono</h1>
+        <p>
+          Los parques y las inspecciones se guardan en el navegador, y este navegador no deja
+          abrirlos. Casi siempre es una de estas tres:
+        </p>
+        <ul>
+          <li>
+            <strong>Navegacion privada.</strong> En Safari, la pestaña privada bloquea el
+            almacenamiento. Abri la app en una pestaña normal.
+          </li>
+          <li>
+            <strong>Sin espacio.</strong> Si el telefono esta lleno, el navegador no puede escribir.
+            Liberá algo de espacio y volvé a entrar.
+          </li>
+          <li>
+            <strong>Datos de sitio bloqueados.</strong> Ajustes → Safari → "Bloquear todas las
+            cookies" apagado.
+          </li>
+        </ul>
+        <p className="mono small">{falloBase}</p>
+        <div className="actions">
+          <button onClick={() => { setReady(false); void refresh(); }}>Reintentar</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app">
@@ -107,10 +155,14 @@ export function App() {
       <footer className="app-foot">
         <span className={`sinred ${offline.estado}`}>
           {offline.estado === "listo" ? (offline.enLinea ? "lista para el campo" : "sin internet · funcionando")
+            : offline.estado === "actualizada" ? "hay una versión nueva"
             : offline.estado === "preparando" ? "guardando la app…"
             : "no va a abrir sin señal"}
         </span>
         {offline.detalle}
+        {offline.estado === "actualizada" && (
+          <button className="link" onClick={() => location.reload()}>Recargar ahora</button>
+        )}
         <br />
         Pica · los datos viven solo en este dispositivo · nada se sube a ningun lado
       </footer>

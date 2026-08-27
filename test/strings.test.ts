@@ -427,3 +427,24 @@ describe("aplicacion sobre la geometria", () => {
     expect(cerca.countedFrom).toBe("near-dc");
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe("nombres de tracker que son un numero de fila", () => {
+  /**
+   * Hay parques que llaman a sus trackers "R12": el numero de fila ES el
+   * nombre. La regla que saca la fila del final se comia el nombre entero — el
+   * tracker quedaba vacio y la fila en R12 — y despues no cruzaba con nada, sin
+   * un solo mensaje de error.
+   */
+  it("no se come el nombre entero cuando el tracker se llama R12", () => {
+    const r = parseTrackerRef("R12");
+    expect(r.tracker).toBe("12");
+    expect(r.row).toBeUndefined();
+  });
+
+  it("pero si queda algo adelante, la fila si se separa", () => {
+    expect(parseTrackerRef("05-042-R1")).toMatchObject({ tracker: "42", block: "5", row: "R1" });
+    expect(parseTrackerRef("TRACKER 18 ROW 2")).toMatchObject({ tracker: "18", row: "R2" });
+  });
+});

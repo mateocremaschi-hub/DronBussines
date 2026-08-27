@@ -260,9 +260,43 @@ function armarBloque(
     t.side = (perp(t) >= road) === ladoDelPrimero ? "North" : "South";
   }
 
-  // Bloque 06 en Edenvale es una tira diagonal unica: no tiene dos alas, asi
-  // que la calle que encuentra el hueco es un vacio cualquiera del dibujo.
-  const tiraUnica = bnum === "06";
+  /**
+   * Bloques que NO tienen dos alas.
+   *
+   * En Edenvale el bloque 06 es una tira diagonal unica: no hay calle en el
+   * medio, asi que el "hueco mas grande" que encuentra el algoritmo es un vacio
+   * cualquiera del dibujo, y partir por ahi inventa dos alas donde hay una.
+   *
+   * Esto estaba escrito como `bnum === "06"`. Nombrar un bloque de UN parque
+   * dentro del lector de planos es exactamente el tipo de cosa que hace que la
+   * app funcione en Edenvale y falle en el parque siguiente por dos motivos a
+   * la vez: alla el bloque 06 puede tener dos alas de verdad (y se lo aplasta
+   * en una), y la tira unica puede ser el 11 (y se la parte al medio).
+   *
+   * La tira unica se reconoce por su forma, no por su nombre:
+   *
+   *  - el corte deja un ala casi vacia — no es una calle, es un tracker suelto
+   *    del otro lado de un vacio del dibujo; o
+   *  - el hueco no es mucho mas grande que la separacion tipica entre filas
+   *    vecinas, o sea no hay nada parecido a una calle.
+   *
+   * Una calle de verdad separa dos grupos parecidos y mide varias veces lo que
+   * mide la separacion entre dos filas.
+   */
+  const centros = [...tmap.values()].map(perp).sort((a, b) => a - b);
+  const deUnLado = centros.filter((c) => c >= road).length;
+  const minoria = Math.min(deUnLado, centros.length - deUnLado) / centros.length;
+  const separaciones = centros.slice(1).map((c, i) => c - centros[i]!).sort((a, b) => a - b);
+  const tipica = separaciones[Math.floor(separaciones.length / 2)] ?? 0;
+  const huecoElegido = axis === "x" ? gx.hueco : gy.hueco;
+
+  const tiraUnica = minoria < 0.15 || (tipica > 0 && huecoElegido < tipica * 3);
+  if (tiraUnica) {
+    avisos.push(
+      `El bloque ${bnum} no tiene calle en el medio: es una tira sola de ${tmap.size} trackers. ` +
+      "Todas sus filas quedan del mismo lado y la caja de continua se asigna por cercania.",
+    );
+  }
   if (tiraUnica) {
     for (const t of tmap.values()) {
       t.side = "South";

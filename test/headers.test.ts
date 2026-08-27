@@ -92,3 +92,36 @@ describe("encabezados recomendados", () => {
     expect(new Set(usados).size).toBe(usados.length);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe("las dos puntas se reconocen simetricamente", () => {
+  /**
+   * "final" estaba en la lista y "inicial" no. En una planilla con "ESTE
+   * INICIAL / ESTE FINAL / NORTE INICIAL / NORTE FINAL" —que es como las
+   * escribe medio mundo— se reconocian DOS columnas de cuatro. Y eso es peor
+   * que no reconocer ninguna: el asistente muestra la mitad asignada, parece
+   * que anduvo, y las dos que faltan se pasan por alto.
+   */
+  it("ESTE/NORTE INICIAL y FINAL: las cuatro", () => {
+    const m = suggestMapping([
+      "BLOQUE", "TRACKER", "ESTE INICIAL", "NORTE INICIAL", "ESTE FINAL", "NORTE FINAL",
+    ]);
+    expect(m.startX).toBe("ESTE INICIAL");
+    expect(m.startY).toBe("NORTE INICIAL");
+    expect(m.endX).toBe("ESTE FINAL");
+    expect(m.endY).toBe("NORTE FINAL");
+  });
+
+  it("tambien con 'comienzo' y 'termino'", () => {
+    const m = suggestMapping(["X COMIENZO", "Y COMIENZO", "X TERMINO", "Y TERMINO"]);
+    expect(m.startX).toBe("X COMIENZO");
+    expect(m.endY).toBe("Y TERMINO");
+  });
+
+  it("y las que ya andaban siguen andando", () => {
+    const m = suggestMapping(["ESTE 1", "NORTE 1", "ESTE 2", "NORTE 2"]);
+    expect(m.startX).toBe("ESTE 1");
+    expect(m.endY).toBe("NORTE 2");
+  });
+});

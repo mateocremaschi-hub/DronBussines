@@ -58,6 +58,15 @@ export interface TrackerRow {
   /** Etiquetas completas de esos strings, en el MISMO orden. Ej: ["S-1.2.15.1", …]. */
   stringLabels?: string[];
 
+  /**
+   * Como se llama la caja de continua de la que cuelga esta fila. Ej: DCB-5.1.3.
+   *
+   * Es por donde se entra caminando. El plano de interconexion la trae, y hasta
+   * ahora se la contaba —"N filas con caja de continua"— y se la tiraba: no
+   * quedaba en ningun lado, ni en la fila, ni en la direccion, ni en el CSV.
+   */
+  dcBoxLabel?: string;
+
   /** Salida de emergencia de `per-row-flag`: que extremo del segmento es el origen. */
   originEnd?: EndRef;
   /**
@@ -99,6 +108,20 @@ export interface FarmProfile {
      * `"derive"` = calcularlo del largo real de cada segmento.
      */
     pitchMm?: number | null | "derive";
+    /**
+     * Largo del modulo sobre el eje CORTO de la fila, en mm.
+     *
+     * Es la otra dimension del panel: si `widthMm` es lo que ocupa a lo largo
+     * del tracker, esta es lo que sobresale hacia los costados. Un panel comun
+     * mide 2278 x 1134, asi que segun como se monte una de las dos es el ancho
+     * y la otra este largo.
+     *
+     * No es decorativo: es la mitad de la caja con la que se mide la
+     * temperatura de cada modulo en la foto termica. Estuvo como constante
+     * 2.28 adentro del codigo de analisis, y en un parque con paneles apaisados
+     * la caja salia cuadrada sobre un modulo que no lo es.
+     */
+    lengthMm?: number;
     /**
      * Lado de una celda, en mm. Por defecto 160.
      *
@@ -248,6 +271,8 @@ export interface Address {
   stringNumber: number;
   /** Etiqueta completa del string, solo si hay lista de strings importada. */
   stringLabel?: string;
+  /** Nombre de la caja de continua por la que se entra, si el plano la trajo. */
+  dcBoxLabel?: string;
   /** Serial, solo si hay lista de paneles importada. */
   serial?: string;
 
@@ -277,7 +302,11 @@ export type WarningCode =
   | "missing-side"
   | "missing-chain-position"
   | "missing-flag"
-  | "in-string-gap";
+  | "in-string-gap"
+  /** La coordenada cae al costado del eje de la fila, no sobre la mesa. */
+  | "off-axis"
+  /** El modulo elegido esta mas lejos de lo que explica el error del GPS. */
+  | "far-from-module";
 
 export interface Warning {
   code: WarningCode;
@@ -378,6 +407,12 @@ export interface CompiledFarm {
   /** Medida del modulo a lo largo del eje, en metros. */
   moduleWidthM: number;
   maxDistanceM: number;
+  /**
+   * Cuanto puede diferir el largo medido de una fila del largo que sale de la
+   * geometria, por modulo, antes de avisar. Resuelto al compilar para que el
+   * motor no tenga que volver a decidir el valor por omision.
+   */
+  lengthToleranceMmPerModule: number;
   neighborhood: number;
   maxRowCandidates: number;
   defaultAccuracyM: number;

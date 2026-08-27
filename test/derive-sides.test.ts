@@ -14,6 +14,7 @@
 import { describe, expect, it } from "vitest";
 import edenvaleJson from "../farms/edenvale.json" with { type: "json" };
 import { deriveSides } from "../app/ingest";
+import { makeFrame, toGeo } from "../src/geo/frame.js";
 import type { FarmProfile, TrackerRow } from "../src/types.js";
 import { makeRow, nominalLengthM } from "./helpers/synthetic.js";
 
@@ -220,5 +221,62 @@ describe("dos grupos del mismo lado, corridos entre si", () => {
     const { sides, blocks } = deriveSides(escalonado("06", 156, 30, LEN + 8));
     expect(blocks[0]!.status).toBe("dos-lados");
     expect(sides.size).toBe(186);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("parques con las filas corriendo este-oeste", () => {
+  /**
+   * El signo del eje medio se normalizaba SIEMPRE por la componente norte-sur.
+   * Con las filas corriendo este-oeste esa componente es casi cero, asi que el
+   * sentido de cada fila lo decidian milimetros de ruido del relevamiento: unas
+   * apuntaban a un lado y otras al opuesto, se cancelaban, y el eje salia de
+   * cualquier lado. Y encima los dos lados se llamaban norte y sur, que en un
+   * parque asi es directamente falso: la estrategia `dc-box-end` busca "el
+   * extremo que apunta al norte" de una fila cuyas dos puntas estan a la misma
+   * latitud, y lo elige por ruido.
+   */
+  const frame = makeFrame(-27.4, 152.7);
+  /** Una fila que corre este-oeste: 65 m de largo sobre el eje X. */
+  const filaEO = (id: string, yM: number, xDesde: number, alReves: boolean) => {
+    // Ruido de relevamiento: unos milimetros de desnivel norte-sur en una fila
+    // que corre este-oeste. Es lo que decidia el signo del eje medio cuando se
+    // normalizaba siempre por la componente norte-sur, y por eso las filas se
+    // cancelaban entre si.
+    const ruido = ((Number(id.split("-")[1]) % 2) === 0 ? 1 : -1) * 0.004;
+    const a = toGeo(frame, xDesde, yM);
+    const b = toGeo(frame, xDesde + 65, yM + ruido);
+    return {
+      id, block: "01", tracker: id,
+      start: alReves ? b : a,
+      end: alReves ? a : b,
+    };
+  };
+
+  // Dos alas de filas este-oeste enfrentadas a los lados de una calle que corre
+  // norte-sur: las filas del oeste terminan en x = -8 y las del este arrancan
+  // en x = +8. La mitad viene con las picas cargadas al reves, como en un Excel
+  // real, que es justo lo que hacia que el eje medio se cancelara solo.
+  const filas = [
+    ...Array.from({ length: 6 }, (_, i) => filaEO(`e-${i}`, i * 7, 8, i % 2 === 0)),
+    ...Array.from({ length: 6 }, (_, i) => filaEO(`o-${i}`, i * 7, -73, i % 3 === 0)),
+  ];
+
+  it("los llama este y oeste, no norte y sur", () => {
+    const d = deriveSides(filas);
+    const lados = new Set([...d.sides.values()]);
+    expect(lados.size).toBe(2);
+    expect(lados).toEqual(new Set(["east", "west"]));
+  });
+
+  it("y lo dice en el informe del bloque", () => {
+    const d = deriveSides(filas);
+    expect(d.blocks[0]!.detail).toMatch(/corren este-oeste/);
+  });
+
+  it("las picas al reves no desarman el agrupamiento", () => {
+    const d = deriveSides(filas);
+    expect(d.sides.size).toBe(12);
   });
 });

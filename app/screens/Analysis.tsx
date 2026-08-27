@@ -19,6 +19,7 @@ import { download } from "../inspection";
 import { camaraDesdeEquivalente35, type Camera } from "../mission";
 import { readPhoto, type PhotoFix } from "../photos";
 import { readRadiometric } from "../thermal";
+import { anguloDeTracker } from "@locator";
 import {
   Acumulador,
   CELDA_M,
@@ -33,7 +34,13 @@ import {
 import type { Ajuste } from "../projection";
 import { saveAnalysis, type StoredFarm } from "../storage";
 
-/** Largo del modulo sobre el eje corto de la fila, en metros. Un panel tipico. */
+/**
+ * Largo del modulo sobre el eje corto de la fila, cuando el perfil no lo trae.
+ *
+ * Era una constante fija de 2.28 m, y con ella la caja de medicion salia
+ * cuadrada en un parque de paneles apaisados. Ahora sale del perfil; esto es
+ * solo el respaldo para parques dados de alta antes de que el campo existiera.
+ */
 const LARGO_MODULO_M = 2.28;
 
 interface Props {
@@ -49,17 +56,31 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
   const [camera, setCamera] = useState<Camera | null>(null);
   const [gsdCm, setGsdCm] = useState(0);
   const [enElBorde, setEnElBorde] = useState(0);
+  /** Fotos que se ubicaron con un supuesto porque les faltaba un dato. */
+  const [posesSupuestas, setPosesSupuestas] = useState<Array<{ motivo: string; fotos: number }>>([]);
   const [progreso, setProgreso] = useState<{ hecho: number; total: number } | null>(null);
   const [problemas, setProblemas] = useState<string[]>([]);
+  /** Fotos termicas que se pudieron medir. Cero con archivos elegidos es un caso, no un vacio. */
+  const [leidas, setLeidas] = useState(0);
   const [ajuste, setAjuste] = useState<Ajuste>({ dxM: 0, dyM: 0 });
   const [umbrales, setUmbrales] = useState<Umbrales>(UMBRALES);
   const [elegido, setElegido] = useState<Hallazgo | null>(null);
+  /** Angulo medio de los trackers durante el vuelo, sacado de la hora de cada foto. */
+  const [anguloMedio, setAnguloMedio] = useState<number | null>(null);
 
   const farm = useMemo<CompiledFarm | null>(() => {
     try { return compileFarm(stored.profile, stored.rows); } catch { return null; }
   }, [stored]);
 
   const anchoM = stored.profile.module.widthMm / 1000;
+  /**
+   * El lado de la celda de ESTE parque.
+   *
+   * Se usa para dos cosas —medir el punto caliente y decir si el vuelo daba
+   * para verlo— y tienen que ser el mismo numero. Estaban separados: la
+   * medicion usaba el del perfil y el informe la constante de 160 mm.
+   */
+  const celdaM = (stored.profile.module.cellMm ?? CELDA_M * 1000) / 1000;
 
   const hallazgos = useMemo(
     () => (muestras.length ? comparar(muestras, umbrales) : []),
@@ -74,8 +95,11 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
     stored.profile.topology.modulesPerString *
     stored.profile.topology.stringsPerRow;
   const resumen = useMemo(
-    () => (hallazgos.length ? resumir(hallazgos, totalModulos, eventos, gsdCm, enElBorde) : null),
-    [hallazgos, totalModulos, eventos, gsdCm, enElBorde],
+    () =>
+      hallazgos.length
+        ? resumir(hallazgos, totalModulos, eventos, gsdCm, enElBorde, posesSupuestas, celdaM)
+        : null,
+    [hallazgos, totalModulos, eventos, gsdCm, enElBorde, posesSupuestas, celdaM],
   );
 
   /**
@@ -114,17 +138,83 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
     let sumaGsd = 0;
     let nGsd = 0;
     const fallos: string[] = [];
+    let sinTermica = 0;
+    let termicas = 0;
+    /**
+     * La escala del vuelo, fijada por la primera foto que se pudo leer.
+     *
+     * Se elegia foto por foto, por contraste. Una foto de una nube, del hangar
+     * o del despegue puede caer en otra escala, y esa foto entra al analisis
+     * con las temperaturas multiplicadas por seis. Nadie lo nota, porque 240 °C
+     * se reporta como una anomalia critica — y anomalias es justo lo que
+     * estabamos buscando.
+     *
+     * Todas las fotos de un vuelo salen de la misma camara con la misma
+     * configuracion: la escala es una sola. Se fija con la primera y se cuenta
+     * cuantas habrian elegido otra, para poder decirlo al final.
+     */
+    let escalaDelVuelo: string | null = null;
+    const discrepan: string[] = [];
+    /**
+     * Fotos donde la camara llego a su tope.
+     *
+     * Arriba del rango elegido, la termica guarda todo con el mismo numero. Un
+     * conector quemado, un punto caliente fuerte o un reflejo del sol se pasan,
+     * y lo que se mide deja de ser la temperatura del modulo: es el techo del
+     * sensor. El ΔT de esas fotos es un PISO, no una medida — y justo son las
+     * fotos de los defectos mas graves, o sea las que mas importan.
+     */
+    const saturadas: string[] = [];
+    let topeMasAlto = 0;
+    /** Angulo medio de los trackers durante el vuelo, para poder decirlo. */
+    let sumaAngulo = 0;
+    let nAngulo = 0;
+    /** Tamanios de imagen distintos al de la primera foto. */
+    const otraCamara = new Set<string>();
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i]!;
       try {
         const buf = await file.arrayBuffer();
-        const radio = readRadiometric(buf);
-        if (!radio) { setProgreso({ hecho: i + 1, total: files.length }); continue; }
+        const radio = readRadiometric(buf, escalaDelVuelo ?? undefined);
+        if (!radio) {
+          // No es un error: casi siempre es la foto visible del par. Pero si
+          // NINGUNA trae temperatura hay que decirlo, y para eso hace falta
+          // contarlas en vez de saltearlas en silencio.
+          sinTermica++;
+          setProgreso({ hecho: i + 1, total: files.length });
+          continue;
+        }
 
-        const leida = await readPhoto(file);
+        if (!escalaDelVuelo) escalaDelVuelo = radio.escala;
+        else if (radio.escalaAuto !== escalaDelVuelo) discrepan.push(file.name);
+
+        // Medio por mil de la foto pegada al mismo maximo ya es una mancha, no
+        // un pixel de ruido: son unos 160 pixeles en una termica de 640 x 512.
+        if (radio.fraccionEnElTope > 0.0005) {
+          saturadas.push(file.name);
+          topeMasAlto = Math.max(topeMasAlto, radio.topeC);
+        }
+
+        // Sin miniatura: esta pantalla no la muestra, y generarla por foto
+        // decodifica y recomprime la imagen entera para tirarla.
+        const leida = await readPhoto(file, false);
         const fix = leida.fix;
         if (!fix) { fallos.push(`${file.name}: ${leida.error ?? "sin coordenada"}`); continue; }
+
+        /*
+          La camara se deduce de la PRIMERA foto y despues no se vuelve a
+          mirar. Si en la carpeta hay dos vuelos, o la termica y la visible del
+          par, o dos drones distintos, todas las demas fotos se proyectan con
+          la huella de la camara equivocada — y una huella equivocada no da un
+          error, da modulos de la fila de al lado.
+
+          No se puede cambiar de camara a mitad de vuelo (el Acumulador ya esta
+          armado con la primera), pero SI se puede detectar y decirlo.
+        */
+        if (cam && (radio.width !== cam.imageW || radio.height !== cam.imageH)) {
+          otraCamara.add(`${radio.width}×${radio.height}`);
+        }
 
         if (!cam) {
           cam = camaraFrom(fix, radio.width, radio.height);
@@ -133,11 +223,11 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
           acc = new Acumulador(farm, frame, {
             camera: cam,
             moduloAnchoM: anchoM,
-            moduloLargoM: LARGO_MODULO_M,
+            moduloLargoM: (farm.profile.module.lengthMm ?? LARGO_MODULO_M * 1000) / 1000,
             ajuste: conAjuste,
             // El lado de la celda lo declara el perfil del parque: cambia
             // entre fabricantes y decide si este vuelo puede ver una celda.
-            celdaM: (stored.profile.module.cellMm ?? CELDA_M * 1000) / 1000,
+            celdaM,
           });
         }
 
@@ -147,6 +237,29 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
         sumaGsd += ((2 * agl * Math.tan((cam.hfovDeg * Math.PI) / 360)) / cam.imageW) * 100;
         nGsd++;
 
+        /*
+          El angulo del tracker en el momento de ESTA foto.
+
+          Los trackers giran de -55 a +55 grados siguiendo al sol, asi que un
+          modulo fotografiado a las ocho de la manana se ve casi la mitad de
+          ancho de lo que es. Sin corregirlo, la caja de medicion se dibuja del
+          ancho del modulo acostado y casi la mitad cae sobre el suelo — que al
+          sol lee muy distinto y le baja la mediana al modulo entero.
+
+          La hora sale de la propia foto. Si no la trae, se mide como si los
+          trackers estuvieran planos, que es lo que se hacia siempre.
+        */
+        const cuando = fix.takenAt ? new Date(fix.takenAt) : null;
+        const angulo =
+          cuando && !Number.isNaN(cuando.getTime())
+            ? anguloDeTracker(fix.lat, fix.lon, cuando)
+            : null;
+        if (angulo && !angulo.deNoche) {
+          sumaAngulo += Math.abs(angulo.gradosDesdeLaHorizontal);
+          nAngulo++;
+        }
+
+        termicas++;
         acc!.agregar({
           fileName: file.name,
           radio,
@@ -155,17 +268,62 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
             ...(fix.gimbalYawDeg != null ? { gimbalYawDeg: fix.gimbalYawDeg } : {}),
             ...(fix.gimbalPitchDeg != null ? { gimbalPitchDeg: fix.gimbalPitchDeg } : {}),
           },
-        });
+        }, angulo?.factorDeAcortamiento ?? 1);
       } catch (e) {
         fallos.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`);
       }
       setProgreso({ hecho: i + 1, total: files.length });
     }
 
+    setAnguloMedio(nAngulo ? sumaAngulo / nAngulo : null);
     setGsdCm(nGsd ? sumaGsd / nGsd : 0);
     setEnElBorde(acc ? acc.soloEnElBorde() : 0);
+    setPosesSupuestas(acc ? acc.posesSupuestas() : []);
     setMuestras(acc ? acc.muestras() : []);
-    setProblemas(fallos);
+    setLeidas(termicas);
+    /*
+      Las fotos que por su cuenta habrian elegido otra escala. No es un error
+      —se las convirtio con la escala del vuelo, que es lo correcto— pero si
+      son muchas, algo pasa con el lote: fotos de dos camaras distintas, o de
+      dos vuelos mezclados en la misma carpeta.
+    */
+    if (discrepan.length) {
+      fallos.push(
+        `${discrepan.length} de ${termicas} fotos tienen un rango de temperaturas raro para el ` +
+        `resto del vuelo (${discrepan.slice(0, 3).join(", ")}` +
+        `${discrepan.length > 3 ? "…" : ""}). Se las midio con la escala del vuelo igual. Si son ` +
+        "muchas, fijate que no se hayan mezclado dos vuelos o dos camaras en la misma carpeta.",
+      );
+    }
+
+    if (otraCamara.size && cam) {
+      fallos.push(
+        `Hay fotos de otra camara en el lote: la primera es de ${cam.imageW}×${cam.imageH} px y ` +
+        `tambien aparecen ${[...otraCamara].join(", ")}. Todo el vuelo se proyecto con la primera, ` +
+        "asi que las demas pueden estar ubicadas en la fila de al lado. Separá los vuelos en " +
+        "carpetas distintas y volvé a correr cada uno.",
+      );
+    }
+
+    if (saturadas.length) {
+      fallos.push(
+        `${saturadas.length} de ${termicas} fotos llegan al tope del sensor (${topeMasAlto.toFixed(0)} °C) ` +
+        "con una mancha, no un pixel suelto. Arriba de ese tope la camara guarda todo con el mismo " +
+        "numero, asi que el ΔT de esas fotos es un PISO y no una medida: el defecto puede ser bastante " +
+        "peor. Si te importa la temperatura exacta, subile el rango a la camara y revolá esas zonas. " +
+        "Para encontrar los modulos a reemplazar, igual sirven.",
+      );
+    }
+
+    setProblemas(
+      sinTermica && !termicas
+        ? [
+            `Ninguno de los ${files.length} archivos trae la temperatura adentro. Si elegiste las ` +
+            "fotos visibles del par, faltan las termicas — las que terminan en _T.",
+            ...fallos,
+          ]
+        : fallos,
+    );
     setProgreso(null);
   }
 
@@ -224,6 +382,40 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
         )}
       </section>
 
+      {/*
+        El caso que dejaba la pantalla vacia.
+        =====================================================================
+        Si las fotos son radiometricas y traen focal, `problemas` queda vacio,
+        asi que no se muestra nada de la caja de arriba. Y si ninguna cae sobre
+        el parque —vuelo de otro bloque, parque equivocado, ajuste mal— no hay
+        hallazgos, `resumen` es null, y despues de "Leyendo 400 de 400…" la
+        pantalla vuelve exactamente a como estaba. Sin una linea de texto.
+      */}
+      {!progreso && archivos.length > 0 && !resumen && (
+        <section className="card">
+          <h2>No hay nada que mostrar de este vuelo</h2>
+          {leidas > 0 ? (
+            <>
+              <p>
+                Se leyeron <strong>{leidas}</strong> fotos térmicas, pero ninguna cayó sobre la
+                geometría de este parque. No es un problema de las fotos: es que la app las ubicó
+                en otro lado.
+              </p>
+              <ul className="pasos">
+                <li>¿Es el parque correcto? Las fotos se comparan contra <strong>{stored.profile.name}</strong>.</li>
+                <li>¿El vuelo cubre bloques que estén cargados? Un bloque sin geometría no tiene módulos que medir.</li>
+                <li>¿Las fotos traen altura sobre el terreno? Sin eso la huella sale del tamaño equivocado.</li>
+              </ul>
+            </>
+          ) : (
+            <p>
+              De {archivos.length} archivos no se pudo usar ninguno. Mirá la lista de arriba: si
+              dice que no traen temperatura, son las fotos visibles y falta elegir las térmicas.
+            </p>
+          )}
+        </section>
+      )}
+
       {resumen && camera && (
         <>
           <section className="card">
@@ -241,6 +433,26 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
                 ? `${resumen.conChequeoDeCelda} modulos chequeados tambien por adentro`
                 : "sin resolucion para buscar celdas calientes"}.
             </p>
+
+            {/*
+              El angulo de los trackers durante el vuelo, sacado de la hora de
+              cada foto. La caja con la que se mide cada modulo ya se achico por
+              esto; decirlo sirve para lo otro: elegir mejor la hora del proximo.
+            */}
+            {anguloMedio != null && (
+              <p className={anguloMedio > 35 ? "note bad" : anguloMedio > 20 ? "note" : "note ok"}>
+                Los trackers estuvieron a <strong>{anguloMedio.toFixed(0)}°</strong> de la
+                horizontal en promedio durante este vuelo, asi que cada modulo se vio al{" "}
+                <strong>{(Math.cos((anguloMedio * Math.PI) / 180) * 100).toFixed(0)} %</strong> de su
+                ancho. La caja con la que se mide cada modulo ya se achico por eso.
+                {anguloMedio > 20 && (
+                  <>
+                    {" "}Volando mas cerca del mediodia solar los trackers quedan casi planos y el
+                    mismo dron resuelve bastante mas: mirá la tabla de horas en "Planificar el vuelo".
+                  </>
+                )}
+              </p>
+            )}
 
             {resumen.eventosDeString > 0 && (
               <div className="warnbox">
@@ -277,7 +489,7 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
           <section className="card">
             <h2>El parque, modulo por modulo</h2>
             <ThermalMap
-              hallazgos={hallazgos} anchoM={anchoM} largoM={LARGO_MODULO_M}
+              hallazgos={hallazgos} anchoM={anchoM} largoM={(farm.profile.module.lengthMm ?? LARGO_MODULO_M * 1000) / 1000}
               onPick={setElegido} seleccion={elegido}
             />
 
@@ -311,6 +523,22 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
               una vez y se corrige entero. Corrimiento actual:{" "}
               <strong>{ajuste.dxM.toFixed(1)} m este · {ajuste.dyM.toFixed(1)} m norte</strong>.
             </p>
+            {/*
+              Cada toque vuelve a leer las fotos de cero: la temperatura se mide
+              en pixeles distintos, asi que no hay forma de reaprovechar la
+              medicion anterior. Decirlo antes evita el "se colgo" — la barra de
+              progreso estaba arriba de todo, fuera de la pantalla desde aca.
+            */}
+            <p className="help muted">
+              Ojo: mover la grilla vuelve a leer las {archivos.length} fotos, porque la temperatura
+              se mide en otro lugar de cada imagen. Con un vuelo grande son varios minutos por toque.
+              Conviene mirar el dibujo, calcular el corrimiento entero y darlo de una.
+            </p>
+            {progreso && (
+              <p className="note ok">
+                Releyendo con la grilla corrida: {progreso.hecho} de {progreso.total}…
+              </p>
+            )}
             <div className="row">
               <button className="ghost" onClick={() => mover(0, 1)} disabled={!!progreso}>↑ 1 m norte</button>
               <button className="ghost" onClick={() => mover(0, -1)} disabled={!!progreso}>↓ 1 m sur</button>
@@ -325,16 +553,42 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
           <section className="card">
             <h2>Los hallazgos</h2>
             <div className="row">
+              {/*
+                Borrar el campo daba `Number("") === 0`, y con el umbral leve en
+                0 TODO modulo del parque queda clasificado como anomalia: mil
+                hallazgos falsos y el informe entero al tacho, sin ningun aviso.
+                Vacio ahora vuelve al valor por defecto en vez de a cero.
+              */}
               {(["leve", "moderada", "critica"] as const).map((k) => (
                 <label className="inline" key={k}>
                   ΔT {k} (°C)
                   <input
-                    type="number" min={0} step={1} value={umbrales[k]}
-                    onChange={(e) => setUmbrales((u) => ({ ...u, [k]: Number(e.target.value) }))}
+                    type="number" min={0.5} step={0.5} value={umbrales[k]}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      setUmbrales((u) => ({
+                        ...u,
+                        [k]: e.target.value.trim() === "" || !Number.isFinite(v) || v <= 0
+                          ? UMBRALES[k]
+                          : v,
+                      }));
+                    }}
                   />
                 </label>
               ))}
             </div>
+            {(umbrales.leve >= umbrales.moderada || umbrales.moderada >= umbrales.critica) && (
+              <p className="note bad">
+                Los tres umbrales tienen que ir de menor a mayor: leve &lt; moderada &lt; critica.
+                Como estan ahora, la clasificacion no significa nada.
+                <button
+                  className="link"
+                  onClick={() => setUmbrales(UMBRALES)}
+                >
+                  volver a {UMBRALES.leve} / {UMBRALES.moderada} / {UMBRALES.critica} →
+                </button>
+              </p>
+            )}
             <p className="help">
               Los umbrales son una convencion de trabajo, no una cita de la norma: la IEC clasifica
               por patron y contexto, no por un numero suelto. Sirven para ordenar la lista.

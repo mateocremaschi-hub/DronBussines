@@ -72,7 +72,8 @@ export function utmToWgs84(p: UtmPoint): { lat: number; lon: number } {
 }
 
 export function wgs84ToUtm(lat: number, lon: number, zone?: number): UtmPoint {
-  const z = zone ?? Math.floor((lon + 180) / 6) + 1;
+  // La 61 existe solo en lon = 180 exacto, que es el borde de la 60.
+  const z = zone ?? Math.min(60, Math.floor((lon + 180) / 6) + 1);
   const phi = lat * RAD;
   const lam = lon * RAD;
   const lam0 = centralMeridian(z) * RAD;

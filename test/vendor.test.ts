@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import edenvaleJson from "../farms/edenvale.json" with { type: "json" };
 import {
   checkConditions,
+  filasSinCoordenada,
   parseModuleIndex,
   readVendorFindings,
   reconcile,
@@ -74,6 +75,41 @@ describe("lectura del archivo del proveedor", () => {
     expect(parseModuleIndex("R1-07")).toBe(7);
     expect(parseModuleIndex("")).toBeUndefined();
     expect(parseModuleIndex(null)).toBeUndefined();
+  });
+
+  /**
+   * "Long" a secas es como escribe la columna la mitad de los exportadores.
+   * Sin esa palabra quedaba sin asignar, se perdian TODAS las filas, y la
+   * auditoria salia vacia (y hasta hace poco, en verde).
+   */
+  it("reconoce la longitud escrita como Long", () => {
+    const m = suggestVendorMapping(["Lat", "Long", "String Id"]);
+    expect(m.lon).toBe("Long");
+    expect(m.lat).toBe("Lat");
+  });
+
+  /**
+   * Un indice guardado como numero real —"25.0", que es lo que sale de exportar
+   * una columna numerica— daba 0: el ultimo grupo de digitos era el cero de la
+   * derecha. Y 0 se comparaba como si fuera un modulo.
+   */
+  it("un indice con decimales no se convierte en cero", () => {
+    expect(parseModuleIndex("25.0")).toBe(25);
+    expect(parseModuleIndex(25.0)).toBe(25);
+    expect(parseModuleIndex("0")).toBeUndefined();   // no existe el modulo 0
+    expect(parseModuleIndex("(1,25)")).toBe(25);     // la coma sigue separando
+  });
+
+  it("dice cuantas filas se quedaron sin coordenada, en vez de perderlas calladas", () => {
+    const sheet = {
+      name: "s", headers: ["Latitude", "Longitude"],
+      rows: [
+        { Latitude: -27.4, Longitude: 152.7 },
+        { Latitude: "", Longitude: 152.7 },
+        { Latitude: null, Longitude: null },
+      ],
+    };
+    expect(filasSinCoordenada(sheet, suggestVendorMapping(sheet.headers))).toBe(2);
   });
 
   it("saltea las filas sin coordenada en vez de romper el lote", () => {
@@ -153,7 +189,16 @@ describe("el veredicto", () => {
 
   it("no saca conclusiones si no hubo con que comparar", () => {
     const r = summarizeReconcile(filas(Array(10).fill("sin-ubicar")));
-    expect(r.veredicto).toMatch(/No hubo con que comparar/);
+    expect(r.veredicto).toMatch(/No se pudo auditar nada/);
+    // Y sobre todo: NO sale en verde. "No se pudo auditar" es el peor
+    // resultado posible — significa que la auditoria no se hizo — y salia del
+    // mismo color que un archivo impecable.
+    expect(r.nivel).toBe("malo");
+  });
+
+  it("un archivo que coincide entero sale en verde y uno espejado no", () => {
+    expect(summarizeReconcile(filas(Array(10).fill("coincide"))).nivel).toBe("ok");
+    expect(summarizeReconcile(filas(Array(10).fill("espejado"))).nivel).toBe("malo");
   });
 });
 

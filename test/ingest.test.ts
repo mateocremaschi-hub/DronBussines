@@ -533,3 +533,59 @@ describe("fusionar sin perder lo aplicado aparte", () => {
     expect(r.rows.find((x) => x.id === "01-002-R1")!.stringNumbers).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe("codificacion del archivo", () => {
+  /**
+   * Un CSV exportado en UTF-8 sin BOM —lo que sale de QGIS, de un script, de
+   * cualquier cosa que no sea Excel en Windows— se leia con la codificacion
+   * vieja y los acentos quedaban rotos: "Ubicación" entraba como "UbicaciÃ³n".
+   *
+   * No rompe nada a la vista. Rompe el reconocimiento de columnas, que es lo
+   * que decide si el operador asigna dos columnas o cuarenta.
+   */
+  it("lee los acentos de un CSV en UTF-8 sin BOM", async () => {
+    const csv = "Bloque,Tracker,Posición,Este inicial\n05,05-042,1,512345.6\n";
+    const buf = new TextEncoder().encode(csv).buffer as ArrayBuffer;
+    const [hoja] = await readWorkbook(buf);
+    expect(hoja!.headers).toContain("Posición");
+    expect(hoja!.headers).toContain("Este inicial");
+    expect(hoja!.headers).not.toContain("PosiciÃ³n");
+  });
+
+  it("un CSV en ASCII puro sigue entrando igual", async () => {
+    const csv = "Bloque,Tracker\n05,05-042\n";
+    const buf = new TextEncoder().encode(csv).buffer as ArrayBuffer;
+    const [hoja] = await readWorkbook(buf);
+    expect(hoja!.headers).toEqual(["Bloque", "Tracker"]);
+    expect(hoja!.rows).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("reconocimiento de columnas: la mas especifica gana", () => {
+  /**
+   * "POS TOTAL" se la llevaba `pos`, porque `pos` va antes en la lista y su
+   * regla es una sola palabra. "Trackers en la linea" quedaba sin asignar — y
+   * ese es el dato que dice si una fila es la ultima de su linea electrica, o
+   * sea el que decide de que punta se cuenta el modulo 1.
+   */
+  it("POS TOTAL va a 'trackers en la linea', no a 'posicion'", () => {
+    const m = suggestMapping(["BLOQUE", "TRACKER", "POS", "POS TOTAL"]);
+    expect(m.posTotal).toBe("POS TOTAL");
+    expect(m.pos).toBe("POS");
+  });
+
+  it("si solo esta POS TOTAL, no se la queda 'posicion'", () => {
+    const m = suggestMapping(["BLOQUE", "TRACKER", "POS TOTAL"]);
+    expect(m.posTotal).toBe("POS TOTAL");
+    expect(m.pos).toBeUndefined();
+  });
+
+  it("a igualdad de regla gana el encabezado con menos palabras de sobra", () => {
+    const m = suggestMapping(["POSICION DEL TRACKER EN LA LINEA", "POSICION"]);
+    expect(m.pos).toBe("POSICION");
+  });
+});

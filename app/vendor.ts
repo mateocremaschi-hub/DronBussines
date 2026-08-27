@@ -43,7 +43,10 @@ export interface VendorMapping {
 
 const WORDS: Record<keyof VendorMapping, string[][]> = {
   lat: [["latitude"], ["latitud"], ["lat"]],
-  lon: [["longitude"], ["longitud"], ["lon"], ["lng"]],
+  // "long" a secas es como lo escriben la mitad de los exportadores (y es como
+  // sale de QGIS). Sin esa palabra la columna quedaba sin asignar y el informe
+  // entero salia "sin ubicar" — que hasta hace poco se mostraba en verde.
+  lon: [["longitude"], ["longitud"], ["long"], ["lon"], ["lng"]],
   stringId: [["string", "id"], ["string"], ["cadena"]],
   moduleIndex: [["module", "coordinates"], ["module", "position"], ["modulo"], ["module"]],
   anomaly: [["anomaly", "type"], ["defect", "type"], ["anomalia"], ["tipo"]],
@@ -96,13 +99,42 @@ export interface VendorFinding {
  *
  * Los proveedores lo escriben de formas distintas: "(1,25)", "25", "R1-25".
  * Se toma el ultimo numero, que es el que varia modulo a modulo.
+ *
+ * El punto decimal cuenta como parte del numero. Sin eso, una planilla que
+ * guarda el indice como numero real —"25.0", que es lo que sale de exportar
+ * una columna numerica desde varias herramientas— daba 0: el ultimo grupo de
+ * digitos era el "0" de la derecha. Y 0 no es un modulo invalido para el
+ * comparador, es un modulo: el informe entero salia "espejado" contra la nada.
+ *
+ * La coma NO cuenta, porque "(1,25)" es la forma real en la que un proveedor
+ * escribe "fila 1, modulo 25".
  */
 export function parseModuleIndex(v: unknown): number | undefined {
   if (v == null || v === "") return undefined;
-  const nums = String(v).match(/\d+/g);
+  const nums = String(v).match(/\d+(?:\.\d+)?/g);
   if (!nums?.length) return undefined;
-  const n = Number(nums[nums.length - 1]);
-  return Number.isFinite(n) ? n : undefined;
+  const n = Math.round(Number(nums[nums.length - 1]));
+  // Los modulos se numeran desde 1. Un 0 es un dato roto, no un modulo.
+  return Number.isFinite(n) && n >= 1 ? n : undefined;
+}
+
+/**
+ * Cuantas filas del archivo no traen coordenada.
+ *
+ * `readVendorFindings` las saltea, y esta bien que lo haga: sin coordenada no
+ * hay nada que recalcular. Lo que no esta bien es no decirlo. Un archivo con la
+ * columna de longitud mal asignada pierde las 3000 filas en silencio y la
+ * pantalla muestra una auditoria de cero hallazgos como si el archivo viniera
+ * vacio.
+ */
+export function filasSinCoordenada(sheet: Sheet, m: VendorMapping): number {
+  let n = 0;
+  for (const r of sheet.rows) {
+    const lat = m.lat ? toNumber(r[m.lat]) : null;
+    const lon = m.lon ? toNumber(r[m.lon]) : null;
+    if (lat == null || lon == null) n++;
+  }
+  return n;
 }
 
 export function readVendorFindings(sheet: Sheet, m: VendorMapping): VendorFinding[] {
@@ -206,6 +238,15 @@ export interface ReconcileReport {
   sinUbicar: number;
   /** Conclusion en castellano, para no tener que interpretar los numeros. */
   veredicto: string;
+  /**
+   * Como pintar el veredicto.
+   *
+   * La pantalla lo deducia sola con `espejados > coinciden`, y con eso "no hubo
+   * con que comparar" —que es el peor resultado posible, porque significa que
+   * la auditoria no se hizo— salia en VERDE, igual que un archivo impecable.
+   * El que decide lo decide en dos segundos mirando el color.
+   */
+  nivel: "ok" | "aviso" | "malo";
 }
 
 export function summarizeReconcile(rows: Reconciled[]): ReconcileReport {
@@ -217,29 +258,39 @@ export function summarizeReconcile(rows: Reconciled[]): ReconcileReport {
   const comparables = coinciden + espejados;
 
   let veredicto: string;
+  let nivel: ReconcileReport["nivel"];
   if (comparables === 0) {
-    veredicto = "No hubo con que comparar: el archivo no trae numero de modulo, o ninguna coordenada cayo sobre el parque.";
+    nivel = "malo";
+    veredicto =
+      "No se pudo auditar nada. De los " + rows.length + " hallazgos del archivo, ninguno quedo " +
+      "comparable: o el archivo no trae numero de modulo, o ninguna de sus coordenadas cayo sobre " +
+      "este parque. Fijate que el archivo sea de ESTE parque y que la columna de modulo este " +
+      "asignada; si no, este informe no dice nada sobre el del proveedor.";
   } else if (espejados / comparables > 0.9) {
+    nivel = "malo";
     veredicto =
       `Practicamente todo el archivo esta espejado (${espejados} de ${comparables}). ` +
       "El proveedor cuenta los modulos desde una punta fija del parque, no desde la caja DC. " +
       "Para el que camina desde la caja, esos numeros estan al reves.";
   } else if (espejados / comparables > 0.25) {
+    nivel = "malo";
     veredicto =
       `${espejados} de ${comparables} estan espejados y ${coinciden} coinciden. ` +
       "Esa mezcla es la firma de contar desde una punta fija: coincide de un lado de la calle " +
       "y sale al reves del otro.";
   } else if (coinciden / comparables > 0.9) {
+    nivel = "ok";
     veredicto =
       `Coinciden ${coinciden} de ${comparables}. Las dos numeraciones hablan el mismo idioma, ` +
       "asi que el archivo se puede usar tal cual.";
   } else {
+    nivel = "aviso";
     veredicto =
       `${coinciden} coinciden, ${espejados} espejados y ${otros} no cierran de ninguna de las dos formas. ` +
       "Conviene mirar unos casos a mano antes de confiar en el archivo.";
   }
 
-  return { total: rows.length, ubicados: rows.length - sinUbicar, coinciden, espejados, otros, sinUbicar, veredicto };
+  return { total: rows.length, ubicados: rows.length - sinUbicar, coinciden, espejados, otros, sinUbicar, veredicto, nivel };
 }
 
 // ---------------------------------------------------------------------------

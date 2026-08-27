@@ -10,7 +10,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { compileFarm } from "@locator";
+import { compileFarm, husoAproximado, TOPE_TRACKER_DEG, ventanaDeVuelo } from "@locator";
 import type { CompiledFarm } from "@locator";
 import { GeometryPlot } from "../components/GeometryPlot";
 import { descargarBytes, download } from "../inspection";
@@ -27,11 +27,14 @@ import {
   type MissionOptions,
 } from "../mission";
 import { avisosDeKmz, PERFILES_DJI, toKmz } from "../wpml";
+import { PIXELES_POR_CELDA_MINIMO, CELDA_M } from "../detect";
 import type { StoredFarm } from "../storage";
 
 export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () => void }) {
   const [camIndex, setCamIndex] = useState(0);
   const [o, setO] = useState(OPCIONES_POR_DEFECTO);
+  /** Lo que se esta tipeando, mientras no sea todavia un numero valido. */
+  const [crudos, setCrudos] = useState<Partial<Record<keyof typeof OPCIONES_POR_DEFECTO, string>>>({});
   const [porBloque, setPorBloque] = useState(true);
   const [baterias, setBaterias] = useState(4);
   const [bloqueAbierto, setBloqueAbierto] = useState<string | null>(null);
@@ -55,6 +58,49 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   const plan = useMemo(
     () => planByBlock(stored.rows, stored.profile, opts, baterias),
     [stored.rows, stored.profile, opts.camera, o, baterias],
+  );
+
+  /**
+   * La hora del vuelo, y el angulo en el que van a estar los trackers.
+   *
+   * Esto contesta una pregunta que la app no se hacia y que decide si el vuelo
+   * sirve. El dia arranca en el de hoy segun el reloj del dispositivo, y el
+   * huso sale de la longitud del parque — planificar desde casa un vuelo del
+   * otro lado del mundo es el caso normal, no el raro.
+   */
+  const centro = useMemo(() => {
+    if (!stored.rows.length) return { lat: 0, lon: 0 };
+    let lat = 0, lon = 0;
+    for (const r of stored.rows) {
+      lat += (r.start.lat + r.end.lat) / 2;
+      lon += (r.start.lon + r.end.lon) / 2;
+    }
+    return { lat: lat / stored.rows.length, lon: lon / stored.rows.length };
+  }, [stored.rows]);
+
+  const [diaDeVuelo, setDiaDeVuelo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [huso, setHuso] = useState(() => husoAproximado(centro.lon));
+
+  const ventana = useMemo(
+    () => ventanaDeVuelo(centro.lat, centro.lon, diaDeVuelo, huso),
+    [centro, diaDeVuelo, huso],
+  );
+
+  /** La media hora del dia con los trackers mas planos. */
+  const mejorHora = ventana.length
+    ? ventana.reduce((a, b) => (Math.abs(b.anguloDeg) < Math.abs(a.anguloDeg) ? b : a))
+    : null;
+
+  /**
+   * La ventana util: trackers a menos de 25 grados y sol a mas de 30.
+   *
+   * Los dos limites son de trabajo, no de norma. 25 grados de tracker dejan el
+   * modulo al 90 % de su ancho aparente, que ya casi no mueve los pixeles por
+   * celda; y con el sol a menos de 30 grados de altura no se llega a los
+   * 600 W/m² que pide la norma para que la medicion valga.
+   */
+  const horasBuenas = ventana.filter(
+    (h) => Math.abs(h.anguloDeg) <= 25 && h.alturaSolarDeg >= 30,
   );
 
   const agrupado = useMemo(
@@ -120,15 +166,60 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   }
 
   const s = mission?.stats;
+
+  const celdaM = (stored.profile.module.cellMm ?? CELDA_M * 1000) / 1000;
+  /** Cuantos pixeles de area le tocan a una celda, con el modulo acortado. */
+  const pixelesPorCelda = (factor: number) => {
+    // Si todavia no se abrio ningun bloque, `s` es null: la resolucion sale
+    // igual del plan del parque entero, que usa la misma altura y camara. Sin
+    // esto la columna mostraba 0.0 pixeles por celda, que no es "todavia no se
+    // calculo" sino "no se ve nada" — y son cosas bien distintas.
+    const gsd = s?.gsdCm ?? entero?.stats.gsdCm ?? 0;
+    if (gsd <= 0) return 0;
+    const ladoLargo = (celdaM * 100) / gsd;
+    return ladoLargo * ladoLargo * factor;
+  };
+  const celdaEnLaVentana = pixelesPorCelda(
+    horasBuenas.length
+      ? Math.max(...horasBuenas.map((h) => h.factorDeAcortamiento))
+      : (mejorHora?.factorDeAcortamiento ?? 1),
+  );
+
+
+  /**
+   * Un numero que NO puede quedar en cualquier valor.
+   *
+   * `min` y `max` en un `<input type=number>` son decoracion: el navegador no
+   * impide escribir otra cosa y no impide borrar el campo. Borrar la altura
+   * daba `Number("") === 0`, y con 0 m de altura la huella de la camara mide
+   * centimetros: el planificador salia a generar decenas de miles de lineas y
+   * el telefono se colgaba en el medio del campo, sin ningun mensaje.
+   *
+   * Ahora el valor que usa el plan siempre esta dentro del rango. Lo que se ve
+   * mientras se escribe puede estar vacio o a medio tipear — si no, no se puede
+   * ni borrar para escribir otro numero — y al salir del campo vuelve al valor
+   * bueno, para que nunca quede en pantalla algo distinto de lo que se planifico.
+   */
   const num = (k: keyof typeof o, label: string, min: number, max: number, step: number, help?: string) => (
     <div className="field" key={k}>
       <label htmlFor={`f-${k}`}>{label}</label>
       <input
         id={`f-${k}`} type="number" min={min} max={max} step={step}
-        value={o[k] as number}
-        onChange={(e) => setO((p) => ({ ...p, [k]: Number(e.target.value) }))}
+        value={crudos[k] ?? String(o[k] as number)}
+        onChange={(e) => {
+          const texto = e.target.value;
+          setCrudos((c) => ({ ...c, [k]: texto }));
+          const v = Number(texto);
+          if (texto.trim() !== "" && Number.isFinite(v)) {
+            setO((p) => ({ ...p, [k]: Math.min(max, Math.max(min, v)) }));
+          }
+        }}
+        onBlur={() => setCrudos((c) => { const { [k]: _, ...resto } = c; return resto; })}
       />
-      {help && <span className="help">{help}</span>}
+      <span className="help">
+        {help ? help + " " : ""}
+        <span className="muted">Entre {min} y {max}.</span>
+      </span>
     </div>
   );
 
@@ -201,6 +292,91 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             </em>
           </span>
         </label>
+      </section>
+
+      {/* --------------------------------------------------------------- */}
+      <section className="card">
+        <h2>A que hora volar</h2>
+        <p>
+          Los trackers no estan planos: giran de -{TOPE_TRACKER_DEG}° a +{TOPE_TRACKER_DEG}°
+          siguiendo al sol. Desde arriba, un modulo inclinado {TOPE_TRACKER_DEG}° se ve un{" "}
+          <strong>43 % mas angosto</strong> de lo que es, y la celda se achica igual. Un vuelo que
+          a mediodia resuelve una celda, a las siete de la manana no.
+        </p>
+
+        <div className="row">
+          <label className="inline">
+            Dia del vuelo
+            <input type="date" value={diaDeVuelo} onChange={(e) => setDiaDeVuelo(e.target.value)} />
+          </label>
+          <label className="inline">
+            Huso del parque (UTC)
+            <input
+              type="number" min={-12} max={14} step={1} value={huso}
+              onChange={(e) => setHuso(Math.max(-12, Math.min(14, Number(e.target.value) || 0)))}
+            />
+          </label>
+        </div>
+        <p className="help">
+          El huso sale de la longitud del parque, asi que suele estar bien. Corregilo si el lugar
+          tiene horario de verano — Queensland no tiene, la mayor parte de Australia si.
+        </p>
+
+        {ventana.length === 0 ? (
+          <p className="note bad">
+            No se pudo calcular el dia. Revisá la fecha.
+          </p>
+        ) : (
+          <>
+            <div className="stats">
+              <div>
+                <b>{mejorHora?.hora ?? "—"}</b>
+                <span>la hora mas plana</span>
+              </div>
+              <div>
+                <b>{horasBuenas.length ? `${horasBuenas[0]!.hora}–${horasBuenas[horasBuenas.length - 1]!.hora}` : "—"}</b>
+                <span>ventana con los trackers a menos de 25°</span>
+              </div>
+              <div className={celdaEnLaVentana > 0 && celdaEnLaVentana < PIXELES_POR_CELDA_MINIMO ? "alerta" : ""}>
+                <b>{celdaEnLaVentana > 0 ? celdaEnLaVentana.toFixed(1) : "—"}</b>
+                <span>pixeles por celda en esa ventana</span>
+              </div>
+            </div>
+
+            <div className="tablewrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Hora local</th><th>Sol</th><th>Tracker</th>
+                    <th>Modulo visto desde arriba</th><th>Pixeles por celda</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ventana.filter((_, i) => i % 2 === 0).map((h) => {
+                    const px = pixelesPorCelda(h.factorDeAcortamiento);
+                    return (
+                      <tr key={h.hora} className={h.hora === mejorHora?.hora ? "top" : ""}>
+                        <td>{h.hora}</td>
+                        <td className="num">{h.alturaSolarDeg.toFixed(0)}°</td>
+                        <td className="num">{Math.abs(h.anguloDeg).toFixed(0)}° {h.anguloDeg > 0 ? "al este" : h.anguloDeg < 0 ? "al oeste" : ""}</td>
+                        <td className="num">{(h.factorDeAcortamiento * 100).toFixed(0)} % de su ancho</td>
+                        <td className="num">{px > 0 ? px.toFixed(1) : "—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <p className="help">
+              La cuenta es pesimista a proposito: no incluye el <em>backtracking</em>, la maniobra
+              con la que los trackers se aplanan de mas al amanecer y al atardecer para no darse
+              sombra entre filas. Con backtracking el angulo real es igual o MENOR que este, nunca
+              mayor. Y la irradiancia manda igual: la norma pide 600 W/m², que con el sol a menos de
+              30° de altura no se alcanza aunque los trackers esten planos.
+            </p>
+          </>
+        )}
       </section>
 
       <section className="card">

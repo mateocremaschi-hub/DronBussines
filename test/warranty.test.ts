@@ -59,7 +59,11 @@ const muestras = (base: number, retoques: Record<number, number> = {}): Muestra[
   }));
 
 /** Un vuelo hecho como corresponde. */
-const BUENAS: Condiciones = { irradianciaWm2: 820, fecha: "2026-03-25", cielo: "despejado" };
+// El viento tambien es condicion de vuelo: sin el dato el reclamo queda
+// incompleto, igual que sin irradiancia.
+const BUENAS: Condiciones = {
+  irradianciaWm2: 820, fecha: "2026-03-25", cielo: "despejado", vientoKmh: 6,
+};
 const COBERTURA = { puestaEnMarcha: "2021-06-01", aniosModulos: 12, aniosTrackers: 10 };
 
 // ---------------------------------------------------------------------------
@@ -161,6 +165,25 @@ describe("que le falta al reclamo", () => {
       cobertura: COBERTURA, condiciones: cond, conRgb: new Set([k]), ...extra,
     }).find((i) => claveDe(i.hallazgo) === k)!;
   };
+
+  /**
+   * El viento y el cielo se cargaban y no los miraba nadie: no salian en el CSV
+   * ni entraban en "que le falta". Se completaban en el campo para nada.
+   */
+  it("el viento entra en la evidencia, y si es mucho lo dice", () => {
+    const sinViento = unItem({ ...BUENAS, vientoKmh: undefined });
+    expect(sinViento.faltante.join(" ")).toMatch(/viento/i);
+    expect(sinViento.completo).toBe(false);
+
+    const conViento = unItem({ ...BUENAS, vientoKmh: 30 });
+    expect(conViento.faltante.join(" ")).toMatch(/enfria el vidrio|achica el delta/i);
+    expect(conViento.completo).toBe(false);
+  });
+
+  it("sin estado del cielo tampoco esta completo", () => {
+    const r = unItem({ ...BUENAS, cielo: undefined });
+    expect(r.faltante.join(" ")).toMatch(/cielo/i);
+  });
 
   it("con todo en orden queda listo para presentar", () => {
     const it = unItem(BUENAS);

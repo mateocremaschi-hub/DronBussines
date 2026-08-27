@@ -5,7 +5,7 @@
  * muestra lo que entendio y te deja corregirlo. Nada se aplica en silencio.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { compileFarm, ProfileError } from "@locator";
 import { cuadreDeFila } from "../rowbalance";
 import type { CompiledFarm, FarmProfile, TrackerRow } from "@locator";
@@ -16,7 +16,7 @@ import {
   deriveOriginEnds,
   deriveSides,
   FIELDS,
-  guessCrs,
+  detectarCrs,
   mergeRows,
   readWorkbook,
   suggestEndpointOffsetMm,
@@ -26,6 +26,7 @@ import {
   type Mapping,
   type Sheet,
 } from "../ingest";
+import { forwardFill } from "../strings";
 import { saveFarm, type StoredFarm } from "../storage";
 import { boundsSummary, GeometryPlot } from "../components/GeometryPlot";
 
@@ -57,8 +58,12 @@ const PRESETS: Preset[] = [
   },
   {
     id: "generico",
-    label: "Generico — un string por fila, conteo desde el norte",
-    note: "El punto de partida mas seguro cuando todavia no conoces las reglas del parque. No inventa nada.",
+    label: "Generico — todavia no se las medidas de este parque",
+    // El texto viejo decia "no inventa nada", y los cuatro numeros de abajo son
+    // inventados: son los de Edenvale redondeados. Alguien que lea eso y toque
+    // Siguiente se lleva un parque con 28 modulos por string porque la app se lo
+    // dijo con cara de segura. Ahora dice de donde salen y que hay que cambiarlos.
+    note: "Numeros de arranque, NO medidas de este parque: modulo de 1130 mm, 28 por string, uno solo por fila. Cambialos con la ficha del modulo o la cinta antes de guardar — mas abajo, el cuadre te dice si cierran con el largo real de tus filas.",
     profile: {
       module: { widthMm: 1130, gapMm: 20, orientation: "portrait", pitchMm: "derive" },
       topology: { modulesPerString: 28, stringsPerRow: 1, stringGapMm: 0 },
@@ -68,6 +73,41 @@ const PRESETS: Preset[] = [
     },
   },
 ];
+
+/**
+ * El error de validacion, dicho como se llama la cosa en la pantalla.
+ *
+ * `validateProfile` habla en nombres de campo del JSON porque tambien lo usan
+ * los tests y los perfiles escritos a mano. Al tecnico eso no le sirve:
+ * "`module.pitchMm` tiene que ser un numero positivo" no le dice que control
+ * tocar. Cada regla que puede disparar desde el asistente tiene aca su traduccion.
+ */
+const TRADUCCIONES: Array<[RegExp, string]> = [
+  [/module\.widthMm/, 'El "Ancho del modulo" tiene que ser un numero mayor que cero, en milimetros.'],
+  [/module\.lengthMm/, 'El "Largo del modulo" tiene que ser un numero mayor que cero, en milimetros.'],
+  [/module\.gapMm/, 'El "Hueco entre modulos" no puede ser negativo. Si se tocan, poné 0.'],
+  [/module\.pitchMm/, 'El "Paso entre modulos" quedo en un valor imposible. Elegí "Ancho + hueco".'],
+  [/topology\.modulesPerString/, 'Los "Modulos por string" tienen que ser un numero entero mayor que cero.'],
+  [/topology\.stringsPerRow/, 'Los "Strings por fila" tienen que ser un numero entero mayor que cero.'],
+  [/topology\.stringGapMm/, 'La "Bahia entre strings" no puede ser negativa.'],
+  [/topology\.gaps\[\d+\]\.afterModule/, "Uno de los huecos declarados apunta a un modulo que no existe en la fila, o esta repetido."],
+  [/topology\.gaps\[\d+\]\.mm/, "Uno de los huecos declarados tiene una medida invalida."],
+  [/geometry\.endpointOffsetMm/, 'La "Distancia del primer modulo a la pica" tiene que ser un numero (puede ser negativo).'],
+  [/geometry\.endpointOffsetMode/, "El modo de reparto de las puntas quedo en un valor invalido."],
+  [/centered.*no se puede usar/, 'No se puede centrar los modulos Y deducir el paso del largo al mismo tiempo: son la misma incognita dos veces. En "Paso entre modulos" elegí "Ancho + hueco".'],
+  [/crs\.zone/, "La zona UTM tiene que estar entre 1 y 60. Volvé al paso de columnas y elegila."],
+  [/crs\.hemisphere/, "Falta decir si el parque esta en el hemisferio norte o sur."],
+];
+
+export function traducirError(err: string): string {
+  const partes = err.split(" · ");
+  const dichas = new Set<string>();
+  for (const p of partes) {
+    const t = TRADUCCIONES.find(([re]) => re.test(p));
+    dichas.add(t ? t[1] : p);
+  }
+  return [...dichas].join(" ");
+}
 
 const slug = (s: string) =>
   s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
@@ -95,10 +135,21 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
   const [error, setError] = useState<string | null>(null);
 
   const [fileName, setFileName] = useState("");
+  /** El archivo crudo, para poder releerlo con otra fila de encabezados. */
+  const [archivo, setArchivo] = useState<File | null>(null);
+  const [headerRow, setHeaderRow] = useState(1);
+  /**
+   * Columnas combinadas: en muchas planillas el bloque aparece una sola vez y
+   * las filas de abajo quedan vacias. Sin rellenar hacia abajo, la mitad de las
+   * filas quedan sin bloque y el parque sale partido en pedazos.
+   */
+  const [rellenar, setRellenar] = useState(true);
   const [sheets, setSheets] = useState<Sheet[]>([]);
   const [sheetIndex, setSheetIndex] = useState(0);
   const [mapping, setMapping] = useState<Mapping>({});
   const [crs, setCrs] = useState<Crs>({ type: "wgs84" });
+  /** Lo que la deteccion no pudo saber sola y hay que confirmar a mano. */
+  const [crsAConfirmar, setCrsAConfirmar] = useState<string[]>([]);
 
   const [deriveSide, setDeriveSide] = useState(false);
   const [name, setName] = useState(existing?.profile.name ?? "");
@@ -106,7 +157,7 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
   // Al agregarle geometria a un parque que ya existe se arranca de SU perfil,
   // no de un preset: ese perfil ya esta calibrado y pisarlo con los valores por
   // defecto seria tirar a la basura las medidas de campo.
-  const [medidos, setMedidos] = useState<Record<string, boolean>>({});
+  const [medidos, setMedidos] = useState<Record<string, boolean>>(existing?.medidos ?? {});
   const [profileDraft, setProfileDraft] = useState(
     existing
       ? {
@@ -123,10 +174,24 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
 
   // -------------------------------------------------------------------------
 
-  async function onFile(file: File) {
+  /**
+   * Releer el mismo archivo con otra fila de encabezados.
+   *
+   * La pantalla de strings ya tenia este control; la de coordenadas, que es la
+   * que se usa siempre, no. Una planilla con dos filas de titulo antes de los
+   * encabezados —cosa normal en lo que manda un proyecto— entraba con los
+   * nombres de columna en blanco o con "__EMPTY_3", el reconocimiento no
+   * enganchaba nada, y no habia forma de arreglarlo desde la app.
+   */
+  async function releerCon(fila: number) {
+    setHeaderRow(fila);
+    if (archivo) await onFile(archivo, fila);
+  }
+
+  async function onFile(file: File, fila = headerRow) {
     setError(null);
     try {
-      const parsed = await readWorkbook(await file.arrayBuffer());
+      const parsed = await readWorkbook(await file.arrayBuffer(), fila);
       const usable = parsed.filter((s) => s.rows.length > 0);
       if (!usable.length) {
         setError("El archivo no tiene ninguna hoja con filas de datos.");
@@ -157,17 +222,63 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
       const y = toNumber(guess.startY ? r[guess.startY] : null);
       return x != null && y != null ? [{ x, y }] : [];
     });
-    setCrs(guessCrs(samples));
+    const d = detectarCrs(samples);
+    setCrs(d.crs);
+    setCrsAConfirmar(d.aConfirmar);
   }
 
   // -------------------------------------------------------------------------
 
+  /**
+   * Volver a mirar el sistema de coordenadas cuando cambian las columnas.
+   *
+   * Antes se adivinaba UNA sola vez, al cargar el archivo, y con las columnas
+   * que habia detectado el automatico. Si el automatico no reconocia los
+   * encabezados —cosa normal en un parque nuevo— las muestras salian vacias, la
+   * deteccion contestaba "grados", y despues la persona mapeaba a mano unas
+   * columnas UTM que nadie volvia a mirar: 6.965.000 entraba como latitud.
+   */
+  useEffect(() => {
+    if (!sheet || !mapping.startX || !mapping.startY) return;
+    const samples = sheet.rows.slice(0, 40).flatMap((r) => {
+      const x = toNumber(r[mapping.startX!]);
+      const y = toNumber(r[mapping.startY!]);
+      return x != null && y != null ? [{ x, y }] : [];
+    });
+    const d = detectarCrs(samples);
+    setCrsAConfirmar(d.aConfirmar);
+    // El tipo se corrige solo; la zona y el hemisferio los elige la persona.
+    setCrs((actual) => (actual.type === d.crs.type ? actual : d.crs));
+  }, [sheet, mapping.startX, mapping.startY]);
+
+  /** Las columnas obligatorias que todavia no tienen a que columna del Excel apuntar. */
+  const faltantes = useMemo(
+    () => FIELDS.filter((f) => f.required && !mapping[f.key]).map((f) => f.label),
+    [mapping],
+  );
+
+  /**
+   * La hoja lista para leer: con las celdas combinadas rellenadas hacia abajo.
+   *
+   * Solo se rellenan las columnas donde eso tiene sentido — bloque, lado,
+   * posicion en la linea, cuantos hay. Una coordenada NUNCA se rellena: copiar
+   * la coordenada de la fila de arriba pondria dos trackers en el mismo lugar y
+   * el motor contestaria con toda confianza sobre el equivocado.
+   */
+  const hoja = useMemo(() => {
+    if (!sheet || !rellenar) return sheet;
+    const cols = (["block", "side", "pos", "posTotal"] as const)
+      .map((k) => mapping[k])
+      .filter((c): c is string => !!c);
+    return cols.length ? forwardFill(sheet, cols) : sheet;
+  }, [sheet, rellenar, mapping.block, mapping.side, mapping.pos, mapping.posTotal]);
+
   const rawBuilt = useMemo(() => {
-    if (!sheet) return null;
+    if (!hoja) return null;
     const required = FIELDS.filter((f) => f.required);
     if (required.some((f) => !mapping[f.key])) return null;
-    return buildRows(sheet, mapping, crs);
-  }, [sheet, mapping, crs]);
+    return buildRows(hoja, mapping, crs);
+  }, [hoja, mapping, crs]);
 
   // Primero se fusiona con lo que el parque ya tiene, y RECIEN AHI se deduce el
   // lado de la calle. Al reves, un bloque partido entre dos archivos se deduce
@@ -183,9 +294,14 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
   // Si el archivo no trae el lado de la calle, se puede sacar de la geometria:
   // las cajas DC estan en la calle del medio, asi que las filas caen en dos
   // grupos separados por ella. Es opcional y se muestra lo que dedujo.
+  //
+  // El `!mapping.side` no es decorativo: la casilla solo se muestra cuando el
+  // archivo NO trae columna de lado, pero al asignarla despues la casilla
+  // desaparecia y `deriveSide` seguia en true. Resultado: el dato del archivo,
+  // que es el bueno, quedaba pisado por una deduccion — en silencio.
   const derivation = useMemo(
-    () => (deriveSide && rawMerge?.rows.length ? deriveSides(rawMerge.rows) : null),
-    [deriveSide, rawMerge],
+    () => (deriveSide && !mapping.side && rawMerge?.rows.length ? deriveSides(rawMerge.rows) : null),
+    [deriveSide, mapping.side, rawMerge],
   );
 
   /**
@@ -214,6 +330,15 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
 
   // Lo que se muestra en el paso de columnas es siempre lo que entro del archivo.
   const built = rawBuilt;
+
+  // El sentido de conteo, para mostrarlo en el paso 3 en vez del selector que
+  // no hacia nada. Los bloques sin resolver son los que van a contestar mal en
+  // el campo, asi que se nombran uno por uno.
+  const origenes = merge?.origenes ?? null;
+  const origenesSinResolver = useMemo(
+    () => (origenes?.blocks ?? []).filter((b) => b.status !== "ok"),
+    [origenes],
+  );
 
   // El largo real de las filas despeja el offset de pica: las tres cantidades
   // (modulos, paso, offset) estan atadas, asi que conociendo dos sale la tercera.
@@ -300,6 +425,9 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
         ? existing?.source ?? { fileName: "", sheetName: "", rowCount: merge.rows.length }
         : { fileName, sheetName: sheet?.name ?? "", rowCount: merge.rows.length },
       ...(existing?.checks ? { checks: existing.checks } : {}),
+      // Que se midio con cinta y que se supuso es parte de la evidencia del
+      // parque, no un detalle de la pantalla: se guarda.
+      medidos,
     };
     await saveFarm(stored);
     onDone();
@@ -348,7 +476,7 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
             <input
               type="file"
               accept=".xlsx,.xls,.xlsm,.csv,.tsv"
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) void onFile(f); }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) { setArchivo(f); void onFile(f); } }}
             />
             <strong>Elegir archivo</strong>
             <span className="muted">.xlsx · .xls · .csv</span>
@@ -383,6 +511,38 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
             </div>
           )}
 
+          {/*
+            Dos controles que ya existian en la pantalla de strings y faltaban
+            justo en la que se usa siempre. Sin ellos, una planilla con dos
+            filas de titulo entra con los encabezados en blanco y no hay forma
+            de arreglarlo desde la app; y una con el bloque combinado sobre
+            veinte filas deja diecinueve sin bloque, que parte el parque en
+            pedazos que despues no cruzan con nada.
+          */}
+          <div className="row">
+            <label className="inline">
+              Fila de encabezados
+              <input
+                type="number" min={1} max={20} value={headerRow}
+                onChange={(e) => void releerCon(Math.max(1, Number(e.target.value) || 1))}
+              />
+            </label>
+            <span className="help">
+              Si los nombres de columna de abajo se ven raros o vacios, subile uno.
+            </span>
+          </div>
+
+          <label className="check">
+            <input type="checkbox" checked={rellenar} onChange={(e) => setRellenar(e.target.checked)} />
+            <span>
+              Rellenar hacia abajo las celdas combinadas
+              <em>
+                Bloque, lado y posicion suelen venir escritos una sola vez, arriba de un grupo de
+                filas. Sin esto, todas las de abajo quedan sin ese dato.
+              </em>
+            </span>
+          </label>
+
           <div className="grid-2">
             {FIELDS.map((f) => (
               <div className="field" key={f.key}>
@@ -409,7 +569,7 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
             <select
               value={crs.type}
               onChange={(e) =>
-                setCrs(e.target.value === "utm" ? { type: "utm", zone: 56, hemisphere: "S" } : { type: "wgs84" })
+                setCrs(e.target.value === "utm" ? { type: "utm", zone: 0, hemisphere: "S" } : { type: "wgs84" })
               }
             >
               <option value="wgs84">Grados decimales (lat / lon)</option>
@@ -435,6 +595,83 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
               </>
             )}
           </div>
+
+          {crs.type === "utm" && !crs.zone && (
+            <div className="note bad">
+              <p>
+                <strong>Falta la zona UTM.</strong> No viene en el archivo: el mismo par de números
+                existe en las 60 zonas del planeta, así que si la app la eligiera sola tendrías un
+                parque en otro continente sin ninguna señal.
+              </p>
+              <label className="inline">
+                ¿No la sabés? Pegá una coordenada del parque
+                <input
+                  type="text" placeholder="-26.92, 150.58"
+                  onChange={(e) => {
+                    const m = /(-?\d+[.,]?\d*)\s*[,;\s]\s*(-?\d+[.,]?\d*)/.exec(e.target.value);
+                    if (!m) return;
+                    const lat = Number(m[1]!.replace(",", "."));
+                    const lon = Number(m[2]!.replace(",", "."));
+                    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+                    if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return;
+                    setCrs({
+                      type: "utm",
+                      zone: Math.min(60, Math.floor((lon + 180) / 6) + 1),
+                      hemisphere: lat < 0 ? "S" : "N",
+                    });
+                  }}
+                />
+              </label>
+              <p className="help">
+                Cualquier punto del sitio sirve: abrí Google Maps, botón derecho sobre el parque,
+                y pegá acá lo que copia. De ahí salen la zona y el hemisferio, que son lo único
+                que el archivo no puede decir.
+              </p>
+            </div>
+          )}
+
+          {crsAConfirmar.length > 0 && crs.type === "utm" && !!crs.zone && (
+            <details className="porque">
+              <summary>Por qué hay que confirmar esto a mano</summary>
+              {crsAConfirmar.map((t, i) => (<p key={i} className="help">{t}</p>))}
+            </details>
+          )}
+
+          {/*
+            La verificación que no se puede fingir.
+            ===================================================================
+            Con la zona equivocada las filas siguen midiendo lo que tienen que
+            medir, el dibujo sale bien y el cuadre cierra: el marco local se
+            arma sobre el propio parque, así que ponerlo en otro continente no
+            cambia ninguna distancia interna. El único síntoma aparece parado
+            en el campo. Por eso acá no se muestra un número más: se muestra
+            DÓNDE CAE, con el mapa a un toque.
+          */}
+          {built?.bounds && (
+            <div className={`note ${built.sospechas.length ? "bad" : "ok"}`}>
+              <p>
+                <strong>El parque cae acá:</strong>{" "}
+                <span className="mono">
+                  {((built.bounds.minLat + built.bounds.maxLat) / 2).toFixed(5)},{" "}
+                  {((built.bounds.minLon + built.bounds.maxLon) / 2).toFixed(5)}
+                </span>{" "}
+                <a
+                  href={`https://www.google.com/maps/search/?api=1&query=${
+                    (built.bounds.minLat + built.bounds.maxLat) / 2
+                  },${(built.bounds.minLon + built.bounds.maxLon) / 2}`}
+                  target="_blank" rel="noreferrer"
+                >
+                  abrir en el mapa →
+                </a>
+              </p>
+              <p className="help">
+                Abrilo y mirá que se vean los paneles. Es el único chequeo que no se puede fingir:
+                con la zona o el hemisferio equivocados todo lo demás sigue dando bien y el parque
+                queda a miles de kilómetros.
+              </p>
+              {built.sospechas.map((t, i) => (<p key={i} className="alert">{t}</p>))}
+            </div>
+          )}
 
           {!mapping.side && (
             <>
@@ -537,7 +774,19 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
               )}
             </>
           )}
-          {!built && <p className="note bad">Falta asignar alguna columna obligatoria.</p>}
+          {/*
+            "Falta asignar alguna columna obligatoria" y nada mas: con 40
+            columnas en el Excel eso es un buscar a ciegas. Ahora dice cuales.
+          */}
+          {!built && (
+            <p className="note bad">
+              {faltantes.length === 1
+                ? <>Falta asignar la columna <strong>{faltantes[0]}</strong>.</>
+                : <>Faltan asignar estas columnas: <strong>{faltantes.join(", ")}</strong>.</>}
+              {" "}Elegilas en la lista de arriba. Si el archivo no las trae, no alcanza para armar
+              el parque: cada tracker necesita las coordenadas de sus dos picas.
+            </p>
+          )}
 
           <div className="actions">
             <button className="ghost" onClick={() => setStep(1)}>Atras</button>
@@ -564,7 +813,15 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
             </div>
           )}
 
-          <div className="field" hidden={!!existing}>
+          {/*
+            Antes esto era `hidden={!!existing}`, y `.field { display: flex }`
+            le gana al atributo `hidden`: el selector se veia igual editando un
+            parque ya calibrado, y tocarlo pisaba el perfil entero con los
+            valores del preset — o sea, tiraba las medidas de cinta. Ahora
+            directamente no se monta.
+          */}
+          {!existing && (
+          <div className="field">
             <label>Punto de partida</label>
             <select
               value={presetId}
@@ -578,6 +835,7 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
             </select>
             <span className="help">{PRESETS.find((p) => p.id === presetId)?.note}</span>
           </div>
+          )}
 
           <div className="grid-2">
             <div className="field">
@@ -862,21 +1120,46 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
           </div>
 
           <h3>Reglas de conteo</h3>
+
+          {/*
+            Aca habia un selector de "desde que punta se cuenta el modulo 1" con
+            tres opciones. Ninguna hacia nada: al armar el perfil la app pisa
+            siempre la estrategia con `per-row-flag`, porque el sentido de cada
+            fila ya lo resuelve midiendo donde cae la calle de las cajas. Elegir
+            "siempre desde el norte" y ver que el parque igual cuenta bien es
+            peor que no tener el selector: la proxima vez que algo cuente al
+            reves, se busca el problema en el lugar equivocado.
+
+            Lo que va en su lugar es lo que realmente paso, con numeros.
+          */}
+          <div className="field">
+            <label>Desde que punta se cuenta el modulo 1</label>
+            <p className="note ok">
+              Lo resuelve la app fila por fila, midiendo cual de las dos puntas da a la calle donde
+              estan las cajas de continua. No hay nada para elegir aca: una regla escrita a mano
+              ("siempre desde el norte") se equivoca en el primer bloque que este rotado.
+              {origenes && (
+                <>
+                  {" "}En este parque quedaron{" "}
+                  <strong>{origenes.origins.size} de {merge?.rows.length ?? 0} filas</strong>{" "}
+                  con el sentido resuelto.
+                </>
+              )}
+            </p>
+            {origenesSinResolver.length > 0 && (
+              <p className="note bad">
+                {origenesSinResolver.length === 1
+                  ? "Un bloque quedo sin resolver"
+                  : `${origenesSinResolver.length} bloques quedaron sin resolver`}
+                {" "}({origenesSinResolver.map((b) => b.block).slice(0, 6).join(", ")}
+                {origenesSinResolver.length > 6 ? "…" : ""}). Esas filas van a contar desde una
+                punta cualquiera hasta que cargues el plano de interconexion del bloque o marques
+                un modulo en el campo.
+              </p>
+            )}
+          </div>
+
           <div className="grid-2">
-            <div className="field">
-              <label>Desde que punta se cuenta el modulo 1</label>
-              <select
-                value={profileDraft.addressing.originStrategy}
-                onChange={(e) => setProfileDraft((d) => ({
-                  ...d,
-                  addressing: { ...d.addressing, originStrategy: e.target.value as never },
-                }))}
-              >
-                <option value="fixed-end">Siempre desde el mismo extremo geografico</option>
-                <option value="dc-box-end">Desde la caja DC de la fila</option>
-                <option value="per-row-flag">Un dato explicito por fila</option>
-              </select>
-            </div>
             <div className="field">
               <label>Inversion de strings</label>
               <select
@@ -918,7 +1201,38 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
             </p>
           )}
 
-          {compiled && "err" in compiled && <p className="alert">{compiled.err}</p>}
+          {/*
+            El callejon sin salida.
+
+            Si compilar falla, `farm` es null y todo el bloque de abajo no se
+            monta — incluido el unico boton "Atras" de la pantalla. Quedaba un
+            cartel rojo con nombres de campos internos (`module.pitchMm`) y nada
+            para tocar: en el campo eso es cerrar la app y empezar de cero.
+          */}
+          {compiled && "err" in compiled && (
+            <div className="warnbox">
+              <h3>Con estos parametros no se puede armar el parque</h3>
+              <p>{traducirError(compiled.err)}</p>
+              <details>
+                <summary className="muted small">El texto exacto del error</summary>
+                <p className="mono small">{compiled.err}</p>
+              </details>
+              <div className="actions">
+                <button onClick={() => setStep(3)}>Volver a los parametros</button>
+              </div>
+            </div>
+          )}
+
+          {!compiled && (
+            <p className="note bad">
+              No hay filas para compilar. Volve al paso de columnas y fijate que esten asignadas
+              las dos picas y que la zona UTM sea la correcta.
+              {" "}
+              <button className="link" onClick={() => setStep(soloParametros ? 3 : 2)}>
+                volver →
+              </button>
+            </p>
+          )}
 
           {farm && merge && (
             <>

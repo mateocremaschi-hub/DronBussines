@@ -25,6 +25,8 @@ await p.setInputFiles('input[type="file"]', { name: "e.xlsx",
   mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   buffer: Buffer.from(await x.body()) });
 await p.getByRole("heading", { name: /Que es cada columna/ }).waitFor();
+// El ejemplo viene en UTM y la zona ya no se hereda: hay que decirla.
+await p.getByLabel("Zona").fill("56");
 await p.getByRole("button", { name: "Siguiente" }).click();
 await p.getByPlaceholder(/Edenvale/).fill("Parque de prueba");
 await p.getByRole("button", { name: "Siguiente" }).click();

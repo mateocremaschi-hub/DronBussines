@@ -13,6 +13,9 @@ async function cargar(archivo) {
     buffer: Buffer.from(await r.body()),
   });
   await page.getByRole("heading", { name: /Que es cada columna/ }).waitFor();
+// El archivo de ejemplo viene en UTM y la zona ya no se hereda de Edenvale:
+// hay que decirla, igual que en un parque nuevo de verdad.
+await page.getByLabel("Zona").fill("56");
   await page.getByRole("button", { name: "Siguiente" }).click();
   await page.waitForTimeout(200);
   await page.getByRole("button", { name: "Siguiente" }).click();

@@ -220,21 +220,33 @@ export function diagnosticoDeReglas(
 }
 
 /**
- * Da vuelta el lado de la calle de todas las filas de un bloque.
+ * Da vuelta desde que punta se cuenta, en todas las filas de un bloque.
  *
- * El lado es una propiedad del BLOQUE, no de una fila: las filas de un lado
- * cuentan desde la calle del medio y las del otro tambien, cada una hacia su
- * propia caja. Darlo vuelta en una sola fila la dejaria peleada con sus vecinas.
+ * Es una propiedad del BLOQUE, no de una fila: las filas de un lado cuentan
+ * desde la calle del medio y las del otro tambien, cada una hacia su propia
+ * caja. Darlo vuelta en una sola fila la dejaria peleada con sus vecinas.
+ *
+ * Lo que se da vuelta es `originEnd`, que es lo que de verdad decide el conteo.
+ * Antes se daba vuelta `side`, y `side` no lo lee nadie con la estrategia que
+ * esta activa: el boton borraba los desacuerdos registrados, escribia en la
+ * calibracion que el bloque habia quedado verificado, y el conteo salia
+ * exactamente igual de espejado que antes. Un boton que no hace nada es malo;
+ * uno que ademas borra la evidencia de que algo esta mal y sube el estado del
+ * parque es peor que no tenerlo.
  */
 export function voltearLadoDelBloque(rows: TrackerRow[], bloque: string): TrackerRow[] {
   const opuesto: Record<string, TrackerRow["side"]> = {
     north: "south", south: "north", east: "west", west: "east",
   };
-  return rows.map((r) =>
-    r.block === bloque && r.side && opuesto[r.side]
-      ? { ...r, side: opuesto[r.side]! }
-      : r,
-  );
+  return rows.map((r) => {
+    if (r.block !== bloque) return r;
+    const next: TrackerRow = { ...r };
+    // Lo que decide el conteo.
+    if (r.originEnd) next.originEnd = r.originEnd === "start" ? "end" : "start";
+    // Y el lado, que va al informe y a los chequeos de cobertura.
+    if (r.side && opuesto[r.side]) next.side = opuesto[r.side]!;
+    return next;
+  });
 }
 
 function notasDe(

@@ -37,10 +37,16 @@ await page.setInputFiles('input[type="file"]', {
 });
 
 await page.getByRole("heading", { name: /Que es cada columna/ }).waitFor();
+// El archivo de ejemplo viene en UTM y la zona ya no se hereda de Edenvale:
+// hay que decirla, igual que en un parque nuevo de verdad.
+await page.getByLabel("Zona").fill("56");
 await page.waitForTimeout(300);
 await shot("3-columnas");
 
-const note = await page.locator(".note").first().innerText();
+// Por contenido y no por "el primer .note": la tarjeta de importacion no es
+// siempre la primera, y una prueba que depende del orden de los carteles se
+// rompe cada vez que se agrega uno.
+const note = await page.locator(".note", { hasText: /filas/ }).first().innerText();
 console.log("Resumen de importacion:", note.replace(/\s+/g, " ").trim());
 if (!/24 filas/.test(note)) { console.error("ESPERABA 24 filas"); process.exitCode = 1; }
 

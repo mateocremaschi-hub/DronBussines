@@ -78,7 +78,33 @@ export interface Radiometric {
   height: number;
   /** Grados centigrados, un valor por pixel, de arriba a abajo y de izquierda a derecha. */
   celsius: Float32Array;
+  /** La escala con la que se convirtio esta foto. */
   escala: string;
+  /**
+   * La escala que la busqueda automatica habria elegido para ESTA foto sola.
+   *
+   * Cuando se le fija una escala al vuelo entero, este campo es el que permite
+   * darse cuenta de que una foto no se parece a las demas. La eleccion es por
+   * foto y se decide por contraste: una foto de una nube, del hangar o del
+   * despegue puede caer en otra escala, y esa foto entra al analisis con las
+   * temperaturas multiplicadas por seis. Nadie lo nota, porque 240 °C se
+   * reporta como una anomalia critica y ya estabamos buscando anomalias.
+   */
+  escalaAuto: string;
+  /**
+   * La temperatura mas alta de la foto, y que fraccion de la foto esta ahi.
+   *
+   * Una camara termica tiene un rango elegido: arriba de ese tope todo se
+   * guarda con el MISMO valor. Un modulo con un punto caliente de verdad, un
+   * conector quemado o un reflejo del sol pueden pasarse, y entonces lo que se
+   * mide no es su temperatura sino el techo del sensor.
+   *
+   * Eso no se puede detectar mirando un modulo solo: se detecta mirando cuanta
+   * foto quedo pegada al mismo numero maximo. Si es una mancha grande, la
+   * camara esta saturando y los ΔT de esa foto son un piso, no una medida.
+   */
+  topeC: number;
+  fraccionEnElTope: number;
 }
 
 const APP3 = 0xe3;
@@ -90,7 +116,11 @@ const SOF = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb,
  * Devuelve null —y no un error— cuando la foto simplemente no es radiometrica:
  * en un lote mezclado de visibles y termicas eso es lo normal, no una falla.
  */
-export function readRadiometric(buf: ArrayBuffer): Radiometric | null {
+export function readRadiometric(
+  buf: ArrayBuffer,
+  /** Escala a usar para todo el vuelo, por nombre. Sin esto, se elige por foto. */
+  escalaFijada?: string,
+): Radiometric | null {
   const d = new DataView(buf);
   const u8 = new Uint8Array(buf);
   if (d.byteLength < 4 || d.getUint16(0) !== 0xffd8) return null;
@@ -134,13 +164,28 @@ export function readRadiometric(buf: ArrayBuffer): Radiometric | null {
     crudo[p] = junto[desde + p * 2]! | (junto[desde + p * 2 + 1]! << 8);
   }
 
-  const escala = elegirEscala(crudo);
+  const auto = elegirEscala(crudo);
+  const fijada = escalaFijada ? ESCALAS.find((e) => e.nombre === escalaFijada) : undefined;
+  const escala = fijada ?? auto;
   if (!escala) return null;
 
   const celsius = new Float32Array(crudo.length);
   for (let p = 0; p < crudo.length; p++) celsius[p] = escala.aCelsius(crudo[p]!);
 
-  return { width, height, celsius, escala: escala.nombre };
+  // El tope se cuenta sobre el CRUDO: ahi la saturacion es un entero repetido
+  // exacto, mientras que en grados es un flotante que puede no comparar igual.
+  let tope = 0;
+  for (let p = 0; p < crudo.length; p++) if (crudo[p]! > tope) tope = crudo[p]!;
+  let enElTope = 0;
+  for (let p = 0; p < crudo.length; p++) if (crudo[p] === tope) enElTope++;
+
+  return {
+    width, height, celsius,
+    escala: escala.nombre,
+    escalaAuto: auto?.nombre ?? escala.nombre,
+    topeC: escala.aCelsius(tope),
+    fraccionEnElTope: crudo.length ? enElTope / crudo.length : 0,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +210,16 @@ export interface Medicion {
    * conjunto mas caliente del tamaño de una celda es una celda caliente.
    */
   puntoCalienteC: number;
+  /** Cuantos pixeles entraron en la caja. */
   pixeles: number;
+  /**
+   * Cuantos le TOCABAN, si el modulo hubiera entrado entero en el cuadro.
+   *
+   * La diferencia con `pixeles` es lo que dice si quedo partido por el borde
+   * del sensor. Sale de la misma cuenta que los recorre, a proposito: tenerlo
+   * calculado aparte fue como se desincronizaron las dos versiones de la caja.
+   */
+  esperados: number;
 }
 
 /**
@@ -191,11 +245,13 @@ export function medirCaja(
   anchoPx: number,
   altoPx: number,
   kCaliente: number,
+  /** Giro de la caja respecto de los ejes de la imagen, en radianes. */
+  anguloRad = 0,
 ): Medicion | null {
-  const vals = pixelesDeCaja(r, cx, cy, anchoPx, altoPx);
+  const vals = pixelesDeCaja(r, cx, cy, anchoPx, altoPx, anguloRad);
   if (!vals) return null;
 
-  const orden = Array.from(vals).sort((a, b) => a - b);
+  const orden = Array.from(vals.dentro).sort((a, b) => a - b);
   const k = Math.max(1, Math.min(Math.round(kCaliente), Math.floor(orden.length / 4)));
   const calientes = orden.slice(orden.length - k);
 
@@ -203,28 +259,70 @@ export function medirCaja(
     celsius: percentil(orden, 50),
     puntoCalienteC: percentil(calientes, 50),
     pixeles: orden.length,
+    esperados: vals.esperados,
   };
 }
 
+/**
+ * Los pixeles que caen dentro de la caja del modulo.
+ *
+ * La caja GIRA con la fila. Antes estaba siempre alineada a los ejes de la
+ * imagen, y eso solo coincide con el modulo cuando el dron vuela exactamente
+ * paralelo o perpendicular a las filas; en cualquier otro rumbo la caja tomaba
+ * esquinas de cuatro modulos y el punto caliente de uno aparecia como defecto
+ * del vecino sano. Es la diferencia entre mandar a la cuadrilla al panel
+ * correcto o al de al lado.
+ *
+ * Se recorre el rectangulo envolvente y se descarta lo que cae afuera de la
+ * caja girada. Con 2000 pixeles por modulo el costo no se mide, y a cambio la
+ * caja es la del modulo y no la de su sombra sobre los ejes.
+ */
 function pixelesDeCaja(
   r: Radiometric,
   cx: number,
   cy: number,
   anchoPx: number,
   altoPx: number,
-): number[] | null {
-  const x0 = Math.max(0, Math.round(cx - anchoPx / 2));
-  const x1 = Math.min(r.width - 1, Math.round(cx + anchoPx / 2));
-  const y0 = Math.max(0, Math.round(cy - altoPx / 2));
-  const y1 = Math.min(r.height - 1, Math.round(cy + altoPx / 2));
+  anguloRad = 0,
+): { dentro: number[]; esperados: number } | null {
+  const cos = Math.cos(anguloRad);
+  const sin = Math.sin(anguloRad);
+  const hw = anchoPx / 2;
+  const hh = altoPx / 2;
+
+  // Envolvente de la caja girada.
+  const extX = Math.abs(hw * cos) + Math.abs(hh * sin);
+  const extY = Math.abs(hw * sin) + Math.abs(hh * cos);
+
+  // Sin recortar y recortado por el cuadro. El primero es cuantos pixeles le
+  // TOCAN a este modulo; el segundo, cuantos entraron. La diferencia entre los
+  // dos es lo que dice si el modulo quedo partido por el borde del sensor, y
+  // por eso los dos salen de la misma cuenta: tenerlo escrito dos veces era
+  // como se desincronizaban.
+  const bx0 = Math.round(cx - extX), bx1 = Math.round(cx + extX);
+  const by0 = Math.round(cy - extY), by1 = Math.round(cy + extY);
+
+  const x0 = Math.max(0, bx0), x1 = Math.min(r.width - 1, bx1);
+  const y0 = Math.max(0, by0), y1 = Math.min(r.height - 1, by1);
   if (x1 < x0 || y1 < y0) return null;
 
-  const vals: number[] = [];
-  for (let y = y0; y <= y1; y++) {
+  const dentro: number[] = [];
+  let esperados = 0;
+  for (let y = by0; y <= by1; y++) {
+    const dy = y - cy;
+    const enY = y >= 0 && y < r.height;
     const fila = y * r.width;
-    for (let x = x0; x <= x1; x++) vals.push(r.celsius[fila + x]!);
+    for (let x = bx0; x <= bx1; x++) {
+      const dx = x - cx;
+      // Al marco de la caja: girar el punto al reves que la caja.
+      const u = dx * cos + dy * sin;
+      const v = -dx * sin + dy * cos;
+      if (Math.abs(u) > hw || Math.abs(v) > hh) continue;
+      esperados++;
+      if (enY && x >= 0 && x < r.width) dentro.push(r.celsius[fila + x]!);
+    }
   }
-  return vals.length ? vals : null;
+  return dentro.length ? { dentro, esperados } : null;
 }
 
 export function medianaEnCaja(

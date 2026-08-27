@@ -20,6 +20,8 @@ await p1.getByRole("button",{name:"Cargar el primero"}).click();
 const x=await p1.request.get(`${BASE}/ejemplo-picas.xlsx`);
 await p1.setInputFiles('input[type="file"]',{name:"e.xlsx",mimeType:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",buffer:Buffer.from(await x.body())});
 await p1.getByRole("heading",{name:/Que es cada columna/}).waitFor();
+// El ejemplo viene en UTM y la zona ya no se hereda: hay que decirla.
+await p1.getByLabel("Zona").fill("56");
 await p1.getByRole("button",{name:"Siguiente"}).click();
 await p1.getByPlaceholder(/Edenvale/).fill("Parque de prueba");
 await p1.getByRole("button",{name:"Siguiente"}).click();

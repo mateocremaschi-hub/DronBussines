@@ -33,21 +33,40 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   const [details, setDetails] = useState(false);
   const [gpsBusy, setGpsBusy] = useState(false);
   const [checks, setChecks] = useState(stored.checks ?? []);
+  /**
+   * El parque VIVO de esta pantalla.
+   *
+   * `stored` es la foto que le paso la pantalla de Parques al abrir esta, y no
+   * se refresca nunca. Todo lo que se guardaba aca partia de esa foto, asi que
+   * resolver el sentido de todo el parque y despues registrar un conteo
+   * revertia lo primero en silencio: el segundo guardado escribia las filas
+   * viejas. Y el mapa compilado tampoco se rehacia, asi que el mensaje decia
+   * "N filas resueltas" mientras el proximo Localizar usaba las de antes.
+   */
+  const [parque, setParque] = useState(stored);
   const [contado, setContado] = useState("");
   const [registrando, setRegistrando] = useState(false);
   const [registrado, setRegistrado] = useState<"match" | "mismatch" | null>(null);
 
   const farm = useMemo<CompiledFarm | null>(() => {
     try {
-      return compileFarm(stored.profile, stored.rows);
+      return compileFarm(parque.profile, parque.rows);
     } catch {
       return null;
     }
-  }, [stored]);
+  }, [parque]);
 
   useEffect(() => {
+    setParque(stored);
     setResult(null); setError(null); setChecks(stored.checks ?? []);
   }, [stored]);
+
+  /** Guarda y deja la pantalla mirando lo que acaba de guardar. */
+  async function guardar(siguiente: typeof stored) {
+    await saveFarm(siguiente);
+    setParque(siguiente);
+    setChecks(siguiente.checks ?? []);
+  }
 
   function run(input: string, acc: number | null) {
     if (!farm) return;
@@ -92,15 +111,15 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     setRegistrando(true);
     const r = resolverSentidoPorGeometria(stored);
     const quedan = checks.filter((c) => c.outcome !== "mismatch");
-    await saveFarm({
-      ...stored,
+    await guardar({
+      ...parque,
       rows: r.rows,
       profile: {
         ...r.profile,
         calibration: {
-          ...(stored.profile.calibration ?? { status: "partial" }),
+          ...(parque.profile.calibration ?? { status: "partial" }),
           verifiedCases: [
-            ...(stored.profile.calibration?.verifiedCases ?? []),
+            ...(parque.profile.calibration?.verifiedCases ?? []),
             `El sentido del conteo se resolvio por geometria en ${r.resueltas} filas: la punta ` +
             "que da a la calle de las cajas se mide, no se declara.",
           ],
@@ -109,7 +128,6 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
       checks: quedan,
       savedAt: new Date().toISOString(),
     });
-    setChecks(quedan);
     setSentido(`${r.resueltas} filas resueltas` + (r.sinResolver.length ? ` · ${r.sinResolver.length} bloque(s) sin resolver` : ""));
     setRegistrando(false);
     setResult(null);
@@ -117,19 +135,19 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
 
   async function voltearLado(bloque: string) {
     setRegistrando(true);
-    const filas = voltearLadoDelBloque(stored.rows, bloque);
+    const filas = voltearLadoDelBloque(parque.rows, bloque);
     const quedan = checks.filter((c) => !(c.block === bloque && c.outcome === "mismatch"));
-    await saveFarm({
-      ...stored,
+    await guardar({
+      ...parque,
       rows: filas,
       checks: quedan,
       savedAt: new Date().toISOString(),
       profile: {
-        ...stored.profile,
+        ...parque.profile,
         calibration: {
-          ...(stored.profile.calibration ?? { status: "partial" }),
+          ...(parque.profile.calibration ?? { status: "partial" }),
           verifiedCases: [
-            ...(stored.profile.calibration?.verifiedCases ?? []),
+            ...(parque.profile.calibration?.verifiedCases ?? []),
             `Bloque ${bloque}: el lado de la calle estaba deducido al reves y se dio vuelta a ` +
             `partir de ${checks.filter((c) => c.block === bloque).length} conteos de campo que ` +
             "salian espejados.",
@@ -137,7 +155,6 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         },
       },
     });
-    setChecks(quedan);
     setRegistrando(false);
     setResult(null);
     setError(null);
@@ -146,7 +163,7 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   async function registrar(outcome: "match" | "mismatch") {
     if (!result?.best || !coord) return;
     setRegistrando(true);
-    const row = stored.rows.find((r) => r.id === result.best!.rowId);
+    const row = parque.rows.find((r) => r.id === result.best!.rowId);
     const n = Number(contado);
     const check = checkFromResult(result, coord, formatAddress(result.best), row, outcome, {
       accuracyM: accuracy,
@@ -155,14 +172,13 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     if (!check) { setRegistrando(false); return; }
 
     const nuevos = [...checks, check];
-    const cal = toCalibration(nuevos, stored.rows);
-    await saveFarm({
-      ...stored,
+    const cal = toCalibration(nuevos, parque.rows);
+    await guardar({
+      ...parque,
       checks: nuevos,
       savedAt: new Date().toISOString(),
-      profile: { ...stored.profile, calibration: { ...stored.profile.calibration, ...cal } },
+      profile: { ...parque.profile, calibration: { ...parque.profile.calibration, ...cal } },
     });
-    setChecks(nuevos);
     setRegistrado(outcome);
     setRegistrando(false);
   }
@@ -247,31 +263,31 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   // parque — dice que esa coordenada no es una medicion de GPS.
   const calidad = useMemo(
     () => (result || accuracy != null
-      ? calidadDeCoordenada(accuracy, stored.profile.matching?.maxDistanceM ?? 30)
+      ? calidadDeCoordenada(accuracy, parque.profile.matching?.maxDistanceM ?? 30)
       : null),
-    [result, accuracy, stored.profile.matching?.maxDistanceM],
+    [result, accuracy, parque.profile.matching?.maxDistanceM],
   );
 
   // Que regla explica los desacuerdos. Es la promesa que la app venia haciendo
   // —"un desacuerdo es un dato, no un error"— y que hasta ahora no cumplia.
   const diag = useMemo(
-    () => diagnosticoDeReglas(checks, stored.profile, stored.rows),
-    [checks, stored.profile, stored.rows],
+    () => diagnosticoDeReglas(checks, parque.profile, parque.rows),
+    [checks, parque.profile, parque.rows],
   );
   const espejo = useMemo(
-    () => pareceEspejado(checks, stored.profile.topology.modulesPerString),
-    [checks, stored.profile.topology.modulesPerString],
+    () => pareceEspejado(checks, parque.profile.topology.modulesPerString),
+    [checks, parque.profile.topology.modulesPerString],
   );
 
-  const resumen = useMemo(() => summarize(checks, stored.rows), [checks, stored.rows]);
+  const resumen = useMemo(() => summarize(checks, parque.rows), [checks, parque.rows]);
 
   // Lo que los conteos dicen sobre el offset de punta. Es el unico numero del
   // modelo que no se puede medir con cinta: la pila de punta y el punto que
   // trae el archivo no son el mismo lugar, y solo contando modulos parado en
   // la fila se sabe cual de los dos usa el relevamiento.
   const offset = useMemo(
-    () => veredictoDeOffset(checks, stored.profile, stored.rows),
-    [checks, stored.profile, stored.rows],
+    () => veredictoDeOffset(checks, parque.profile, parque.rows),
+    [checks, parque.profile, parque.rows],
   );
 
   /** El rango de modulos que cubre el 85 % de la probabilidad, dentro de la fila ganadora. */
@@ -531,7 +547,7 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             {espejo.espejado && (
               <p>
                 <strong>Esta espejado.</strong> En un string de{" "}
-                {stored.profile.topology.modulesPerString} modulos, contar desde la otra punta
+                {parque.profile.topology.modulesPerString} modulos, contar desde la otra punta
                 convierte el modulo k en el {espejo.esperada} − k. Tus sumas dan{" "}
                 <strong>{espejo.sumas.join(", ")}</strong> — o sea {espejo.esperada}, con el ruido
                 del GPS. Y como los conteos cubren las dos puntas de la fila, eso ademas descarta

@@ -8,6 +8,7 @@
   --accent: #0E6F72; --accent-ink: #0A5457; --accent-soft: #E0EFEF;
   --warn: #9A5209; --warn-soft: #FAEDDC;
   --bad: #A32222; --bad-soft: #FBE7E7;
+  --ok: #1B6B43; --ok-soft: #E4F2E9;
   --shadow: 0 1px 2px rgba(20, 26, 32, .05), 0 8px 24px -18px rgba(20, 26, 32, .3);
 }
 
@@ -19,6 +20,7 @@
     --accent: #54C9C3; --accent-ink: #8FDFDA; --accent-soft: #10312F;
     --warn: #E3A961; --warn-soft: #33250F;
     --bad: #F08A8A; --bad-soft: #351919;
+    --ok: #6FCB99; --ok-soft: #12291D;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 32px -22px rgba(0, 0, 0, .8);
   }
 }
@@ -103,6 +105,13 @@ code { font-family: "IBM Plex Mono", monospace; font-size: .88em; background: va
 .card.empty { align-items: flex-start; gap: 4px; }
 
 /* ---------- formularios ---------- */
+
+/*
+  Cualquier `display` propio le gana al atributo `hidden` del HTML, y eso ya
+  dejo visible un selector que pisaba la calibracion del parque. Una regla
+  global evita que vuelva a pasar con el proximo control que se esconda asi.
+*/
+[hidden] { display: none !important; }
 
 .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 16px; }
 .field label {
@@ -240,7 +249,19 @@ tr:last-child td { border-bottom: none; }
 .farm-open strong { font-family: Archivo, sans-serif; font-size: 17px; }
 .farm-open .mono { color: var(--ink-3); }
 .farm-actions {
-  display: flex; flex-wrap: wrap; gap: 10px 16px; padding: 0 18px 12px; border-top: 1px solid var(--rule); padding-top: 10px;
+  display: flex; flex-wrap: wrap; gap: 10px 22px; padding: 0 18px 12px;
+  border-top: 1px solid var(--rule); padding-top: 10px; align-items: flex-start;
+}
+/* Cada grupo con su titulo: "antes de volar", "despues de volar", "el parque". */
+.farm-actions .grupo { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.farm-actions .grupo-tit {
+  font-family: Archivo, sans-serif; font-size: 10px; font-weight: 600;
+  letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 2px;
+}
+/* El de borrar, lejos de todo lo demas. */
+.farm-actions .grupo.aparte { margin-left: auto; padding-left: 22px; border-left: 1px solid var(--rule); }
+@media (max-width: 560px) {
+  .farm-actions .grupo.aparte { margin-left: 0; padding-left: 0; border-left: 0; padding-top: 6px; border-top: 1px solid var(--rule); width: 100%; }
 }
 
 .chip {
@@ -437,3 +458,20 @@ td.flojo { color: var(--warn); font-style: italic; }
   font-size: .78rem; text-transform: none; letter-spacing: 0;
 }
 .hueco input { width: 8.5em; }
+
+/* Faltaban tres. `.note good` se usa en seis pantallas y no existia: los
+   mensajes de confirmacion salian sin fondo ni borde, al lado de los de
+   advertencia que si lo tienen. `--line` tampoco existe (es --rule), asi que
+   el separador de "¿Contaste los modulos?" no se dibujaba. Y el badge de
+   version nueva —el estado que hay que notar— salia sin color. */
+.note.good { background: var(--ok-soft); color: var(--ok); border: 1px solid var(--ok); }
+.verify { border-top: 1px solid var(--rule); }
+.sinred.actualizada { background: var(--accent-soft); color: var(--accent-ink); }
+
+/* El "por que" plegado: la explicacion larga no compite con la instruccion. */
+details.porque { margin-top: 8px; }
+details.porque > summary {
+  cursor: pointer; font-size: .82rem; color: var(--ink-3);
+  padding: 4px 0; user-select: none;
+}
+details.porque > summary:hover { color: var(--ink); }

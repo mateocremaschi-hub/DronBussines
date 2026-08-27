@@ -24,6 +24,18 @@ export interface StoredFarm {
   source?: { fileName: string; sheetName: string; rowCount: number };
   /** Lo que se conto a mano en el campo. La evidencia del parque. */
   checks?: FieldCheck[];
+  /**
+   * Cuales de las medidas de geometria se midieron con cinta y cuales son
+   * supuestos.
+   *
+   * Antes vivia solo en el estado de la pantalla de alta: se tildaba, servia
+   * para el cuadre de esa sesion, y se perdia al guardar. Un mes despues nadie
+   * podia saber si los 555 mm de la bahia salieron de una cinta o de un PDF, y
+   * el cuadre volvia a acusar a la medida buena.
+   *
+   * Claves: `ancho`, `hueco`, `bahia`, `offset`.
+   */
+  medidos?: Record<string, boolean>;
 }
 
 export async function listFarms(): Promise<StoredFarm[]> {

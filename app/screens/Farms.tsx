@@ -165,40 +165,64 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
                     {verified ? "verificado en campo" : "sin verificar"}
                   </span>
                 </button>
+                {/*
+                  Once botones iguales en una sola fila, con "Borrar" al lado de
+                  "Exportar". Con guantes y sol de frente eso es un accidente
+                  esperando. Ahora van en tres grupos con titulo, en el orden en
+                  que se usan, y el de borrar queda solo y aparte.
+                */}
                 <div className="farm-actions">
-                  <button className="link" onClick={() => onFlight(f)}>Planificar vuelo</button>
-                  <button className="link" onClick={() => onAnalysis(f)}>Analizar un vuelo</button>
-                  <button className="link" onClick={() => onWarranty(f)}>Garantias</button>
-                  <button className="link" onClick={() => onInspect(f)}>Inspecciones</button>
-                  <button className="link" onClick={() => onParams(f)}>Ajustar parametros</button>
-                  <button className="link" onClick={() => onAddGeometry(f)}>Agregar geometria</button>
-                  <button className="link" onClick={() => onStrings(f)}>Lista de strings</button>
-                  <label className="link comoboton">
-                    Cargar los planos
-                    <input
-                      type="file"
-                      multiple
-                      onChange={(e) => {
-                        const x = [...(e.target.files ?? [])];
-                        // Se limpia para poder volver a elegir los mismos.
-                        e.target.value = "";
-                        if (x.length) void cargarPlano(f, x);
+                  <div className="grupo">
+                    <span className="grupo-tit">Antes de volar</span>
+                    <button className="link" onClick={() => onFlight(f)}>Planificar vuelo</button>
+                    <label className="link comoboton">
+                      Cargar los planos
+                      <input
+                        type="file"
+                        multiple
+                        onChange={(e) => {
+                          const x = [...(e.target.files ?? [])];
+                          // Se limpia para poder volver a elegir los mismos.
+                          e.target.value = "";
+                          if (x.length) void cargarPlano(f, x);
+                        }}
+                      />
+                    </label>
+                    <button className="link" onClick={() => onStrings(f)}>Lista de strings</button>
+                  </div>
+
+                  <div className="grupo">
+                    <span className="grupo-tit">Despues de volar</span>
+                    <button className="link" onClick={() => onAnalysis(f)}>Analizar un vuelo</button>
+                    <button className="link" onClick={() => onInspect(f)}>Inspecciones</button>
+                    <button className="link" onClick={() => onWarranty(f)}>Garantias</button>
+                    <button className="link" onClick={() => onVendor(f)}>Auditar un informe</button>
+                  </div>
+
+                  <div className="grupo">
+                    <span className="grupo-tit">El parque</span>
+                    <button className="link" onClick={() => onParams(f)}>Ajustar parametros</button>
+                    <button className="link" onClick={() => onAddGeometry(f)}>Agregar geometria</button>
+                    <button className="link" onClick={() => downloadFarm(f)}>Exportar</button>
+                  </div>
+
+                  <div className="grupo aparte">
+                    <button
+                      className="link danger"
+                      onClick={async () => {
+                        if (confirm(
+                          `¿Borrar "${f.profile.name}" de este dispositivo?\n\n` +
+                          `Se van las ${f.rows.length} filas, los parametros calibrados y las ` +
+                          `inspecciones. Si no lo exportaste antes, no hay forma de recuperarlo.`,
+                        )) {
+                          await deleteFarm(f.profile.id);
+                          onChanged();
+                        }
                       }}
-                    />
-                  </label>
-                  <button className="link" onClick={() => onVendor(f)}>Auditar un informe</button>
-                  <button className="link" onClick={() => downloadFarm(f)}>Exportar</button>
-                  <button
-                    className="link danger"
-                    onClick={async () => {
-                      if (confirm(`¿Borrar "${f.profile.name}" de este dispositivo?`)) {
-                        await deleteFarm(f.profile.id);
-                        onChanged();
-                      }
-                    }}
-                  >
-                    Borrar
-                  </button>
+                    >
+                      Borrar el parque
+                    </button>
+                  </div>
                 </div>
               </li>
             );

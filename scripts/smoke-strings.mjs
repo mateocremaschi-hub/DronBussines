@@ -17,6 +17,9 @@ await page.setInputFiles('input[type="file"]', {
   buffer: Buffer.from(await x.body()),
 });
 await page.getByRole("heading", { name: /Que es cada columna/ }).waitFor();
+// El archivo de ejemplo viene en UTM y la zona ya no se hereda de Edenvale:
+// hay que decirla, igual que en un parque nuevo de verdad.
+await page.getByLabel("Zona").fill("56");
 await page.getByRole("button", { name: "Siguiente" }).click();
 await page.getByPlaceholder(/Edenvale/).fill("Parque de prueba");
 await page.getByRole("button", { name: "Siguiente" }).click();

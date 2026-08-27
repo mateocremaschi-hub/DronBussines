@@ -57,10 +57,23 @@ describe("resumen", () => {
 });
 
 describe("export CSV", () => {
-  const insp = (findings: Finding[]): Inspection => ({
+  const insp = (findings: Finding[], conditions: Inspection["conditions"] = {}): Inspection => ({
     id: "i1", farmId: "edenvale", farmName: "Edenvale", name: "Vuelo 1",
-    createdAt: "2026-08-21T00:00:00.000Z", conditions: {}, findings,
+    createdAt: "2026-08-21T00:00:00.000Z", conditions, findings,
   });
+
+  /**
+   * La tabla, sin el encabezado de condiciones.
+   *
+   * El CSV arranca con las condiciones del vuelo y una linea en blanco. Los
+   * tests miran la tabla, asi que cortan por esa linea en blanco en vez de
+   * contar lineas desde arriba — si no, agregar un campo de condiciones los
+   * rompe a todos.
+   */
+  const tabla = (csv: string): string[] => {
+    const partes = csv.split("\n\n");
+    return partes[partes.length - 1]!.trim().split("\n");
+  };
 
   it("saca los descartados y deja los demas", () => {
     const csv = toCsv(insp([
@@ -68,7 +81,7 @@ describe("export CSV", () => {
       hallazgo({ fileName: "b.jpg", status: "descartado" }),
       hallazgo({ fileName: "c.jpg" }),
     ]));
-    const lineas = csv.trim().split("\n");
+    const lineas = tabla(csv);
     expect(lineas).toHaveLength(3); // encabezado + 2
     expect(csv).toContain("a.jpg");
     expect(csv).not.toContain("b.jpg");
@@ -76,7 +89,7 @@ describe("export CSV", () => {
 
   it("escribe la direccion en columnas separadas, no en un texto", () => {
     const csv = toCsv(insp([hallazgo({ address: dir({ module: 23, countedFrom: "far-end" }) })]));
-    const fila = csv.trim().split("\n")[1]!.split(",");
+    const fila = tabla(csv)[1]!.split(",");
     expect(fila[5]).toBe("05");        // bloque
     expect(fila[6]).toBe("05-042");    // tracker
     expect(fila[9]).toBe("23");        // modulo
@@ -85,7 +98,7 @@ describe("export CSV", () => {
 
   it("un hallazgo sin ubicar sale igual, con las columnas vacias", () => {
     const csv = toCsv(insp([hallazgo({ address: null, candidates: [] })]));
-    const fila = csv.trim().split("\n")[1]!.split(",");
+    const fila = tabla(csv)[1]!.split(",");
     expect(fila[0]).toBe("DJI_0001.JPG");
     expect(fila[5]).toBe(""); // sin bloque
     expect(fila[9]).toBe(""); // sin modulo
@@ -95,16 +108,36 @@ describe("export CSV", () => {
   // del que calculo la app. Pisarlo seria borrar de donde salio cada numero.
   it("guarda el modulo corregido sin pisar el calculado", () => {
     const csv = toCsv(insp([hallazgo({ address: dir({ module: 7 }), moduleCorregido: 9 })]));
-    const fila = csv.trim().split("\n")[1]!.split(",");
+    const fila = tabla(csv)[1]!.split(",");
     expect(fila[9]).toBe("7");
-    expect(fila[11]).toBe("9");
+    // La columna 11 es ahora la caja de continua; el modulo corregido corrio a la 12.
+    expect(fila[12]).toBe("9");
   });
 
   it("escapa comas y comillas de las notas", () => {
     const csv = toCsv(insp([hallazgo({ note: 'vidrio roto, esquina "sur"' })]));
     expect(csv).toContain('"vidrio roto, esquina ""sur"""');
     // Y no rompe la cantidad de columnas.
-    expect(csv.trim().split("\n")).toHaveLength(2);
+    expect(tabla(csv)).toHaveLength(2);
+  });
+
+  /**
+   * La pantalla dice que la norma exige documentar las condiciones. Si el CSV
+   * no las lleva, cargarlas en el campo no sirvio para nada.
+   */
+  it("el entregable lleva las condiciones del vuelo, no solo la tabla", () => {
+    const csv = toCsv(insp([hallazgo({})], {
+      irradianceWm2: 780, ambientC: 31, windMs: 0, sky: "despejado", pilot: "Mateo",
+    }));
+    expect(csv).toContain("irradiancia_wm2,780");
+    expect(csv).toContain("temperatura_ambiente_c,31");
+    expect(csv).toContain("cielo,despejado");
+    expect(csv).toContain("piloto,Mateo");
+    // Cero es un dato, no un campo vacio: aire quieto es la mejor condicion.
+    expect(csv).toContain("viento_ms,0");
+    // Y lo que no se cargo se dice, en vez de salir como una celda en blanco
+    // que despues nadie sabe si es "no habia" o "no lo anotaron".
+    expect(csv).toContain("equipo,sin registrar");
   });
 
   it("arrastra los avisos del motor al entregable", () => {

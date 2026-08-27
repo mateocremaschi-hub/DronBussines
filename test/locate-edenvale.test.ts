@@ -465,3 +465,47 @@ describe("cuando la coordenada no cae en ninguna fila", () => {
     expect(msg).not.toMatch(/Prob[aá] de nuevo/);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Los dos avisos que faltaban: lejos y de costado.
+ *
+ * La confianza se normaliza ENTRE los candidatos, asi que no dice nada de la
+ * distancia absoluta. Parado a veinte metros de la fila mas cercana —en la
+ * calle, en el camino perimetral, o sobre un bloque que nunca se importo— todos
+ * los candidatos estan igual de lejos, la confianza del primero sale alta, y la
+ * app contestaba un modulo como si nada. El unico aviso que existia era para
+ * cuando NO hay nada a menos de 30 m.
+ */
+describe("estar cerca no es estar encima", () => {
+  it("parado sobre la fila no avisa ni lejania ni costado", () => {
+    const w = atSlot(rowNorthMid, 20).warnings.map((x) => x.code);
+    expect(w).not.toContain("off-axis");
+    expect(w).not.toContain("far-from-module");
+  });
+
+  it("veinte metros al costado del eje: dice que no estas sobre ese tracker", () => {
+    const fix = pointAtSlot(rowNorthMid, 20, profile, "start", 20);
+    const r = locate({ ...fix, accuracyM: 0.5 }, farm);
+    const w = r.warnings.map((x) => x.code);
+    expect(w).toContain("off-axis");
+    expect(r.warnings.find((x) => x.code === "off-axis")!.message).toMatch(/al costado del eje/);
+  });
+
+  it("y que el modulo que da esta mas lejos de lo que explica el GPS", () => {
+    const fix = pointAtSlot(rowNorthMid, 20, profile, "start", 20);
+    const w = locate({ ...fix, accuracyM: 0.5 }, farm).warnings.map((x) => x.code);
+    expect(w).toContain("far-from-module");
+  });
+
+  /**
+   * Con el GPS malo la distancia SI la explica el error: ahi el aviso que
+   * corresponde es el de baja confianza, no el de lejania.
+   */
+  it("con ±10 m de precision, 8 m de distancia no es noticia", () => {
+    const fix = pointAtSlot(rowNorthMid, 20, profile, "start", 8);
+    const w = locate({ ...fix, accuracyM: 10 }, farm).warnings.map((x) => x.code);
+    expect(w).not.toContain("far-from-module");
+  });
+});

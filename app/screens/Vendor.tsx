@@ -17,6 +17,7 @@ import { readWorkbook, type Sheet } from "../ingest";
 import { download } from "../inspection";
 import {
   checkConditions,
+  filasSinCoordenada,
   readVendorFindings,
   reconcile,
   suggestVendorMapping,
@@ -66,6 +67,10 @@ export function Vendor({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   );
 
   const report = useMemo(() => (rows.length ? summarizeReconcile(rows) : null), [rows]);
+  const sinCoordenada = useMemo(
+    () => (sheet ? filasSinCoordenada(sheet, mapping) : 0),
+    [sheet, mapping],
+  );
   const eventos = useMemo(
     () => (farm && rows.length ? trackerEvents(rows, stored.rows, farm) : []),
     [farm, rows, stored.rows],
@@ -145,6 +150,28 @@ export function Vendor({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
               </div>
             ))}
           </div>
+          {/*
+            Las filas sin coordenada se salteaban sin decir nada. Con la columna
+            de longitud mal asignada —cosa facil: hasta hace poco "Long" no la
+            reconocia— se perdian las 3000 filas del archivo y la pantalla
+            mostraba una auditoria vacia como si el archivo no trajera nada.
+          */}
+          {sinCoordenada > 0 && (
+            <p className={sinCoordenada === sheet.rows.length ? "note bad" : "note"}>
+              {sinCoordenada === sheet.rows.length ? (
+                <>
+                  <strong>Ninguna de las {sheet.rows.length} filas trae coordenada.</strong> Revisá
+                  que "Latitud" y "Longitud" apunten a las columnas correctas — si estan bien, el
+                  archivo no tiene coordenadas y no hay nada que auditar.
+                </>
+              ) : (
+                <>
+                  {sinCoordenada} de {sheet.rows.length} filas no traen coordenada y quedan afuera
+                  de la auditoria.
+                </>
+              )}
+            </p>
+          )}
         </section>
       )}
 
@@ -161,7 +188,7 @@ export function Vendor({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
               <b>{report.sinUbicar}</b><span>sin ubicar</span>
             </div>
           </div>
-          <p className={report.espejados > report.coinciden ? "note bad" : "note good"}>
+          <p className={report.nivel === "ok" ? "note good" : report.nivel === "aviso" ? "note" : "note bad"}>
             {report.veredicto}
           </p>
           <p className="help">

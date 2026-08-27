@@ -133,6 +133,19 @@ export function dentroDePlazo(
 /** Irradiancia minima que pide la norma para que la medicion valga. */
 export const IRRADIANCIA_MINIMA = 600;
 
+/**
+ * Viento a partir del cual la medicion deja de ser defendible.
+ *
+ * El viento enfria el vidrio y aplana las diferencias: un punto caliente real
+ * puede medir 3 °C de delta con viento donde sin viento medía 15. Por eso el
+ * dato se pide en el reporte — y por eso, si es alto, el fabricante lo puede
+ * usar para rechazar el reclamo o, peor, la anomalia directamente no se ve.
+ *
+ * 18 km/h son los 5 m/s que se usan como tope de trabajo. Es una convencion,
+ * como los umbrales de delta T: sirve para avisar, no para citar.
+ */
+export const VIENTO_MAXIMO_KMH = 18;
+
 export interface Condiciones {
   irradianciaWm2?: number;
   vientoKmh?: number;
@@ -179,6 +192,24 @@ export function evidenciaFaltante(
       `El vuelo se hizo con ${cond.irradianciaWm2} W/m2, por debajo de los ${IRRADIANCIA_MINIMA} ` +
       "que pide la norma. El fabricante lo puede rechazar por eso solo.",
     );
+  }
+
+  /*
+    El viento y el cielo se cargaban en la pantalla de garantias y no los
+    miraba nadie: no salian en el CSV ni entraban en "que le falta". Dos campos
+    que se completan en el campo, con frio, para nada. Ahora pesan.
+  */
+  if (cond.vientoKmh == null) {
+    falta.push("Falta el viento del vuelo: la norma pide documentarlo y sin el dato el reclamo es mas facil de rebotar.");
+  } else if (cond.vientoKmh > VIENTO_MAXIMO_KMH) {
+    falta.push(
+      `El vuelo se hizo con ${cond.vientoKmh} km/h de viento, arriba de los ${VIENTO_MAXIMO_KMH} ` +
+      "de tope. El viento enfria el vidrio y achica el delta T: el fabricante puede decir que la " +
+      "medicion no vale, y ademas puede haber anomalias que directamente no se vieron.",
+    );
+  }
+  if (!cond.cielo) {
+    falta.push("Falta el estado del cielo: con nubes pasajeras la irradiancia cambia entre foto y foto.");
   }
 
   if (!anomalia) falta.push("Falta clasificar el tipo de anomalia.");
@@ -290,7 +321,7 @@ export function toCsv(items: ItemDeGarantia[], cond: Condiciones): string {
   const head = [
     "canal", "bloque", "tracker", "fila", "string", "modulo_desde_caja_dc",
     "anomalia", "celsius", "delta_t", "referencia_c", "severidad",
-    "irradiancia_wm2", "fecha_vuelo", "plazo", "foto_termica",
+    "irradiancia_wm2", "viento_kmh", "cielo", "fecha_vuelo", "plazo", "foto_termica",
     "listo_para_presentar", "que_le_falta", "por_que_este_canal",
   ];
   const lines = [head.join(",")];
@@ -308,7 +339,8 @@ export function toCsv(items: ItemDeGarantia[], cond: Condiciones): string {
       CANALES[it.canal], h.modulo.block, h.modulo.tracker, h.modulo.row ?? "",
       h.modulo.stringLabel ?? h.modulo.stringNumber, h.modulo.module,
       it.anomalia ?? "", h.celsius.toFixed(1), h.deltaT.toFixed(1), h.referenciaC.toFixed(1),
-      h.severidad, cond.irradianciaWm2 ?? "", cond.fecha ?? "", it.plazo.detalle, h.fileName,
+      h.severidad, cond.irradianciaWm2 ?? "", cond.vientoKmh ?? "", cond.cielo ?? "",
+      cond.fecha ?? "", it.plazo.detalle, h.fileName,
       it.completo ? "si" : "no", it.faltante.join(" · "), it.motivo,
     ].map(esc).join(","));
   }

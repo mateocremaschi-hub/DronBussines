@@ -59,6 +59,14 @@ export interface Footprint {
    * en un trapecio, y aproximarla con un rectangulo corrido deja de servir.
    */
   confiable: boolean;
+  /**
+   * Que datos de la foto faltaban y se rellenaron con un supuesto.
+   *
+   * Va en plata: una huella "confiable" con el rumbo inventado ubica los
+   * modulos en la fila de al lado, y el hallazgo sale con la misma confianza
+   * que uno bueno.
+   */
+  faltantes: string[];
 }
 
 /** Desvio maximo del gimbal, en grados, para seguir tratando la huella como rectangulo. */
@@ -71,10 +79,39 @@ export function footprint(frame: LocalFrame, pose: PhotoPose, camera: Camera): F
   const ancho = 2 * h * Math.tan((camera.hfovDeg * RAD) / 2);
   const alto = 2 * h * Math.tan((camera.vfovDeg * RAD) / 2);
 
+  /**
+   * Lo que falta NO se reemplaza en silencio.
+   *
+   * Sin rumbo del gimbal se asumia norte-arriba, y volando hacia el este eso
+   * gira la huella 90 grados: en un cuadro de 42 x 34 m los modulos del borde
+   * se van hasta 27 m, o sea a la fila de al lado. Sin angulo del gimbal se
+   * asumia nadir perfecto Y ADEMAS se marcaba la huella como confiable.
+   *
+   * Ahora los dos casos quedan marcados. `confiable` era un campo que nadie
+   * leia: existia, se testeaba, y no frenaba nada.
+   */
+  const sinYaw = pose.gimbalYawDeg == null;
+  const sinPitch = pose.gimbalPitchDeg == null;
+
   const yaw = pose.gimbalYawDeg ?? 0;
   const pitch = pose.gimbalPitchDeg;
   const desvio = pitch == null ? 0 : Math.abs(90 - Math.abs(pitch));
   const tiltOffsetM = h * Math.tan(desvio * RAD);
+
+  const faltantes: string[] = [];
+  if (sinYaw) {
+    faltantes.push(
+      "la foto no trae el rumbo del gimbal, asi que se la ubica como si mirara al norte: " +
+      "si el vuelo no era norte-sur, la huella esta girada y los modulos del borde caen en " +
+      "otra fila",
+    );
+  }
+  if (sinPitch) {
+    faltantes.push(
+      "la foto no trae el angulo del gimbal, asi que se la ubica como si estuviera a plomo: " +
+      "con la camara inclinada el centro se corre la altura por la tangente del desvio",
+    );
+  }
 
   // La camara inclinada mira hacia adelante: el centro de la foto se corre en
   // la direccion en la que apunta.
@@ -105,7 +142,8 @@ export function footprint(frame: LocalFrame, pose: PhotoPose, camera: Camera): F
     altoM: alto,
     rotacionDeg: yaw,
     tiltOffsetM,
-    confiable: desvio <= DESVIO_MAXIMO_DEG,
+    confiable: !sinYaw && !sinPitch && desvio <= DESVIO_MAXIMO_DEG,
+    faltantes,
   };
 }
 

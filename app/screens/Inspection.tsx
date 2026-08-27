@@ -24,7 +24,32 @@ import {
 } from "../inspection";
 import type { StoredFarm } from "../storage";
 
-const nuevoId = (n: number) => `${n.toString(36)}-${(n * 2654435761) % 0xffff}`;
+/**
+ * Un identificador de hallazgo que no se repite entre sesiones.
+ *
+ * El anterior era una funcion del contador, y el contador arrancaba en 0 cada
+ * vez que se abria la pantalla. Volver a una inspeccion de ayer y agregarle
+ * fotos generaba de nuevo los ids 1, 2, 3… que ya existian: a partir de ahi
+ * editar un hallazgo editaba dos, y descartar uno descartaba los dos. En un
+ * informe de garantia eso es un modulo que se reporta y no existe, o uno que
+ * existe y no se reporta.
+ *
+ * Con el instante de carga adelante, dos lotes distintos no pueden chocar.
+ */
+const nuevoId = (n: number, cuando: number) =>
+  `${cuando.toString(36)}-${n.toString(36)}`;
+
+/**
+ * Un numero de un campo de texto, distinguiendo "cero" de "vacio".
+ *
+ * `Number(x) || undefined` los confunde: el cero es falsy, asi que un viento de
+ * 0 m/s o un ΔT de 0,0 °C se guardaban como si nunca se hubieran anotado.
+ */
+function numeroOVacio(texto: string): number | undefined {
+  if (texto.trim() === "") return undefined;
+  const v = Number(texto);
+  return Number.isFinite(v) ? v : undefined;
+}
 
 export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack: () => void }) {
   const [list, setList] = useState<Insp[]>([]);
@@ -71,6 +96,9 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
     if (!farm || !current) return;
     const arr = [...files];
     setProgress({ done: 0, total: arr.length });
+    // El instante en que empezo ESTE lote: es lo que separa los ids de hoy de
+    // los de la sesion anterior sobre la misma inspeccion.
+    const loteStamp = Date.now();
     const nuevos: Finding[] = [];
     const fallos: Array<{ fileName: string; error: string }> = [];
 
@@ -91,7 +119,7 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
         );
         contador.current += 1;
         nuevos.push({
-          id: nuevoId(contador.current + i),
+          id: nuevoId(contador.current, loteStamp),
           fileName: read.fileName,
           fix: read.fix,
           address: res.best,
@@ -230,7 +258,10 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
                     ...current,
                     conditions: {
                       ...current.conditions,
-                      [key]: type === "number" ? Number(e.target.value) || undefined : e.target.value,
+                      // `Number(x) || undefined` tiraba el cero: viento 0 m/s
+                      // es aire quieto, que es LA mejor condicion para volar
+                      // termica, y quedaba grabado como "no lo anote".
+                      [key]: type === "number" ? numeroOVacio(e.target.value) : e.target.value,
                     },
                   })
                 }
@@ -391,7 +422,9 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
               <input
                 id={`${f.id}-dt`}
                 type="number" step="0.1" value={f.deltaT ?? ""}
-                onChange={(e) => patch(f.id, { deltaT: Number(e.target.value) || undefined })}
+                // Un ΔT de 0,0 °C es un dato: el modulo esta igual que sus
+                // vecinos. Con `|| undefined` se guardaba como "no medido".
+                onChange={(e) => patch(f.id, { deltaT: numeroOVacio(e.target.value) })}
               />
             </div>
             <div className="field">

@@ -123,3 +123,82 @@ describe("medir un modulo", () => {
     expect(medianaEnCaja(r, -50, -50, 4, 4)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe("una sola escala para todo el vuelo", () => {
+  /**
+   * La escala se elegia foto por foto, por contraste. Una foto de una nube, del
+   * hangar o del despegue puede caer en otra escala, y esa foto entra al
+   * analisis con las temperaturas multiplicadas por seis. Nadie lo nota: 240 °C
+   * se reporta como anomalia critica, y anomalias es lo que estabamos buscando.
+   *
+   * Todas las fotos de un vuelo salen de la misma camara con la misma
+   * configuracion, asi que la escala es una sola y se le puede fijar.
+   */
+  const enKelvin64 = (c: number) => Math.round((c + 273.15) * 64);
+  const enDecikelvin = (c: number) => Math.round((c + 273.15) * 10);
+
+  it("respeta la escala que se le fija, aunque sola elegiria otra", () => {
+    // Una escena que en decikelvin da temperaturas de este mundo.
+    const crudo = new Uint16Array(4096);
+    for (let i = 0; i < crudo.length; i++) crudo[i] = enDecikelvin(20 + (i % 40));
+    const jpeg = jpegTermico(64, 64, crudo);
+
+    const solo = readRadiometric(jpeg)!;
+    expect(solo.escala).toBe("decikelvin");
+
+    const fijado = readRadiometric(jpeg, "1/64 de kelvin")!;
+    expect(fijado.escala).toBe("1/64 de kelvin");
+    // Y deja constancia de que ella sola habria elegido otra: es lo que
+    // permite avisar que esa foto no se parece a las demas del vuelo.
+    expect(fijado.escalaAuto).toBe("decikelvin");
+  });
+
+  it("cuando coinciden, no hay nada que reportar", () => {
+    const crudo = new Uint16Array(4096);
+    for (let i = 0; i < crudo.length; i++) crudo[i] = enKelvin64(20 + (i % 40));
+    const r = readRadiometric(jpegTermico(64, 64, crudo), "1/64 de kelvin")!;
+    expect(r.escala).toBe(r.escalaAuto);
+  });
+
+  it("una escala inventada no se acepta: se vuelve a la automatica", () => {
+    const crudo = new Uint16Array(4096);
+    for (let i = 0; i < crudo.length; i++) crudo[i] = enKelvin64(20 + (i % 40));
+    const r = readRadiometric(jpegTermico(64, 64, crudo), "grados de mentira")!;
+    expect(r.escala).toBe("1/64 de kelvin");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("cuando la camara llega a su tope", () => {
+  /**
+   * Arriba del rango elegido, la termica guarda todo con el mismo numero. Un
+   * conector quemado o un punto caliente fuerte se pasan, y lo que se mide deja
+   * de ser la temperatura del modulo: es el techo del sensor. Y son justo las
+   * fotos de los defectos mas graves.
+   *
+   * Un modulo solo no alcanza para darse cuenta. Lo que lo delata es cuanta
+   * foto quedo pegada al mismo maximo exacto.
+   */
+  const enKelvin64 = (c: number) => Math.round((c + 273.15) * 64);
+
+  it("una escena sin saturar deja el tope casi vacio", () => {
+    const crudo = new Uint16Array(4096);
+    for (let i = 0; i < crudo.length; i++) crudo[i] = enKelvin64(20 + (i % 40));
+    const r = readRadiometric(jpegTermico(64, 64, crudo))!;
+    expect(r.fraccionEnElTope).toBeLessThan(0.05);
+    expect(r.topeC).toBeCloseTo(59, 0);
+  });
+
+  it("una mancha recortada contra el tope se ve en la fraccion", () => {
+    const crudo = new Uint16Array(4096);
+    for (let i = 0; i < crudo.length; i++) crudo[i] = enKelvin64(20 + (i % 40));
+    // Un 10 % de la foto pegada al mismo maximo: eso es recorte, no ruido.
+    for (let i = 0; i < 410; i++) crudo[i] = enKelvin64(100);
+    const r = readRadiometric(jpegTermico(64, 64, crudo))!;
+    expect(r.topeC).toBeCloseTo(100, 0);
+    expect(r.fraccionEnElTope).toBeGreaterThan(0.09);
+  });
+});

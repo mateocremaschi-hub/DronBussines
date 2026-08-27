@@ -176,7 +176,14 @@ export function aplicarPlano(rows: TrackerRow[], plano: PlanoDeParque): Aplicaci
       next.side = p.side;
       conLado++;
     }
-    if (p.dcbox) conCajaDc++;
+    // Antes esto solo CONTABA la caja y la tiraba. El informe decia "N filas
+    // con caja de continua" y despues la caja no aparecia en ningun lado: ni en
+    // la fila, ni en la direccion que se da en el campo, ni en el CSV. La caja
+    // es por donde se entra caminando, o sea la mitad de la utilidad del plano.
+    if (p.dcbox) {
+      next.dcBoxLabel = p.dcbox;
+      conCajaDc++;
+    }
     return next;
   });
 

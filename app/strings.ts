@@ -148,10 +148,18 @@ const soloNumero = (s: string): string => {
 export function parseTrackerRef(texto: string, blockAparte?: string): TrackerRef {
   const t = String(texto).trim();
 
-  // La fila suele venir al final, como R2 / R-2 / ROW 2.
+  /*
+    La fila suele venir al final, como R2 / R-2 / ROW 2.
+
+    Pero solo si QUEDA algo despues de sacarla. Un parque que llama a sus
+    trackers "R12" —el numero de fila ES el nombre del tracker, que es como
+    numeran varios— se comia el nombre entero: el tracker quedaba en blanco y
+    la fila en R12. Cero cruces con la geometria, sin un solo error.
+  */
   const fila = t.match(/[\s\-_]?R(?:OW)?[\s\-_]?(\d+)\s*$/i);
-  const row = fila ? `R${Number(fila[1])}` : undefined;
-  const resto = fila ? t.slice(0, fila.index) : t;
+  const quedaAlgo = fila ? t.slice(0, fila.index).trim() !== "" : false;
+  const row = fila && quedaAlgo ? `R${Number(fila[1])}` : undefined;
+  const resto = fila && quedaAlgo ? t.slice(0, fila.index) : t;
 
   const grupos = resto.match(/\d+/g) ?? [];
   const ref: TrackerRef = { tracker: grupos.length ? String(Number(grupos[grupos.length - 1]!)) : resto.trim().toLowerCase() };

@@ -231,6 +231,33 @@ export function StringList({ farm, onDone, onCancel }: {
         </section>
       )}
 
+      {/*
+        Sin estas columnas la pantalla se quedaba muda: no aparecia la tarjeta
+        de resultados, no aparecia el boton de aplicar, y no habia una sola
+        linea que dijera que faltaba. Se probaba de nuevo con otro archivo
+        creyendo que el archivo estaba mal.
+      */}
+      {sheet && !entries && (
+        <p className="note bad">
+          Faltan asignar{" "}
+          <strong>
+            {[!mapping.label && "Etiqueta del string", !mapping.tracker && "Tracker"]
+              .filter(Boolean)
+              .join(" y ")}
+          </strong>
+          . Sin eso no se puede cruzar nada con el parque.
+        </p>
+      )}
+
+      {sheet && entries && !mapping.dcBox && (
+        <p className="note">
+          No asignaste la columna de <strong>caja DC</strong>. Los strings se van a cruzar igual,
+          pero sin la caja no se puede saber que trackers cuelgan de la misma linea — y eso es lo
+          que decide si el string lejano cuenta al reves. Los numeros de modulo del string lejano
+          van a quedar como si no invirtiera.
+        </p>
+      )}
+
       {match && entries && (
         <section className="card">
           <h2>Cuanto cruzo</h2>

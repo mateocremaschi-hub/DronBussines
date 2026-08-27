@@ -161,6 +161,62 @@ describe("armar el bloque", () => {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Bloques sin calle en el medio.
+ *
+ * En Edenvale el 06 es una tira diagonal sola. Eso estaba escrito en el codigo
+ * como `bnum === "06"`, que es el nombre de un bloque de UN parque metido en el
+ * lector de planos: en el parque siguiente el 06 puede tener dos alas de verdad
+ * (y se lo aplasta en una) y la tira sola puede ser el 11 (y se la parte al
+ * medio). Se reconoce por la forma.
+ */
+describe("bloques que no tienen dos alas", () => {
+  /** Una tira pareja: doce trackers uno al lado del otro, sin calle. */
+  const tira = (b: string): Etiqueta[] => {
+    const out: Etiqueta[] = [];
+    for (let n = 1; n <= 12; n++) {
+      const x = 100 + (n - 1) * 30;
+      out.push({ x, y: 100, t: `${b}-${String(n).padStart(3, "0")}-R1` });
+      out.push({ x, y: 160, t: `${b}-${String(n).padStart(3, "0")}-R2` });
+    }
+    for (let k = 0; k < 3; k++) out.push({ x: 250, y: 90 + k * 60, t: `DCB-${+b}.2.${14 + k}` });
+    return out;
+  };
+
+  it("una tira pareja no se parte en dos alas inventadas", () => {
+    const r = planoDeEtiquetas(tira("11"));
+    const t = r.plano["11"]!.trackers!;
+    const lados = new Set(Object.values(t).map((v) => v.side));
+    expect(lados).toEqual(new Set(["South"]));
+    expect(r.avisos.join(" ")).toMatch(/no tiene calle en el medio/);
+  });
+
+  it("y lo dice, en vez de devolver un lado inventado sin comentarios", () => {
+    expect(planoDeEtiquetas(tira("11")).avisos.join(" ")).toMatch(/tira sola de 12 trackers/);
+  });
+
+  /**
+   * El otro caso de tira: un tracker suelto lejos del grupo. El vacio es
+   * enorme, pero de un lado hay uno solo — no es una calle, es un rotulo
+   * perdido o un tracker de esquina.
+   */
+  it("un tracker suelto del otro lado de un vacio no es una calle", () => {
+    const e = tira("13");
+    e.push({ x: 2000, y: 100, t: "13-090-R1" });
+    const t = planoDeEtiquetas(e).plano["13"]!.trackers!;
+    expect(new Set(Object.values(t).map((v) => v.side))).toEqual(new Set(["South"]));
+  });
+
+  it("un bloque con dos alas de verdad sigue partiendose, se llame como se llame", () => {
+    for (const b of ["06", "04", "11"]) {
+      const r = planoDeEtiquetas(bloque({ b, izquierda: [1, 2, 3], derecha: [10, 11, 12] }));
+      const lados = new Set(Object.values(r.plano[b]!.trackers!).map((v) => v.side));
+      expect(lados, `bloque ${b}`).toEqual(new Set(["North", "South"]));
+      expect(r.avisos.join(" "), `bloque ${b}`).not.toMatch(/no tiene calle/);
+    }
+  });
+});
+
 describe("bloques girados en la lamina", () => {
   /** El mismo bloque de arriba, rotado un cuarto de vuelta al dibujarlo. */
   function girado(e: Etiqueta[]): Etiqueta[] {

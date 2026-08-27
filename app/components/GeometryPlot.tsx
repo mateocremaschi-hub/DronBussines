@@ -157,12 +157,24 @@ export function GeometryPlot({ farm, height = 420, mission = null }: Props) {
     }
   }, [farm, layout, flagged, hover, selected, height, mission]);
 
-  const pick = (evt: React.MouseEvent<HTMLCanvasElement>): TrackerRow | null => {
+  /**
+   * Que fila hay debajo del dedo (o del mouse).
+   *
+   * Antes tomaba `React.MouseEvent` y solo se enganchaba a `onMouseMove`: en un
+   * telefono el dibujo no reaccionaba a nada, y el cartel decia "pasa el mouse
+   * por una fila", que en el campo es la mitad de la aplicacion escondida
+   * detras de un dispositivo que no existe ahi. Ahora entra cualquier puntero.
+   *
+   * La tolerancia tambien: 10 px es la mitad del ancho de un dedo. Con puntero
+   * grueso (dedo) se usa 22 px, que es lo que recomienda cualquier guia tactil.
+   */
+  const pick = (evt: { clientX: number; clientY: number; pointerType?: string }): TrackerRow | null => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
     const mx = evt.clientX - rect.left;
     const my = evt.clientY - rect.top;
+    const toleranciaPx = evt.pointerType && evt.pointerType !== "mouse" ? 22 : 10;
 
     const pad = 24;
     const { minX, maxX, minY, maxY } = layout;
@@ -187,8 +199,7 @@ export function GeometryPlot({ farm, height = 420, mission = null }: Props) {
       const d = Math.hypot(x - (row.a.x + dx * t), y - (row.a.y + dy * t));
       if (d < bestD) { bestD = d; best = row.source; }
     }
-    // Tolerancia de 10 pixeles, en metros.
-    return bestD * scale < 10 ? best : null;
+    return bestD * scale < toleranciaPx ? best : null;
   };
 
   const active = selected ?? hover;
@@ -202,9 +213,10 @@ export function GeometryPlot({ farm, height = 420, mission = null }: Props) {
       <canvas
         ref={canvasRef}
         style={{ height, width: "100%" }}
-        onMouseMove={(e) => setHover(pick(e))}
-        onMouseLeave={() => setHover(null)}
-        onClick={(e) => setSelected(pick(e))}
+        // `onPointer*` cubre mouse, dedo y lapiz con los mismos tres manejadores.
+        onPointerMove={(e) => { if (e.pointerType === "mouse") setHover(pick(e)); }}
+        onPointerLeave={() => setHover(null)}
+        onPointerDown={(e) => { const r = pick(e); setSelected(r); setHover(r); }}
       />
       <div className="plot-info">
         {active ? (
@@ -226,7 +238,8 @@ export function GeometryPlot({ farm, height = 420, mission = null }: Props) {
           </>
         ) : (
           <span className="muted">
-            Pasa el mouse por una fila para ver sus datos. Las filas en naranja tienen algo que revisar.
+            Tocá una fila —o pasale el mouse— para ver sus datos. Las filas en naranja tienen algo
+            que revisar.
           </span>
         )}
         <a href={mapsUrl} target="_blank" rel="noreferrer">

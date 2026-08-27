@@ -94,3 +94,61 @@ describe("reparto con bahia de motor", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe("el aviso de 'caiste en la bahia'", () => {
+  /**
+   * El umbral era "medio modulo". Con el panel de Edenvale eso son 567 mm y la
+   * bahia mide 555: por doce milimetros el aviso NUNCA se disparo en el parque
+   * para el que se escribio. Parado sobre el motor, la app contestaba un modulo
+   * con confianza normal y sin decir que ahi no hay ningun panel.
+   */
+  const edenvaleReal = makeRowLayout({
+    modulesPerString: 28,
+    stringsPerRow: 2,
+    pitchM: 1.155,
+    moduleGapM: 0.02,
+    moduleWidthM: 1.135,
+    stringGapM: 0.555,   // la bahia medida con cinta
+    originOffsetM: -0.025,
+  });
+
+  /** Distancia al centro de la bahia, que arranca al terminar el modulo 28. */
+  const finDel28 = edenvaleReal.bordesM[27]! + edenvaleReal.moduleWidthM;
+
+  it("la bahia de 555 mm dispara el aviso, aunque mida menos que medio modulo", () => {
+    expect(0.555).toBeLessThan(edenvaleReal.moduleWidthM / 2); // el umbral viejo
+    expect(positionAtDistance(edenvaleReal, finDel28 + 0.1).inGap).toBe(true);
+  });
+
+  it("el huequito de 20 mm entre dos paneles NO es una bahia", () => {
+    const finDel10 = edenvaleReal.bordesM[9]! + edenvaleReal.moduleWidthM;
+    expect(positionAtDistance(edenvaleReal, finDel10 + 0.01).inGap).toBe(false);
+  });
+
+  it("sobre un modulo no avisa nada", () => {
+    const centroDel10 = edenvaleReal.bordesM[9]! + edenvaleReal.moduleWidthM / 2;
+    expect(positionAtDistance(edenvaleReal, centroDel10).inGap).toBe(false);
+    expect(positionAtDistance(edenvaleReal, centroDel10).positionInRow).toBe(10);
+  });
+
+  /**
+   * Adentro del hueco gana el mas cercano. En una bahia de 3,7 m devolver
+   * siempre el de atras deja a la persona a tres metros y medio del panel que
+   * tiene delante.
+   */
+  it("en la bahia devuelve el modulo mas cercano, no siempre el de atras", () => {
+    const bahiaGrande = makeRowLayout({
+      modulesPerString: 28, stringsPerRow: 2, pitchM: 1.155, moduleGapM: 0.02,
+      moduleWidthM: 1.135, stringGapM: 3.713, originOffsetM: 0,
+    });
+    const fin28 = bahiaGrande.bordesM[27]! + bahiaGrande.moduleWidthM;
+    // Apenas entrando en la bahia: el 28 sigue siendo el mas cercano.
+    expect(positionAtDistance(bahiaGrande, fin28 + 0.3).positionInRow).toBe(28);
+    // Casi saliendo: el 29 esta a centimetros y el 28 a tres metros y medio.
+    expect(positionAtDistance(bahiaGrande, fin28 + 3.4).positionInRow).toBe(29);
+    // Y en los dos casos avisa que ahi no hay panel.
+    expect(positionAtDistance(bahiaGrande, fin28 + 3.4).inGap).toBe(true);
+  });
+});

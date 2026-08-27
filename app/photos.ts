@@ -86,7 +86,21 @@ function firstNumber(meta: Record<string, unknown>, claves: string[]): number | 
   return undefined;
 }
 
-export async function readPhoto(file: File): Promise<PhotoRead> {
+export async function readPhoto(
+  file: File,
+  /**
+   * Generar la miniatura o no.
+   *
+   * Se generaba SIEMPRE, y la pantalla de analisis —la que procesa las 400
+   * fotos del vuelo— nunca la usa: decodifica la foto entera, la dibuja en un
+   * canvas y la vuelve a comprimir a JPEG, por foto, para tirarla. En un
+   * telefono eso son varios minutos de vuelo perdidos y memoria que despues
+   * falta para la matriz de temperaturas.
+   *
+   * La pantalla de inspecciones si la muestra, asi que ahi sigue en true.
+   */
+  conMiniatura = true,
+): Promise<PhotoRead> {
   let gps: { latitude?: number; longitude?: number } | undefined;
   let meta: Record<string, unknown> = {};
 
@@ -176,8 +190,10 @@ export async function readPhoto(file: File): Promise<PhotoRead> {
     fix.tiltOffsetM = fix.relativeAltitudeM * Math.tan((off * Math.PI) / 180);
   }
 
-  const thumb = await makeThumb(file);
-  if (thumb) fix.thumb = thumb;
+  if (conMiniatura) {
+    const thumb = await makeThumb(file);
+    if (thumb) fix.thumb = thumb;
+  }
 
   return { fileName: file.name, fix };
 }

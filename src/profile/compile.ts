@@ -40,11 +40,22 @@ export interface CompileOptions {
  * y el aviso deja de saltar, que era la red de seguridad.
  */
 function extentConPaso(
-  ctx: { modulesPerRow: number; moduleGapM: number; totalHuecosM: number; huequitosM: number },
+  ctx: {
+    modulesPerRow: number; moduleWidthM: number;
+    huecos: number; totalHuecosM: number;
+  },
   pitchM: number,
 ): number {
-  const anchoM = pitchM - ctx.moduleGapM;
-  return ctx.modulesPerRow * anchoM + ctx.huequitosM + ctx.totalHuecosM;
+  // Los pasos normales, mas el ancho de los modulos que bordean un hueco
+  // grande, mas los huecos. Es la misma cuenta que hace `makeRowLayout` al
+  // armar la tabla de bordes, y tiene que dar identico: si las dos se separan,
+  // el aviso de largo compara contra una fila que no es la que se dibuja.
+  const pasosNormales = Math.max(0, ctx.modulesPerRow - 1 - ctx.huecos);
+  return (
+    pasosNormales * pitchM +
+    (ctx.huecos + 1) * ctx.moduleWidthM +
+    ctx.totalHuecosM
+  );
 }
 
 export function compileFarm(
@@ -81,9 +92,6 @@ export function compileFarm(
     ? profile.topology.gaps.map((g) => ({ afterModule: g.afterModule, m: g.mm / 1000 }))
     : huecosDeStrings(modulesPerString, stringsPerRow, stringGapM);
   const totalHuecosM = huecosM.reduce((s2, h) => s2 + h.m, 0);
-  // Cada hueco grande reemplaza a un huequito entre modulos, asi que los
-  // huequitos que quedan son (N-1) - cuantos huecos grandes haya.
-  const huequitosM = Math.max(0, modulesPerRow - 1 - huecosM.length) * moduleGapM;
   const nominalPitchM = (profile.module.widthMm + profile.module.gapMm) / 1000;
   const declaredPitch = profile.module.pitchMm;
 
@@ -118,7 +126,7 @@ export function compileFarm(
       stringGapM,
       huecosM,
       totalHuecosM,
-      huequitosM,
+      huecos: huecosM.length,
       nominalPitchM,
       declaredPitch,
       offsetM,
@@ -129,6 +137,38 @@ export function compileFarm(
       buildWarnings,
     }),
   );
+
+  /**
+   * Lo que dijo la capa de estrategias tambien es un aviso de carga.
+   *
+   * El tipo de `CompiledRow` promete textualmente: "si a una fila le falta un
+   * dato, te enteras al cargar el parque y no con el tecnico parado en el
+   * campo". No se cumplia: los avisos de estrategia se guardaban en la fila y
+   * nunca llegaban a `buildWarnings`. Un parque nuevo donde la ingesta no
+   * lograra deducir el lado se cargaba limpio, mostraba "0 cosas para revisar",
+   * y contaba al reves en la mitad de las filas.
+   *
+   * Se agrupan por mensaje: "1847 filas sin el lado de la calle" es un
+   * problema; 1847 lineas iguales es una lista que nadie lee.
+   */
+  const porMensaje = new Map<string, { code: Warning["code"]; ids: string[] }>();
+  for (const r of compiled) {
+    for (const w of r.strategyWarnings) {
+      const e = porMensaje.get(w.message);
+      if (e) e.ids.push(r.source.id);
+      else porMensaje.set(w.message, { code: w.code, ids: [r.source.id] });
+    }
+  }
+  for (const [message, { code, ids: filas }] of porMensaje) {
+    buildWarnings.push({
+      code,
+      rowId: filas[0]!,
+      message:
+        filas.length === 1
+          ? `Fila "${filas[0]}": ${message}`
+          : `${filas.length} filas, por ejemplo "${filas[0]}": ${message}`,
+    });
+  }
 
   const ids = new Set<string>();
   for (const r of compiled) {
@@ -150,6 +190,7 @@ export function compileFarm(
     modulesPerRow,
     moduleWidthM,
     maxDistanceM,
+    lengthToleranceMmPerModule: tolerance,
     neighborhood: profile.matching?.neighborhood ?? DEFAULTS.neighborhood,
     maxRowCandidates: profile.matching?.maxRowCandidates ?? DEFAULTS.maxRowCandidates,
     defaultAccuracyM: profile.matching?.defaultAccuracyM ?? DEFAULTS.defaultAccuracyM,
@@ -170,8 +211,8 @@ interface RowContext {
   /** Los huecos grandes, ya resueltos: enumerados o expandidos de stringGapM. */
   huecosM: Hueco[];
   totalHuecosM: number;
-  /** Lo que suman los huequitos entre modulos que NO fueron reemplazados por un hueco grande. */
-  huequitosM: number;
+  /** Cuantos huecos grandes tiene la fila. */
+  huecos: number;
   nominalPitchM: number;
   declaredPitch: number | null | "derive" | undefined;
   offsetM: number;
@@ -238,11 +279,13 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
   }
 
   // --- paso -----------------------------------------------------------------
-  // Al despejar el paso del largo real hay que sacar primero las bahias de
-  // motor: son espacio de la fila que no ocupa ningun modulo.
+  // Despejar el paso del largo real es invertir `extentConPaso`: se descuenta
+  // lo que no es un paso normal —los huecos grandes y los modulos que los
+  // bordean— y lo que queda se reparte entre los pasos que si lo son.
   const moduleGapM = ctx.moduleGapM;
+  const pasosNormales = Math.max(1, ctx.modulesPerRow - 1 - ctx.huecos);
   const derivedPitchM =
-    (extentM - ctx.totalHuecosM - ctx.huequitosM) / ctx.modulesPerRow + moduleGapM;
+    (extentM - (ctx.huecos + 1) * ctx.moduleWidthM - ctx.totalHuecosM) / pasosNormales;
 
   let pitchM: number;
   if (row.pitchMmOverride != null) {

@@ -185,3 +185,40 @@ describe("el mismo tracker escrito de tres maneras", () => {
     expect(notas).toMatch(/04 \/ 1247/);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe("la caja de continua no se cuenta y se tira", () => {
+  /**
+   * El informe decia "N filas con caja de continua" y despues la caja no
+   * aparecia en ningun lado: ni en la fila, ni en la direccion que se da en el
+   * campo, ni en el CSV. La caja es POR DONDE SE ENTRA CAMINANDO — o sea, la
+   * mitad de para que sirve cargar el plano.
+   */
+  const filas: TrackerRow[] = [
+    {
+      id: "05-05-001-R1", block: "05", tracker: "05-001", row: "R1",
+      start: { lat: -27.4, lon: 152.7 }, end: { lat: -27.4006, lon: 152.7 },
+    },
+  ];
+  const plano = {
+    "05": {
+      trackers: {
+        "05-001": { rows: ["R1"], cx: 0, cy: 0, side: "North", dcbox: "DCB-5.1.3" },
+      },
+    },
+  };
+
+  it("la caja queda escrita en la fila", () => {
+    const r = aplicarPlano(filas, plano as never);
+    expect(r.rows[0]!.dcBoxLabel).toBe("DCB-5.1.3");
+    expect(r.conCajaDc).toBe(1);
+  });
+
+  it("una fila sin caja en el plano no inventa una", () => {
+    const sinCaja = { "05": { trackers: { "05-001": { rows: ["R1"], cx: 0, cy: 0, side: "North" } } } };
+    const r = aplicarPlano(filas, sinCaja as never);
+    expect(r.rows[0]!.dcBoxLabel).toBeUndefined();
+    expect(r.conCajaDc).toBe(0);
+  });
+});

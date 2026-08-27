@@ -137,7 +137,7 @@ export function summarize(findings: Finding[]): Summary {
 
 const CSV_HEADERS = [
   "archivo", "fecha", "latitud", "longitud", "precision_m",
-  "bloque", "tracker", "fila", "string", "modulo", "conteo_desde",
+  "bloque", "tracker", "fila", "string", "modulo", "conteo_desde", "caja_dc",
   "modulo_corregido", "confianza", "anomalia", "clase", "delta_t", "estado", "nota", "avisos",
 ];
 
@@ -147,9 +147,39 @@ function csvCell(v: unknown): string {
   return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+/**
+ * Las condiciones del vuelo, arriba de la tabla.
+ *
+ * La pantalla dice "la norma de termografia exige documentarlas en el reporte"
+ * y despues las guardaba en la base y nada mas: el CSV, que ES el reporte que
+ * se entrega, no las llevaba. Se cargaban seis campos en el campo, con frio,
+ * para nada.
+ *
+ * Van como encabezado con una linea en blanco antes de la tabla: Excel lo abre
+ * igual y el que recibe el archivo las ve sin tener que preguntar.
+ */
+function cabeceraDeCondiciones(i: Inspection): string[] {
+  const c = i.conditions;
+  const filas: Array<[string, unknown]> = [
+    ["inspeccion", i.name],
+    ["parque", i.farmName],
+    ["fecha", i.createdAt],
+    ["irradiancia_wm2", c.irradianceWm2],
+    ["temperatura_ambiente_c", c.ambientC],
+    ["viento_ms", c.windMs],
+    ["cielo", c.sky],
+    ["piloto", c.pilot],
+    ["equipo", c.equipment],
+  ];
+  return [
+    ...filas.map(([k, v]) => [k, v == null || v === "" ? "sin registrar" : v].map(csvCell).join(",")),
+    "",
+  ];
+}
+
 /** Exporta los hallazgos a CSV. Solo los descartados quedan afuera. */
 export function toCsv(inspection: Inspection): string {
-  const rows = [CSV_HEADERS.join(",")];
+  const rows = [...cabeceraDeCondiciones(inspection), CSV_HEADERS.join(",")];
 
   for (const f of inspection.findings) {
     if (f.status === "descartado") continue;
@@ -167,6 +197,7 @@ export function toCsv(inspection: Inspection): string {
         a?.stringNumber ?? "",
         a?.module ?? "",
         a ? (a.countedFrom === "near-dc" ? "caja DC" : "punta lejana") : "",
+        a?.dcBoxLabel ?? "",
         f.moduleCorregido ?? "",
         a ? (a.confidence * 100).toFixed(0) + "%" : "",
         f.anomaly ?? "",

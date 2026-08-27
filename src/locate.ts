@@ -245,6 +245,33 @@ export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
 
     warnings.push(...row.strategyWarnings);
 
+    /**
+     * El aviso de largo tambien tiene que aparecer ACA.
+     *
+     * Vivia solo en `buildWarnings`, o sea en la pantalla de alta del parque,
+     * truncado a ocho items, meses antes. Despues la fila con la geometria rota
+     * contestaba con confianza normal y cero avisos, para siempre. En Edenvale
+     * hay una fila que mide 57,59 m en vez de 65,145: parado sobre ella la app
+     * contestaba un modulo corrido tres posiciones y no decia nada.
+     *
+     * Un aviso por fila tiene que reaparecer cuando esa fila es la que gana.
+     */
+    const tol = farm.lengthToleranceMmPerModule;
+    if (Math.abs(row.lengthResidualMmPerModule) > tol) {
+      const corridoM =
+        (Math.abs(row.lengthResidualMmPerModule) * farm.modulesPerRow) / 2 / 1000;
+      warnings.push({
+        code: "length-mismatch",
+        rowId: row.source.id,
+        message:
+          `Esta fila no cierra con la geometria del parque: sobran ` +
+          `${row.lengthResidualMmPerModule.toFixed(0)} mm por modulo, que sobre la fila entera son ` +
+          `${corridoM.toFixed(1)} m de corrimiento por punta. El modulo que te doy puede estar ` +
+          `corrido ${(corridoM / (row.pitchM || 1)).toFixed(1)} posiciones. Contá desde la caja ` +
+          `antes de reportar nada de esta fila.`,
+      });
+    }
+
     if (winnerHit.inGap) {
       warnings.push({
         code: "in-string-gap",
@@ -264,6 +291,51 @@ export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
           `La coordenada cae fuera de la extension de modulos de la fila ` +
           `(posicion cruda ${raw.toFixed(1)} de ${farm.modulesPerRow}). ` +
           `Recorte al modulo del extremo, pero puede que el punto pertenezca a la fila de al lado.`,
+      });
+    }
+  }
+
+  /**
+   * Lejos, pero adentro del radio de busqueda.
+   *
+   * La confianza se normaliza ENTRE los candidatos, asi que no dice nada de la
+   * distancia absoluta: parado a veinte metros de la fila mas cercana —en la
+   * calle, en el camino perimetral, o sobre la fila de al lado de un bloque que
+   * nunca se importo— todos los candidatos estan igual de lejos, la confianza
+   * del primero sale alta, y la app contesta un modulo como si nada. El unico
+   * aviso que existia era para cuando NO hay nada a menos de 30 m.
+   *
+   * Dos cosas distintas, y las dos importan:
+   *
+   *  - de costado (`offAxisM`): el punto no esta sobre el tracker sino al lado.
+   *    Mas de un modulo de largo hacia el costado y ya estas fuera de la mesa.
+   *  - de lejos (`distanceM`): el modulo que se senala esta a mas metros de los
+   *    que explica el error del GPS.
+   */
+  if (best && winnerEntry) {
+    const largoModuloM = (farm.profile.module.lengthMm ?? 2300) / 1000;
+    const deCostadoM = Math.abs(winnerEntry.offAxisM);
+    if (deCostadoM > largoModuloM) {
+      warnings.push({
+        code: "off-axis",
+        rowId: best.rowId,
+        message:
+          `La coordenada esta ${deCostadoM.toFixed(1)} m al costado del eje de la fila, y la mesa ` +
+          `mide ${largoModuloM.toFixed(1)} m de ancho: el punto NO cae sobre este tracker. ` +
+          `Te doy el modulo de enfrente, pero puede ser de la fila de al lado — o de un bloque ` +
+          `que todavia no cargaste.`,
+      });
+    }
+
+    const lejosM = Math.max(3 * sigma, 5);
+    if (best.distanceM > lejosM) {
+      warnings.push({
+        code: "far-from-module",
+        rowId: best.rowId,
+        message:
+          `El modulo que te doy esta a ${best.distanceM.toFixed(1)} m de la coordenada. Con ` +
+          `±${sigma.toFixed(0)} m de precision, esa distancia no la explica el GPS: o la ` +
+          `coordenada no es de este parque, o falta cargar el bloque donde estas parado.`,
       });
     }
   }
@@ -387,6 +459,8 @@ function makeAddress(
   if (row.source.row !== undefined) address.row = row.source.row;
   const label = row.stringLabels?.[chunkIndex];
   if (label) address.stringLabel = label;
+  // Por donde se entra caminando. Sale del plano de interconexion.
+  if (row.source.dcBoxLabel) address.dcBoxLabel = row.source.dcBoxLabel;
   return address;
 }
 

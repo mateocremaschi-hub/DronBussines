@@ -44,6 +44,9 @@ export function validateProfile(input: unknown): FarmProfile {
   if (!m || typeof m !== "object") {
     issues.push("Falta el bloque `module`.");
   } else {
+    if (m.lengthMm != null && (!isFiniteNumber(m.lengthMm) || m.lengthMm <= 0)) {
+      issues.push("`module.lengthMm` tiene que ser un numero positivo (mm).");
+    }
     if (!isFiniteNumber(m.widthMm) || m.widthMm <= 0) {
       issues.push("`module.widthMm` tiene que ser un numero positivo (mm).");
     }

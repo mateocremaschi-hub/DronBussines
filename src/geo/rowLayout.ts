@@ -102,10 +102,20 @@ export function makeRowLayout(args: {
   for (let i = 0; i < total; i++) {
     bordesM[i] = x;
     if (i < total - 1) {
-      // Un hueco grande REEMPLAZA al huequito entre modulos, no se suma:
-      // donde entra el motor no hay dos paneles casi tocandose.
+      // El paso manda, y el ancho del modulo solo dibuja la caja.
+      //
+      // Esto estuvo mal y no lo cazo ningun test: se avanzaba
+      // `moduleWidthM + moduleGapM`, o sea el paso NOMINAL, ignorando el
+      // `pitchM` que se recibia. En Edenvale los dos numeros coinciden —el
+      // paso ES ancho mas hueco— asi que las 442 pruebas pasaban. En un parque
+      // que declara el paso aparte, o que lo despeja del largo real, los
+      // modulos se repartian al paso equivocado y `pitchMm: "derive"` era un
+      // no-op silencioso.
+      //
+      // Un hueco grande REEMPLAZA al espacio libre normal, no se suma: donde
+      // entra el motor no hay dos paneles casi tocandose.
       const grande = porModulo.get(i + 1);
-      const libre = grande ?? args.moduleGapM;
+      const libre = grande ?? args.pitchM - args.moduleWidthM;
       libreM[i] = libre;
       x += args.moduleWidthM + libre;
     }
@@ -150,6 +160,18 @@ export interface PositionHit {
  * modulos tenga la fila, y una fila de 120 en un parque grande se consulta
  * miles de veces por vuelo.
  */
+/**
+ * El espacio libre tipico entre dos modulos vecinos de esta fila.
+ *
+ * La mediana, no el promedio: una fila de 56 modulos con una bahia de 3,7 m
+ * tiene 54 espacios de 2 cm y uno de 3,7 m, y el promedio lo arrastra.
+ */
+function libreTipicoM(l: RowLayout): number {
+  if (!l.libreM.length) return 0;
+  const orden = [...l.libreM].sort((a, b) => a - b);
+  return orden[Math.floor(orden.length / 2)]!;
+}
+
 export function positionAtDistance(l: RowLayout, dFromOriginM: number): PositionHit {
   if (!l.total) return { positionInRow: 1, inGap: false, raw: 1 };
 
@@ -162,15 +184,41 @@ export function positionAtDistance(l: RowLayout, dFromOriginM: number): Position
 
   const dentro = dFromOriginM - l.bordesM[lo]!;
   const pasado = dentro > l.moduleWidthM;
-  // Cae despues del modulo `lo+1`: es hueco solo si ese espacio es un hueco
-  // grande. El huequito entre modulos no cuenta — a esa escala el punto es del
-  // modulo mas cercano, no de "el aire entre dos paneles".
-  const inGap = pasado && lo < l.total - 1 && l.libreM[lo]! > l.moduleWidthM / 2;
+  const libre = lo < l.total - 1 ? l.libreM[lo]! : 0;
+
+  /**
+   * Cuando el punto cae en el aire entre dos modulos, y no sobre uno.
+   *
+   * El umbral era "medio modulo". Con el panel de Edenvale eso son 567 mm y la
+   * bahia del motor mide 555: por doce milimetros, el aviso NUNCA se disparo en
+   * el parque para el que se escribio. Parado en la bahia, la app contestaba un
+   * modulo con confianza normal y sin decir que ahi no hay ningun panel.
+   *
+   * El umbral correcto no es una fraccion del modulo sino una comparacion con
+   * el espacio libre NORMAL de esa fila: si aca sobra mucho mas que entre dos
+   * paneles vecinos, es un hueco de verdad. Se toma el espacio libre tipico de
+   * la fila (la mediana), y se pide el triple o 10 cm, lo que sea mas grande —
+   * el minimo evita que en una fila con paneles pegados cualquier milimetro
+   * pase por bahia.
+   */
+  const inGap = pasado && lo < l.total - 1 && libre > Math.max(3 * libreTipicoM(l), 0.1);
+
+  /**
+   * Adentro de un hueco grande, gana el modulo mas cercano.
+   *
+   * Antes se devolvia siempre el de atras. En una bahia de 3,7 m eso puede
+   * estar a tres metros y medio del panel que la persona tiene delante: el
+   * aviso decia "mira la foto para ver de que lado esta" justamente porque la
+   * respuesta era una moneda al aire. Ya no: si el punto paso la mitad del
+   * hueco, el modulo mas cercano es el siguiente.
+   */
+  const pasoLaMitad = inGap && dentro - l.moduleWidthM > libre / 2;
+  const positionInRow = pasoLaMitad ? lo + 2 : lo + 1;
 
   // Posicion continua, para poder decir "esta 0.3 modulos pasado el 12".
   const raw = lo + 1 + Math.min(dentro / Math.max(l.moduleWidthM, 1e-9), 1);
 
-  return { positionInRow: lo + 1, inGap, raw };
+  return { positionInRow, inGap, raw };
 }
 
 /** Que modulo es → distancia de su centro desde el extremo de conteo. */
