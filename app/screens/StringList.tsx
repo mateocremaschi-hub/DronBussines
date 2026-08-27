@@ -23,6 +23,7 @@ import {
   type StringMapping,
 } from "../strings";
 import { saveFarm, type StoredFarm } from "../storage";
+import type { TrackerRow } from "@locator";
 
 const CAMPOS: Array<{ key: keyof StringMapping; label: string; help: string; req: boolean }> = [
   { key: "label", label: "Etiqueta del string", help: "Ej: S-1.2.15.2", req: true },
@@ -91,6 +92,58 @@ export function StringList({ farm, onDone, onCancel }: {
         : null,
     [entries, farm.rows, farm.profile.topology.rowNaming, orden],
   );
+
+  /**
+   * Lo mismo, con la otra opcion de orden. Sirve para MOSTRAR la diferencia.
+   *
+   * La pregunta "cual fila del tracker es la motorizada" no se puede deducir de
+   * las coordenadas, asi que hay que hacerla. Pero preguntar "¿la de numero mas
+   * bajo o la mas alto?" y nada mas obliga a razonar en abstracto sobre un
+   * archivo de 13000 lineas. Lo que se puede hacer —y no se hacia— es mostrar
+   * QUE CAMBIA: los strings concretos que le tocan a cada fila con una opcion y
+   * con la otra. Elegir pasa a ser reconocer, no adivinar.
+   */
+  const otroOrden = orden === "lowest-first" ? "highest-first" : "lowest-first";
+  const matchOtro = useMemo(
+    () =>
+      entries?.length
+        ? matchEntries(entries, farm.rows, {
+            naming: { ...farm.profile.topology.rowNaming, orderWithinTracker: otroOrden },
+          })
+        : null,
+    [entries, farm.rows, farm.profile.topology.rowNaming, otroOrden],
+  );
+
+  /**
+   * Un tracker de ejemplo con sus dos filas, y que strings le tocan a cada una
+   * con cada opcion. Se elige uno que tenga las dos filas cruzadas, para que la
+   * comparacion se vea.
+   */
+  const comparacion = useMemo(() => {
+    if (!match || !matchOtro) return null;
+    const porTracker = new Map<string, TrackerRow[]>();
+    for (const r of farm.rows) {
+      const k = `${r.block}|${r.tracker}`;
+      porTracker.set(k, [...(porTracker.get(k) ?? []), r]);
+    }
+    for (const [, filas] of porTracker) {
+      if (filas.length < 2) continue;
+      const a = filas.map((f) => match.byRow.get(f.id)?.labels ?? []);
+      const b = filas.map((f) => matchOtro.byRow.get(f.id)?.labels ?? []);
+      if (!a.every((x) => x.length) || !b.every((x) => x.length)) continue;
+      // Solo sirve si las dos opciones dan resultados distintos.
+      if (JSON.stringify(a) === JSON.stringify(b)) continue;
+      return {
+        tracker: `${filas[0]!.block}-${filas[0]!.tracker}`,
+        filas: filas.map((f, i) => ({
+          nombre: f.row ?? f.id,
+          conEsta: a[i]!.slice(0, 2),
+          conLaOtra: b[i]!.slice(0, 2),
+        })),
+      };
+    }
+    return null;
+  }, [match, matchOtro, farm.rows]);
 
   const campos = useMemo(
     () => (entries?.length ? describeFields(entries.map((e) => e.label)) : []),
@@ -293,10 +346,64 @@ export function StringList({ farm, onDone, onCancel }: {
               <span className="help">
                 Esto NO se puede deducir de las coordenadas: las dos opciones dan una geometria
                 igual de consistente, con todas las motorizadas del mismo lado de su par, solo que
-                del otro lado. Hay que declararlo. En un parque nuevo: parate en un tracker, mira
-                cual de las dos filas tiene el motor, y fijate como la numera la lista de strings.
-                Es una sola vez por parque.
+                del otro lado. Hay que declararlo, una sola vez por parque.
               </span>
+
+              {/*
+                Que CAMBIA, con strings de verdad.
+                =================================================================
+                Preguntar "¿la de numero mas bajo o la mas alto?" y nada mas
+                obliga a razonar en abstracto sobre un archivo de miles de
+                lineas. Con la tabla, elegir pasa a ser reconocer: se mira un
+                tracker, se ve que string le toca a la fila motorizada con cada
+                opcion, y se compara contra el plano o contra el tracker.
+              */}
+              {comparacion ? (
+                <>
+                  <p className="help">
+                    <strong>Que cambia.</strong> En el tracker{" "}
+                    <code>{comparacion.tracker}</code>, los strings quedan asi:
+                  </p>
+                  <div className="tablewrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Fila</th>
+                          <th>Con lo elegido ahora</th>
+                          <th>Con la otra opcion</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {comparacion.filas.map((f) => (
+                          <tr key={f.nombre}>
+                            <td>{f.nombre}</td>
+                            <td>{f.conEsta.map((x) => (<code key={x}>{x}</code>))}</td>
+                            <td className="muted">{f.conLaOtra.map((x) => (<code key={x}>{x}</code>))}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="help">
+                    <strong>Como saber cual es.</strong> Si tenés el plano de interconexion a mano,
+                    buscá el tracker <code>{comparacion.tracker}</code> y fijate que string le toca
+                    a la fila con motor. Si no, se resuelve en el campo en un minuto: parate en ese
+                    tracker, mirá cuál de las dos filas tiene el motor, y en la pantalla de
+                    Localizar comprobá que el string que te da sea el de esa fila. Si sale el otro,
+                    volvé acá y cambiá esta opcion.
+                  </p>
+                  <p className="help muted">
+                    Si te equivocás, no se rompe nada: la app te manda a la fila de al lado del
+                    mismo tracker —unos metros— con el numero de string del par. Se corrige cambiando
+                    esta opcion y volviendo a aplicar la lista.
+                  </p>
+                </>
+              ) : (
+                <p className="help">
+                  Con este archivo las dos opciones dan el mismo resultado, asi que da igual cual
+                  elijas.
+                </p>
+              )}
 
               {match.report.pairing && match.report.pairing.length > 0 && (
                 <>

@@ -496,6 +496,27 @@ function detectRowFlagColumn(sheet: Sheet, column: string | undefined): boolean 
   return seen.size > 0 && [...seen].every((v) => v in FLAG_WORDS);
 }
 
+/**
+ * Que valores distintos trae una columna, para poder mostrarlos.
+ *
+ * La traduccion de la bandera de fila se hacia EN SILENCIO. La app terminaba
+ * diciendo "motorizada, esclava" en pantalla sobre un parque donde nadie habia
+ * escrito esas palabras, y no habia forma de saber de donde salieron: ni el
+ * nombre de la columna, ni los valores originales, ni cuantas filas cayeron de
+ * cada lado. Una conclusion que el usuario no puede rastrear es una conclusion
+ * en la que no puede confiar.
+ */
+function valoresDe(sheet: Sheet, column: string): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const r of sheet.rows) {
+    const v = r[column];
+    if (v == null || v === "") continue;
+    const k = String(v).trim();
+    m.set(k, (m.get(k) ?? 0) + 1);
+  }
+  return m;
+}
+
 const SIDE_WORDS: Record<string, TrackerRow["side"]> = {
   n: "north", norte: "north", north: "north",
   s: "south", sur: "south", south: "south",
@@ -626,6 +647,27 @@ export function buildRows(sheet: Sheet, mapping: Mapping, crs: Crs): BuildResult
    * largo no salta. Todo perfecto, y el parque en otro continente.
    */
   const sospechas: string[] = [];
+
+  /*
+    Si la columna de fila era una bandera si/no, DECIRLO.
+
+    De aca sale que un parque "tenga filas motorizadas y esclavas", que es una
+    afirmacion fuerte sobre el racking. No la dedujo nadie: estaba en el archivo,
+    en esa columna. Pero si no se nombra la columna ni se muestran los valores,
+    el que la carga no tiene como saber si la app leyo lo que el cree.
+  */
+  if (rowIsFlag && mapping.row) {
+    const vals = valoresDe(sheet, mapping.row);
+    const detalle = [...vals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([v, n]) => `${n} filas con "${v}" → ${FLAG_WORDS[v.toLowerCase()]}`)
+      .join(", ");
+    sospechas.push(
+      `La columna "${mapping.row}" no trae nombres de fila sino una bandera si/no, asi que la lei ` +
+      `como "esta fila lleva el motor": ${detalle}. Si esa columna significa otra cosa, asignala a ` +
+      `"sin asignar" — porque de aca sale cual de las dos filas de cada tracker es la motorizada.`,
+    );
+  }
   if (bounds) {
     const { minLat, maxLat, minLon, maxLon } = bounds;
     const fuera = rows.filter(

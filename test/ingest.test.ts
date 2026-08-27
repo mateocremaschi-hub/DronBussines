@@ -589,3 +589,54 @@ describe("reconocimiento de columnas: la mas especifica gana", () => {
     expect(m.pos).toBe("POSICION");
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe("la bandera de fila motorizada", () => {
+  /**
+   * De aca sale que un parque "tenga filas motorizadas y esclavas", que es una
+   * afirmacion fuerte sobre el racking. No la deduce nadie: esta en el archivo,
+   * en una columna que trae YES/NO. Pero la traduccion se hacia EN SILENCIO, y
+   * el que carga el parque no tenia como saber de donde salieron esas palabras
+   * ni sobre que columna. Una conclusion que no se puede rastrear es una
+   * conclusion en la que no se puede confiar.
+   */
+  const hoja = (valores: string[]) => ({
+    name: "s",
+    headers: ["BLOQUE", "TRACKER", "MOTOR ROW", "XI", "YI", "XF", "YF"],
+    rows: valores.map((v, i) => ({
+      BLOQUE: "01", TRACKER: `00${i + 1}`, "MOTOR ROW": v,
+      XI: 500000 + i, YI: 7000000, XF: 500000 + i, YF: 7000065,
+    })),
+  });
+  const mapa = {
+    block: "BLOQUE", tracker: "TRACKER", row: "MOTOR ROW",
+    startX: "XI", startY: "YI", endX: "XF", endY: "YF",
+  } as const;
+  const crs = { type: "utm", zone: 56, hemisphere: "S" } as const;
+
+  it("traduce YES/NO a motorizada/esclava", () => {
+    const b = buildRows(hoja(["YES", "NO", "YES", "NO"]), mapa, crs);
+    expect(b.rows.map((r) => r.row)).toEqual(["motorizada", "esclava", "motorizada", "esclava"]);
+  });
+
+  it("y lo DICE: nombra la columna, los valores y cuantas filas cayeron de cada lado", () => {
+    const b = buildRows(hoja(["YES", "NO", "YES", "NO"]), mapa, crs);
+    const texto = b.sospechas.join(" ");
+    expect(texto).toMatch(/columna "MOTOR ROW"/);
+    expect(texto).toMatch(/2 filas con "YES" → motorizada/);
+    expect(texto).toMatch(/2 filas con "NO" → esclava/);
+    // Y dice que hacer si esa columna significa otra cosa.
+    expect(texto).toMatch(/sin asignar/);
+  });
+
+  /**
+   * El limite de la traduccion: solo se aplica si TODA la columna esta en ese
+   * vocabulario. Un parque que numera sus filas de verdad no sale trastocado.
+   */
+  it("una columna con nombres de fila de verdad no se toca ni se comenta", () => {
+    const b = buildRows(hoja(["R1", "R2", "R1", "R2"]), mapa, crs);
+    expect(b.rows.map((r) => r.row)).toEqual(["R1", "R2", "R1", "R2"]);
+    expect(b.sospechas.join(" ")).not.toMatch(/bandera si\/no/);
+  });
+});
