@@ -144,28 +144,83 @@ const soloNumero = (s: string): string => {
   return m ? String(Number(m[0])) : s.trim().toLowerCase();
 };
 
-/** Parte un texto como "01-034-R2" o "34" en sus componentes. */
+/**
+ * Parte un texto como "01-034-R2" o "01-005-EXT-R1-L-S2" en sus componentes.
+ *
+ * Se lee por PARTES, no por formato, y por el mismo motivo que el lector de
+ * planos: cada proyecto le agrega a la etiqueta los campos que se le ocurren.
+ *
+ * Esto estaba escrito como "el ultimo grupo de digitos es el tracker", que
+ * funciona con "01-034-R2" y se rompe con
+ *
+ *     01-005-EXT-R1-L-S2
+ *
+ * donde el ultimo grupo de digitos es el "2" de "S2". El tracker 5 entraba como
+ * el tracker 2 y la fila quedaba sin resolver: 13606 strings leidos, 0 cruzados,
+ * y ni un error — la lista entraba entera y no servia para nada.
+ *
+ * Peor: el lector de planos ya se habia arreglado con esta misma regla y quedo
+ * una SEGUNDA copia de la logica vieja aca. Ahora la regla vive en un solo
+ * lugar y los dos lados la comparten.
+ */
 export function parseTrackerRef(texto: string, blockAparte?: string): TrackerRef {
   const t = String(texto).trim();
+  const partes = t.split(/[-._/ ]+/).filter(Boolean);
 
   /*
-    La fila suele venir al final, como R2 / R-2 / ROW 2.
+    La fila: el PRIMER pedazo con forma de R+numero.
 
-    Pero solo si QUEDA algo despues de sacarla. Un parque que llama a sus
-    trackers "R12" —el numero de fila ES el nombre del tracker, que es como
-    numeran varios— se comia el nombre entero: el tracker quedaba en blanco y
-    la fila en R12. Cero cruces con la geometria, sin un solo error.
+    El primero y no el ultimo porque atras vienen codigos de pila —P1S, P1N, S2—
+    que no son filas. En "01-005-EXT-R1-L-S2" la fila es R1.
   */
-  const fila = t.match(/[\s\-_]?R(?:OW)?[\s\-_]?(\d+)\s*$/i);
-  const quedaAlgo = fila ? t.slice(0, fila.index).trim() !== "" : false;
-  const row = fila && quedaAlgo ? `R${Number(fila[1])}` : undefined;
-  const resto = fila && quedaAlgo ? t.slice(0, fila.index) : t;
+  let row: string | undefined;
+  let filaEn = -1;
+  for (let i = 0; i < partes.length; i++) {
+    const m = /^R(?:OW)?(\d{1,2})$/i.exec(partes[i]!);
+    if (m) { row = `R${Number(m[1])}`; filaEn = i; break; }
+  }
+  // "ROW 2" escrito con espacio queda partido en dos pedazos.
+  if (!row) {
+    for (let i = 0; i < partes.length - 1; i++) {
+      if (/^R(?:OW)?$/i.test(partes[i]!) && /^\d{1,2}$/.test(partes[i + 1]!)) {
+        row = `R${Number(partes[i + 1]!)}`;
+        filaEn = i;
+        break;
+      }
+    }
+  }
 
-  const grupos = resto.match(/\d+/g) ?? [];
-  const ref: TrackerRef = { tracker: grupos.length ? String(Number(grupos[grupos.length - 1]!)) : resto.trim().toLowerCase() };
+  /*
+    El bloque y el tracker: los dos primeros pedazos con digitos que esten ANTES
+    de la fila. Antes de la fila porque lo que viene despues son codigos.
 
-  // Si quedan dos numeros, el primero es el bloque.
-  if (grupos.length >= 2) ref.block = String(Number(grupos[0]!));
+    Si la fila esta primera —un parque que llama "R12" a sus trackers— entonces
+    ese pedazo ES el nombre del tracker y no hay fila que sacar.
+  */
+  /*
+    Si lo que parecia la fila es el PRIMER pedazo, no es una fila: es el nombre
+    del tracker. Hay parques que los llaman "R12" —el numero de fila ES el
+    nombre— y sacarle la "fila" lo dejaba sin nombre y sin cruzar con nada.
+  */
+  if (filaEn === 0) { row = undefined; filaEn = -1; }
+
+  const hasta = filaEn > 0 ? filaEn : partes.length;
+  const numeros: string[] = [];
+  for (let i = 0; i < hasta; i++) {
+    const m = /\d+/.exec(partes[i]!);
+    if (m) numeros.push(m[0]!);
+  }
+
+  const ref: TrackerRef = { tracker: "" };
+  if (numeros.length >= 2) {
+    ref.block = String(Number(numeros[0]!));
+    ref.tracker = String(Number(numeros[1]!));
+  } else if (numeros.length === 1) {
+    ref.tracker = String(Number(numeros[0]!));
+  } else {
+    ref.tracker = t.toLowerCase();
+  }
+
   if (blockAparte) ref.block = soloNumero(blockAparte);
   if (row) ref.row = row;
   return ref;

@@ -448,3 +448,125 @@ describe("nombres de tracker que son un numero de fila", () => {
     expect(parseTrackerRef("TRACKER 18 ROW 2")).toMatchObject({ tracker: "18", row: "R2" });
   });
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * La lista de strings de Wellington North.
+ *
+ * Sus trackers se escriben con cuatro codigos detras de la fila:
+ *
+ *     01-005-EXT-R1-L-S2
+ *
+ * La regla vieja —"el ultimo grupo de digitos es el tracker"— tomaba el "2" de
+ * "S2". El tracker 5 entraba como el tracker 2 y la fila quedaba sin resolver:
+ * 13606 strings leidos, CERO cruzados, y ni un error. La lista entraba entera y
+ * no servia para nada.
+ *
+ * Y el lector de planos ya se habia arreglado con esta misma regla el dia
+ * anterior: quedo una segunda copia de la logica vieja aca.
+ */
+describe("etiquetas de tracker con codigos detras de la fila", () => {
+  it("el tracker es el segundo numero, no el ultimo", () => {
+    expect(parseTrackerRef("01-005-EXT-R1-L-S2")).toEqual({
+      block: "1", tracker: "5", row: "R1",
+    });
+    expect(parseTrackerRef("01-006-MED-R2-P1N-L-S2")).toEqual({
+      block: "1", tracker: "6", row: "R2",
+    });
+    expect(parseTrackerRef("19-120-INT-R1-P1S-S-S2")).toEqual({
+      block: "19", tracker: "120", row: "R1",
+    });
+  });
+
+  /**
+   * La fila es la PRIMERA R+numero. Atras vienen P1S y P1N, que son codigos de
+   * pila: tomarlos partiria cada tracker en filas que no existen.
+   */
+  it("no confunde los codigos de pila con la fila", () => {
+    expect(parseTrackerRef("17-050-INT-R1-P1S-L-S1").row).toBe("R1");
+    expect(parseTrackerRef("17-072-INT-R2-P1N-L-S1").row).toBe("R2");
+  });
+
+  it("el bloque de una columna aparte sigue mandando", () => {
+    expect(parseTrackerRef("01-005-EXT-R1-L-S2", "07")).toEqual({
+      block: "7", tracker: "5", row: "R1",
+    });
+  });
+
+  it("Edenvale se lee exactamente igual que antes", () => {
+    expect(parseTrackerRef("01-034-R2")).toEqual({ block: "1", tracker: "34", row: "R2" });
+    expect(parseTrackerRef("05-042-R1")).toEqual({ block: "5", tracker: "42", row: "R1" });
+    expect(parseTrackerRef("34")).toEqual({ tracker: "34" });
+  });
+
+  /**
+   * El cruce completo, que es lo que el usuario vio fallar: una lista de
+   * strings con estas etiquetas contra una geometria escrita como la trae el
+   * Excel de picas.
+   */
+  it("cruza contra la geometria en vez de dar 0 %", () => {
+    const geo = parseTrackerRef("01-005-EXT-R1-L-S2");
+    const excel = parseTrackerRef("005", "01");
+    expect(geo.block).toBe(excel.block);
+    expect(geo.tracker).toBe(excel.tracker);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * El cruce entero, como lo vio fallar el usuario: 0 de 13606.
+ *
+ * Geometria escrita como la trae el Excel de picas de ese parque —bloque y
+ * tracker en columnas, dos filas por tracker— contra una lista de strings con
+ * las etiquetas largas. Antes daba CERO, porque el tracker se leia del ultimo
+ * grupo de digitos.
+ */
+describe("cruce completo con las etiquetas de Wellington", () => {
+  const geo: TrackerRow[] = [];
+  for (let t = 5; t <= 12; t++) {
+    for (const r of ["R1", "R2"]) {
+      geo.push({
+        id: `01-${String(t).padStart(3, "0")}-${r}`,
+        block: "01",
+        tracker: String(t).padStart(3, "0"),
+        row: r,
+        start: { lat: -26.92 + t * 0.001, lon: 150.58 },
+        end: { lat: -26.92 + t * 0.001, lon: 150.5806 },
+      });
+    }
+  }
+
+  /** Dos strings por fila, como en el archivo real. */
+  const entries: StringEntry[] = [];
+  for (let t = 5; t <= 12; t++) {
+    for (const r of ["R1", "R2"]) {
+      for (const s of [1, 2]) {
+        entries.push({
+          label: `S-1.1.${t}.${s}`,
+          tracker: `01-${String(t).padStart(3, "0")}-INT-${r}-L-S2`,
+        });
+      }
+    }
+  }
+
+  it("cruza todo, en vez de dar 0 %", () => {
+    const m = matchEntries(entries, geo);
+    expect(m.report.matched).toBe(entries.length);
+    expect(m.report.rowsWithStrings).toBe(geo.length);
+  });
+
+  it("cada string cae en SU fila, no todos en la misma", () => {
+    const m = matchEntries(entries, geo);
+    expect(m.byRow.get("01-005-R1")!.labels).toEqual(["S-1.1.5.1", "S-1.1.5.2"]);
+    expect(m.byRow.get("01-005-R2")!.labels).toEqual(["S-1.1.5.1", "S-1.1.5.2"]);
+    expect(m.byRow.get("01-012-R2")!.labels).toEqual(["S-1.1.12.1", "S-1.1.12.2"]);
+  });
+
+  it("y el tracker 5 es el 5, no el 2", () => {
+    const m = matchEntries(entries, geo);
+    expect(m.byRow.has("01-002-R1")).toBe(false);
+    expect(m.byRow.has("01-005-R1")).toBe(true);
+  });
+});

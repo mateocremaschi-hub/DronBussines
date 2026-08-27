@@ -151,6 +151,10 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         nombre,
         horas: p.totalMinutos / 60,
         salidas: p.salidas,
+        // Las baterias y las salidas son lo que de verdad se paga: horas de
+        // vuelo son un numero, pero cuatro salidas de campo menos son cuatro
+        // viajes menos y varios dias de alguien.
+        baterias: p.totalBaterias,
         gsdCm: m?.stats.gsdCm ?? 0,
       };
     });
@@ -292,6 +296,48 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             </em>
           </span>
         </label>
+
+        {/*
+          Lo que hay que saber ANTES de comprar, no despues.
+          ===================================================================
+          Esta casilla decide la mitad de las horas de vuelo del parque, y no
+          decia en ningun lado que el RTK NO viene con el dron: hay que
+          conseguirlo aparte, de una de dos formas, y una de las dos no anda sin
+          señal de celular. Alguien que planifica con la casilla tildada, compra
+          el dron y llega al parque sin torre y sin señal, se entera ahi.
+
+          Y la otra mitad, que tambien hay que decir: sin RTK NO se pierde el
+          trabajo. La direccion de cada modulo sale de las picas del
+          relevamiento, no del GPS del dron. Se tarda el doble; no se pierde.
+        */}
+        {o.rtk && (
+          <div className="note">
+            <p>
+              <strong>El RTK no viene con el dron.</strong> En el Matrice 4T hay que conseguirlo
+              aparte, y hay dos caminos:
+            </p>
+            <ul>
+              <li>
+                <strong>Estacion base propia</strong> (la "torre" o "antena"): un tripode que
+                plantas en el parque y le manda las correcciones al dron por radio. Es una compra
+                unica y <strong>funciona sin señal de celular</strong>, que en una farm en el medio
+                del campo no es un detalle menor.
+              </li>
+              <li>
+                <strong>Red RTK por internet</strong> (NTRIP): no comprás hardware, pagás una
+                suscripcion mensual y le das internet al control con un dongle 4G o el celular.{" "}
+                <strong>Si en el parque no hay señal, no hay RTK.</strong>
+              </li>
+            </ul>
+            <p className="help">
+              Si llegás al parque y el RTK no engancha, destildá esta casilla y volá con 70 %: vas a
+              tardar mas o menos el doble, pero el vuelo sirve igual. La app no necesita RTK para
+              ubicar los modulos — cada direccion sale de las picas del relevamiento, no del GPS del
+              dron. Lo unico que cambia es que la grilla te va a quedar corrida unos metros al
+              analizar, y eso se corrige de un arrastre.
+            </p>
+          </div>
+        )}
       </section>
 
       {/* --------------------------------------------------------------- */}
@@ -500,19 +546,39 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         </p>
         <div className="tablewrap">
           <table>
-            <thead><tr><th>Configuracion</th><th>cm/px</th><th>Horas</th><th>Salidas</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Configuracion</th><th>cm/px</th><th>Horas</th>
+                <th>Baterias</th><th>Salidas de campo</th>
+              </tr>
+            </thead>
             <tbody>
               {alternativas.map((a, i) => (
                 <tr key={a.nombre} className={i === 0 ? "top" : ""}>
                   <td>{a.nombre}</td>
-                  <td>{a.gsdCm.toFixed(1)}</td>
-                  <td><strong>{a.horas.toFixed(1)} h</strong></td>
-                  <td>{a.salidas}</td>
+                  <td className="num">{a.gsdCm.toFixed(1)}</td>
+                  <td className="num"><strong>{a.horas.toFixed(1)} h</strong></td>
+                  <td className="num">{a.baterias}</td>
+                  <td className="num">{a.salidas}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        {/*
+          La conclusion en plata, no en horas. Las horas de vuelo son un numero
+          abstracto; las salidas de campo son viajes, dias y alojamiento.
+        */}
+        {alternativas[1] && alternativas[0] && !o.rtk && (
+          <p className="note">
+            En este parque, pasar de 70 % a 45 % de solape —o sea, volar con RTK— son{" "}
+            <strong>{(alternativas[0].horas - alternativas[1].horas).toFixed(1)} horas</strong>,{" "}
+            <strong>{alternativas[0].baterias - alternativas[1].baterias} baterias</strong> y{" "}
+            <strong>{alternativas[0].salidas - alternativas[1].salidas} salidas de campo</strong>{" "}
+            menos. Eso es lo que compra el RTK: no precision, tiempo. Y ojo, que no viene con el
+            dron — mirá la nota de la casilla de RTK, mas arriba.
+          </p>
+        )}
       </section>
 
       {s && mission && (
