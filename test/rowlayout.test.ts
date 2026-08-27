@@ -28,7 +28,19 @@ const edenvale = makeRowLayout({
 
 describe("reparto con bahia de motor", () => {
   it("un string ocupa 28 modulos con 27 huequitos", () => {
-    expect(edenvale.stringSpanM).toBeCloseTo(32.18, 6);
+    // Del borde de arranque del modulo 1 al borde de salida del 28.
+    const span = edenvale.bordesM[27]! + edenvale.moduleWidthM - edenvale.bordesM[0]!;
+    expect(span).toBeCloseTo(32.18, 6);
+  });
+
+  /**
+   * El hueco grande reemplaza al huequito entre modulos, no se suma. Donde
+   * entra el motor no hay dos paneles casi tocandose, y sumar los dos correria
+   * cada string 2 cm por bahia.
+   */
+  it("la bahia reemplaza al huequito, no se le suma", () => {
+    expect(edenvale.libreM[27]).toBeCloseTo(3.713, 9);
+    expect(edenvale.libreM[26]).toBeCloseTo(0.02, 9);
   });
 
   it("el largo pica a pica coincide con el que miden las 3182 filas reales", () => {

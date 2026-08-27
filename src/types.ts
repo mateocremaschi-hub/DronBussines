@@ -124,6 +124,25 @@ export interface FarmProfile {
      * distancia entera.
      */
     stringGapMm?: number;
+    /**
+     * Los huecos grandes, uno por uno, cuando no caen en los limites de string.
+     *
+     * Hay trackers donde el primer panel va solo, despues un hueco, despues
+     * todos los demas, y otro hueco antes del ultimo — el accionamiento o los
+     * apoyos estan en las puntas, no en el medio. Eso no se puede escribir con
+     * `stringGapMm`, que reparte huecos iguales entre strings iguales.
+     *
+     * Cada entrada dice despues de que modulo de la fila cae el hueco, contando
+     * desde el extremo de conteo, y cuanto mide. Una fila de 30 con el primero
+     * y el ultimo aparte:
+     *
+     *     gaps: [ { afterModule: 1, mm: 900 }, { afterModule: 29, mm: 900 } ]
+     *
+     * Si se declara, MANDA sobre `stringGapMm`. Para un parque normal no hace
+     * falta: dos strings iguales con una bahia en el medio se siguen
+     * declarando con dos numeros y se expanden solos.
+     */
+    gaps?: Array<{ afterModule: number; mm: number }>;
     rowNaming?: {
       pattern?: string;
       motorized?: string[];
@@ -331,10 +350,6 @@ export interface CompiledRow {
   pitchM: number;
   originOffsetM: number;
   farOffsetM: number;
-  /** Largo que ocupa un string completo, sin contar la bahia del motor. */
-  stringSpanM: number;
-  /** Distancia entre el arranque de un string y el del siguiente. */
-  periodM: number;
   /** Numeros de string ordenados ascendente: el menor es el mas cercano al origen. */
   stringNumbers: number[];
   /** Etiquetas completas, reordenadas junto con los numeros. */

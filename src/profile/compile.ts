@@ -12,7 +12,7 @@
  */
 
 import { makeFrame, toLocal, type LocalFrame } from "../geo/frame.js";
-import { makeRowLayout, moduleExtentM } from "../geo/rowLayout.js";
+import { huecosDeStrings, makeRowLayout, moduleExtentM, type Hueco } from "../geo/rowLayout.js";
 import { resolveInversion } from "../strategies/inversion.js";
 import { resolveOriginEnd } from "../strategies/origin.js";
 import type { CompiledFarm, CompiledRow, FarmProfile, TrackerRow, Warning } from "../types.js";
@@ -29,6 +29,22 @@ const DEFAULTS = {
 export interface CompileOptions {
   /** Punto de referencia del marco local. Por defecto, el centroide del parque. */
   origin?: { lat: number; lon: number };
+}
+
+/**
+ * Lo que ocupan los modulos de una fila con un paso dado.
+ *
+ * Una sola definicion, usada por el centrado y por el aviso de largo. Estaban
+ * escritas dos veces con la misma formula larga, y ese es justo el lugar donde
+ * un cambio se aplica a una y no a la otra: el centrado absorbe la diferencia
+ * y el aviso deja de saltar, que era la red de seguridad.
+ */
+function extentConPaso(
+  ctx: { modulesPerRow: number; moduleGapM: number; totalHuecosM: number; huequitosM: number },
+  pitchM: number,
+): number {
+  const anchoM = pitchM - ctx.moduleGapM;
+  return ctx.modulesPerRow * anchoM + ctx.huequitosM + ctx.totalHuecosM;
 }
 
 export function compileFarm(
@@ -52,6 +68,22 @@ export function compileFarm(
   const moduleWidthM = profile.module.widthMm / 1000;
   const moduleGapM = profile.module.gapMm / 1000;
   const stringGapM = (profile.topology.stringGapMm ?? 0) / 1000;
+
+  /**
+   * Los huecos grandes de la fila, ya resueltos a una sola lista.
+   *
+   * Si el perfil los enumera, mandan. Si no, se expanden del par
+   * (stringsPerRow, stringGapMm), que es como se declara un parque normal. De
+   * aca para abajo el resto del compilador no vuelve a mirar `stringGapMm`:
+   * hay una sola forma de la verdad y las cuentas se escriben una vez.
+   */
+  const huecosM: Hueco[] = profile.topology.gaps?.length
+    ? profile.topology.gaps.map((g) => ({ afterModule: g.afterModule, m: g.mm / 1000 }))
+    : huecosDeStrings(modulesPerString, stringsPerRow, stringGapM);
+  const totalHuecosM = huecosM.reduce((s2, h) => s2 + h.m, 0);
+  // Cada hueco grande reemplaza a un huequito entre modulos, asi que los
+  // huequitos que quedan son (N-1) - cuantos huecos grandes haya.
+  const huequitosM = Math.max(0, modulesPerRow - 1 - huecosM.length) * moduleGapM;
   const nominalPitchM = (profile.module.widthMm + profile.module.gapMm) / 1000;
   const declaredPitch = profile.module.pitchMm;
 
@@ -84,6 +116,9 @@ export function compileFarm(
       moduleWidthM,
       moduleGapM,
       stringGapM,
+      huecosM,
+      totalHuecosM,
+      huequitosM,
       nominalPitchM,
       declaredPitch,
       offsetM,
@@ -132,6 +167,11 @@ interface RowContext {
   moduleWidthM: number;
   moduleGapM: number;
   stringGapM: number;
+  /** Los huecos grandes, ya resueltos: enumerados o expandidos de stringGapM. */
+  huecosM: Hueco[];
+  totalHuecosM: number;
+  /** Lo que suman los huequitos entre modulos que NO fueron reemplazados por un hueco grande. */
+  huequitosM: number;
   nominalPitchM: number;
   declaredPitch: number | null | "derive" | undefined;
   offsetM: number;
@@ -181,11 +221,7 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
   // (o falta) se reparte entre las dos puntas. El offset deja de ser un dato.
   const centrarM =
     ctx.offsetMode === "centered"
-      ? (lengthM -
-          (ctx.modulesPerRow * ctx.nominalPitchM -
-            ctx.stringsPerRow * ctx.moduleGapM +
-            (ctx.stringsPerRow - 1) * ctx.stringGapM)) /
-        2
+      ? (lengthM - extentConPaso(ctx, ctx.nominalPitchM)) / 2
       : 0;
 
   const originOffsetM =
@@ -204,10 +240,9 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
   // --- paso -----------------------------------------------------------------
   // Al despejar el paso del largo real hay que sacar primero las bahias de
   // motor: son espacio de la fila que no ocupa ningun modulo.
-  const totalStringGapsM = (ctx.stringsPerRow - 1) * ctx.stringGapM;
   const moduleGapM = ctx.moduleGapM;
   const derivedPitchM =
-    (extentM - totalStringGapsM + ctx.stringsPerRow * moduleGapM) / ctx.modulesPerRow;
+    (extentM - ctx.totalHuecosM - ctx.huequitosM) / ctx.modulesPerRow + moduleGapM;
 
   let pitchM: number;
   if (row.pitchMmOverride != null) {
@@ -226,7 +261,7 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
     pitchM,
     moduleGapM,
     moduleWidthM: ctx.moduleWidthM,
-    stringGapM: ctx.stringGapM,
+    huecosM: ctx.huecosM,
     originOffsetM,
   });
 
@@ -242,12 +277,7 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
   // contra lo que ocupan los modulos, sin dejar que el centrado lo absorba.
   const lengthResidualMmPerModule =
     ctx.offsetMode === "centered"
-      ? ((lengthM -
-          (ctx.modulesPerRow * pitchM -
-            ctx.stringsPerRow * ctx.moduleGapM +
-            (ctx.stringsPerRow - 1) * ctx.stringGapM)) /
-          ctx.modulesPerRow) *
-        1000
+      ? ((lengthM - extentConPaso(ctx, pitchM)) / ctx.modulesPerRow) * 1000
       : (derivedPitchM - pitchM) * 1000;
   const predictedLengthM = originOffsetM + moduleExtentM(layout) + farOffsetM;
   if (Math.abs(lengthResidualMmPerModule) > ctx.tolerance) {
@@ -312,8 +342,6 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
     pitchM,
     originOffsetM,
     farOffsetM,
-    stringSpanM: layout.stringSpanM,
-    periodM: layout.periodM,
     stringNumbers,
     ...(stringLabels ? { stringLabels } : {}),
     lengthResidualMmPerModule,

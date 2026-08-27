@@ -227,6 +227,7 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
             moduleGapMm: profileDraft.module.gapMm,
             stringsPerRow: profileDraft.topology.stringsPerRow,
             stringGapMm: profileDraft.topology.stringGapMm ?? 0,
+            ...(profileDraft.topology.gaps?.length ? { gaps: profileDraft.topology.gaps } : {}),
           })
         : null,
     [built, filasParaCuadre, soloParametros, modulesPerRowDraft, nominalPitchMm, profileDraft],
@@ -243,6 +244,7 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
             anchoModuloMm: profileDraft.module.widthMm,
             huecoEntreModulosMm: profileDraft.module.gapMm,
             bahiaMm: profileDraft.topology.stringGapMm ?? 0,
+            ...(profileDraft.topology.gaps?.length ? { huecos: profileDraft.topology.gaps } : {}),
             offsetMm: profileDraft.geometry.endpointOffsetMm,
             largoMedidoM: offsetHint.medianLengthM,
             medidos: {
@@ -630,6 +632,103 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
                   onChange={(e) => setMedidos((m) => ({ ...m, bahia: e.target.checked }))} />
                 lo medí con cinta
               </label>
+
+              {/*
+                Los huecos uno por uno.
+                =====================================================
+                Va escondido detras de un boton a proposito. El 90 % de los
+                parques son strings iguales con bahias iguales, y para esos
+                esto no tiene que existir. Pero hay trackers donde el primer
+                panel va solo, despues un hueco, despues todos los demas, y
+                otro hueco antes del ultimo — y ese caso no se puede aproximar:
+                el total cierra igual y cada modulo del medio queda corrido casi
+                un metro.
+              */}
+              {!profileDraft.topology.gaps?.length ? (
+                <button
+                  type="button" className="link"
+                  onClick={() => setProfileDraft((d) => ({
+                    ...d,
+                    topology: {
+                      ...d.topology,
+                      gaps: [{ afterModule: 1, mm: d.topology.stringGapMm ?? 0 }],
+                    },
+                  }))}
+                >
+                  Los huecos no están entre strings iguales
+                </button>
+              ) : (
+                <div className="huecos">
+                  <p className="help">
+                    Cada hueco grande, uno por uno: después de qué módulo de la fila cae —contando
+                    desde el extremo por donde se cuenta— y cuánto mide. Mientras haya huecos acá,
+                    la bahía de arriba no se usa.
+                  </p>
+                  {profileDraft.topology.gaps.map((g, i) => (
+                    <div className="hueco" key={i}>
+                      <label>
+                        después del módulo
+                        <input
+                          type="number" min={1} max={Math.max(1, modulesPerRowDraft - 1)}
+                          value={g.afterModule}
+                          onChange={(e) => setProfileDraft((d) => ({
+                            ...d,
+                            topology: {
+                              ...d.topology,
+                              gaps: (d.topology.gaps ?? []).map((x, j) =>
+                                j === i ? { ...x, afterModule: Number(e.target.value) } : x),
+                            },
+                          }))}
+                        />
+                      </label>
+                      <label>
+                        mide (mm)
+                        <input
+                          type="number" min={0} value={g.mm}
+                          onChange={(e) => setProfileDraft((d) => ({
+                            ...d,
+                            topology: {
+                              ...d.topology,
+                              gaps: (d.topology.gaps ?? []).map((x, j) =>
+                                j === i ? { ...x, mm: Number(e.target.value) } : x),
+                            },
+                          }))}
+                        />
+                      </label>
+                      <button
+                        type="button" className="link danger"
+                        onClick={() => setProfileDraft((d) => ({
+                          ...d,
+                          topology: { ...d.topology, gaps: (d.topology.gaps ?? []).filter((_, j) => j !== i) },
+                        }))}
+                      >
+                        quitar
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button" className="link"
+                    onClick={() => setProfileDraft((d) => {
+                      const g = d.topology.gaps ?? [];
+                      const ultimo = g.length ? g[g.length - 1]! : { afterModule: 0, mm: 0 };
+                      return {
+                        ...d,
+                        topology: {
+                          ...d.topology,
+                          // Ordenados como estan en la fila: leerlos en orden es
+                          // lo que deja compararlos contra el tracker de un vistazo.
+                          gaps: [...g, {
+                            afterModule: Math.min(ultimo.afterModule + 1, Math.max(1, modulesPerRowDraft - 1)),
+                            mm: ultimo.mm,
+                          }],
+                        },
+                      };
+                    })}
+                  >
+                    Agregar otro hueco
+                  </button>
+                </div>
+              )}
             </div>
             <div className="field">
               <label>Hueco entre modulos (mm)</label>

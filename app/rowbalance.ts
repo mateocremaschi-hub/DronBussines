@@ -37,8 +37,16 @@ export interface EntradaCuadre {
   stringsPorFila: number;
   anchoModuloMm: number;
   huecoEntreModulosMm: number;
-  /** El hueco entre un string y el siguiente. */
+  /** El hueco entre un string y el siguiente. Se ignora si vienen `huecos`. */
   bahiaMm: number;
+  /**
+   * Los huecos grandes uno por uno, cuando no caen en los limites de string.
+   *
+   * Si vienen, mandan sobre `bahiaMm` y `stringsPorFila`: hay trackers donde
+   * el primer panel va solo y el hueco esta despues del modulo 1, no en el
+   * medio de la fila.
+   */
+  huecos?: Array<{ afterModule: number; mm: number }>;
   /**
    * Distancia de la pica al borde del modulo mas cercano.
    * Positivo = la pica queda por FUERA, los modulos entran.
@@ -73,9 +81,12 @@ const TOLERANCIA_MM = 120;
 
 export function cuadreDeFila(e: EntradaCuadre): CuadreDeFila {
   const m = e.medidos ?? {};
-  const porString = Math.max(1, Math.round(e.modulosPorFila / Math.max(1, e.stringsPorFila)));
-  const huecosInternos = (porString - 1) * e.stringsPorFila;
-  const bahias = Math.max(0, e.stringsPorFila - 1);
+  // Los huecos grandes: enumerados si vienen, o los limites de string si no.
+  const grandes = e.huecos?.length
+    ? e.huecos.map((h) => h.mm)
+    : Array.from({ length: Math.max(0, e.stringsPorFila - 1) }, () => e.bahiaMm);
+  // Cada hueco grande reemplaza a un huequito, no se le suma.
+  const huecosInternos = Math.max(0, e.modulosPorFila - 1 - grandes.length);
 
   const partes: ParteDeFila[] = [
     {
@@ -93,12 +104,24 @@ export function cuadreDeFila(e: EntradaCuadre): CuadreDeFila {
       medido: !!m.hueco,
     },
   ];
-  if (bahias > 0) {
+  // Se agrupan por tamano: dos bahias de 555 son una linea, y una de 900 con
+  // otra de 540 son dos. Asi el cuadre se lee igual en el caso normal y no
+  // esconde que los huecos son distintos cuando lo son.
+  const porTamano = new Map<number, number>();
+  for (const mm of grandes) porTamano.set(mm, (porTamano.get(mm) ?? 0) + 1);
+  // "Bahia entre strings" solo cuando de verdad lo son. Si los huecos se
+  // enumeraron es porque NO caen en los limites de string — llamarlos igual
+  // seria describir mal justo el caso raro que se declaro para no equivocarse.
+  const enumerados = !!e.huecos?.length;
+  const variosTamanos = porTamano.size > 1;
+  for (const [mm, cantidad] of [...porTamano].sort((a, b) => b[0] - a[0])) {
     partes.push({
-      concepto: "Bahia entre strings",
-      cantidad: bahias,
-      cadaUnoMm: e.bahiaMm,
-      totalMm: bahias * e.bahiaMm,
+      concepto: !enumerados
+        ? "Bahia entre strings"
+        : variosTamanos ? `Huecos grandes de ${mm} mm` : "Huecos grandes",
+      cantidad,
+      cadaUnoMm: mm,
+      totalMm: cantidad * mm,
       medido: !!m.bahia,
     });
   }

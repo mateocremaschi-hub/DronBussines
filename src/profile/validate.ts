@@ -69,6 +69,61 @@ export function validateProfile(input: unknown): FarmProfile {
     if (t.stringGapMm != null && (!isFiniteNumber(t.stringGapMm) || t.stringGapMm < 0)) {
       issues.push("`topology.stringGapMm` tiene que ser un numero >= 0 (mm).");
     }
+
+    /**
+     * Los huecos enumerados.
+     *
+     * Se valida con dureza porque un hueco mal puesto no rompe nada: corre los
+     * modulos y devuelve un panel equivocado con toda confianza. Es el tipo de
+     * error que solo aparece con alguien contando paneles con la mano.
+     */
+    if (t.gaps != null) {
+      if (!Array.isArray(t.gaps)) {
+        issues.push("`topology.gaps` tiene que ser una lista de { afterModule, mm }.");
+      } else {
+        const total =
+          isPositiveInt(t.modulesPerString) && isPositiveInt(t.stringsPerRow)
+            ? t.modulesPerString * t.stringsPerRow
+            : null;
+        const vistos = new Set<number>();
+        let previo = 0;
+        t.gaps.forEach((g: unknown, i: number) => {
+          const h = g as { afterModule?: unknown; mm?: unknown } | null;
+          const donde = `topology.gaps[${i}]`;
+          if (!h || typeof h !== "object") {
+            issues.push(`\`${donde}\` tiene que ser un objeto { afterModule, mm }.`);
+            return;
+          }
+          if (!isPositiveInt(h.afterModule)) {
+            issues.push(`\`${donde}.afterModule\` tiene que ser un entero positivo.`);
+          } else {
+            if (total != null && h.afterModule >= total) {
+              issues.push(
+                `\`${donde}.afterModule\` es ${h.afterModule}, pero la fila tiene ${total} ` +
+                "modulos. Un hueco va ENTRE dos modulos, asi que el ultimo valido es " +
+                `${total - 1}. Un hueco despues del ultimo modulo es un voladizo, y eso se ` +
+                "declara en geometry.endpointOffsetMm.",
+              );
+            }
+            if (vistos.has(h.afterModule)) {
+              issues.push(`\`${donde}.afterModule\` repite el modulo ${h.afterModule}.`);
+            }
+            vistos.add(h.afterModule);
+            if (h.afterModule < previo) {
+              issues.push(
+                `\`${donde}\` viene despues del modulo ${previo} en la lista pero cae antes, ` +
+                "en el " + String(h.afterModule) + ". Ordenalos como estan en la fila: leerlos " +
+                "en orden es lo que deja comparar la lista contra el tracker de un vistazo.",
+              );
+            }
+            previo = h.afterModule;
+          }
+          if (!isFiniteNumber(h.mm) || (h.mm as number) < 0) {
+            issues.push(`\`${donde}.mm\` tiene que ser un numero >= 0 (mm).`);
+          }
+        });
+      }
+    }
   }
 
   // --- geometry ------------------------------------------------------------

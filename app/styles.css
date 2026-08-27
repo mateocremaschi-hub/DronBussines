@@ -421,3 +421,19 @@ td.flojo { color: var(--warn); font-style: italic; }
 /* Un input de archivo que se ve como los demas botones de la fila. */
 .comoboton { position: relative; overflow: hidden; cursor: pointer; }
 .comoboton input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+/* Los huecos grandes, uno por uno. Solo aparece cuando el tracker no es de
+   strings iguales, asi que no compite por espacio en el caso normal. */
+.huecos {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-top: 10px; padding: 12px 14px;
+  border-left: 3px solid var(--accent);
+  background: rgba(127, 127, 127, .06);
+  border-radius: 0 4px 4px 0;
+}
+.hueco { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.hueco label {
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: .78rem; text-transform: none; letter-spacing: 0;
+}
+.hueco input { width: 8.5em; }

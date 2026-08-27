@@ -11,6 +11,8 @@ import { makeFrame, toGeo, toLocal } from "./geo/frame.js";
 import { projectOnSegment } from "./geo/segment.js";
 import {
   distanceAtPosition,
+  huecosDeStrings,
+  makeRowLayout,
   positionAtDistance,
   type RowLayout,
 } from "./geo/rowLayout.js";
@@ -322,15 +324,18 @@ function fromOrigin(row: CompiledRow, alongFromStartM: number): number {
  * esta funcion y la del compilador se desincronizan, el error es de metros.
  */
 function layoutOf(row: CompiledRow, farm: CompiledFarm): RowLayout {
-  return {
-    modulesPerString: farm.profile.topology.modulesPerString,
-    stringsPerRow: farm.profile.topology.stringsPerRow,
+  const t = farm.profile.topology;
+  return makeRowLayout({
+    modulesPerString: t.modulesPerString,
+    stringsPerRow: t.stringsPerRow,
     pitchM: row.pitchM,
+    moduleGapM: farm.profile.module.gapMm / 1000,
     moduleWidthM: farm.moduleWidthM,
-    stringSpanM: row.stringSpanM,
-    periodM: row.periodM,
+    huecosM: t.gaps?.length
+      ? t.gaps.map((g) => ({ afterModule: g.afterModule, m: g.mm / 1000 }))
+      : huecosDeStrings(t.modulesPerString, t.stringsPerRow, (t.stringGapMm ?? 0) / 1000),
     originOffsetM: row.originOffsetM,
-  };
+  });
 }
 
 function positionAt(

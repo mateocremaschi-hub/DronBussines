@@ -502,7 +502,11 @@ export function suggestEndpointOffsetMm(
   rows: TrackerRow[],
   modulesPerRow: number,
   pitchMm: number,
-  opts: { moduleGapMm?: number; stringsPerRow?: number; stringGapMm?: number } = {},
+  opts: {
+    moduleGapMm?: number; stringsPerRow?: number; stringGapMm?: number;
+    /** Los huecos grandes uno por uno. Si vienen, mandan sobre stringGapMm. */
+    gaps?: Array<{ afterModule: number; mm: number }>;
+  } = {},
 ): { medianLengthM: number; offsetMm: number; spreadMm: number; extentMm: number } | null {
   if (!rows.length) return null;
 
@@ -518,13 +522,19 @@ export function suggestEndpointOffsetMm(
   const p10 = lengths[Math.floor(lengths.length * 0.1)]!;
   const p90 = lengths[Math.floor(lengths.length * 0.9)]!;
 
-  // Lo que ocupan los modulos: los tramos de cada string mas las bahias de
-  // motor que los separan. Olvidarse de las bahias fue exactamente el error
-  // que hizo despejar un offset equivocado la primera vez.
+  // Lo que ocupan los modulos: los paneles, los huequitos que quedan entre
+  // ellos, y los huecos grandes. Olvidarse de los huecos grandes fue
+  // exactamente el error que hizo despejar un offset equivocado la primera vez.
   const strings = opts.stringsPerRow ?? 1;
   const moduleGapMm = opts.moduleGapMm ?? 0;
-  const stringSpanMm = (modulesPerRow / strings) * pitchMm - moduleGapMm;
-  const extentMm = strings * stringSpanMm + (strings - 1) * (opts.stringGapMm ?? 0);
+  const anchoMm = pitchMm - moduleGapMm;
+  const grandes = opts.gaps?.length
+    ? opts.gaps.map((g) => g.mm)
+    : Array.from({ length: Math.max(0, strings - 1) }, () => opts.stringGapMm ?? 0);
+  // Cada hueco grande reemplaza a un huequito entre modulos, no se le suma.
+  const huequitos = Math.max(0, modulesPerRow - 1 - grandes.length);
+  const extentMm =
+    modulesPerRow * anchoMm + huequitos * moduleGapMm + grandes.reduce((s2, g) => s2 + g, 0);
 
   return {
     medianLengthM: median,
