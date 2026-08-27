@@ -67,6 +67,21 @@ export interface TrackerRow {
    */
   dcBoxLabel?: string;
 
+  /**
+   * Cual de las geometrias del parque es esta fila, si el parque tiene varias.
+   *
+   * Un parque puede mezclar dos tipos de tracker en los mismos bloques, en la
+   * misma lista de strings y en los mismos planos: unos largos de 56 modulos y
+   * otros cortos de 28. Partirlo en dos parques significaria subir los planos
+   * dos veces y cortar la lista de strings a mano, asi que el tipo va por fila.
+   *
+   * Casi nunca hace falta escribirlo: si no viene, el compilador elige la
+   * variante cuyo largo predicho se parece mas al largo MEDIDO de la fila, que
+   * es un dato que ya esta en el archivo de picas. Un tracker de 28 mide 32 m y
+   * uno de 56 mide 65: no hay forma de confundirlos.
+   */
+  variantId?: string;
+
   /** Salida de emergencia de `per-row-flag`: que extremo del segmento es el origen. */
   originEnd?: EndRef;
   /**
@@ -82,6 +97,28 @@ export interface TrackerRow {
 // ---------------------------------------------------------------------------
 // Perfil de parque
 // ---------------------------------------------------------------------------
+
+/**
+ * Un tipo de tracker distinto dentro del mismo parque.
+ *
+ * Solo lo que cambia. Lo que no se declara se hereda del tipo principal.
+ */
+export interface TopologyVariant {
+  /** Identificador corto y estable. Ej: "corto". */
+  id: string;
+  /** Como llamarlo en pantalla. Ej: "Tracker corto de 28". */
+  name?: string;
+  modulesPerString?: number;
+  stringsPerRow?: number;
+  stringGapMm?: number;
+  gaps?: Array<{ afterModule: number; mm: number }>;
+  /** Ancho del modulo sobre el eje, si esta variante usa otro panel. */
+  moduleWidthMm?: number;
+  /** Paso explicito, si difiere. */
+  pitchMm?: number | null;
+  /** Offset de pica, si difiere. */
+  endpointOffsetMm?: number;
+}
 
 export type OriginStrategyName = "fixed-end" | "dc-box-end" | "per-row-flag";
 export type InversionStrategyName = "none" | "piercing-chain" | "per-string-flag";
@@ -138,6 +175,25 @@ export interface FarmProfile {
   topology: {
     modulesPerString: number;
     stringsPerRow: number;
+    /**
+     * Los OTROS tipos de tracker del mismo parque.
+     *
+     * Un parque real no siempre es un solo racking. Hay sitios con trackers
+     * largos en el campo abierto y cortos contra el limite del terreno o en las
+     * puntas de fila, mezclados en los mismos bloques, en la misma lista de
+     * strings y en los mismos planos de interconexion.
+     *
+     * Sin esto habia que dar de alta el parque DOS VECES: subir los mismos
+     * planos dos veces, cortar la lista de strings a mano, y terminar con dos
+     * parques en la app para un solo sitio — con los vuelos, los informes y las
+     * garantias partidos al medio. Eso no es una limitacion tecnica, es un dia
+     * de trabajo perdido cada vez.
+     *
+     * Los campos que no se declaran en una variante se heredan del tipo
+     * principal: casi siempre cambia la cantidad de modulos y los huecos, no el
+     * panel ni el offset de pica.
+     */
+    variants?: TopologyVariant[];
     /**
      * Espacio libre entre un string y el siguiente de la misma fila, en mm.
      *
@@ -377,6 +433,24 @@ export interface CompiledRow {
   bbox: { minX: number; minY: number; maxX: number; maxY: number };
   /** Paso resuelto para esta fila, en metros. */
   pitchM: number;
+
+  /**
+   * La geometria de ESTA fila, ya resuelta.
+   *
+   * Antes estos tres numeros se leian del perfil del parque en cada consulta,
+   * lo que daba por sentado que todas las filas eran iguales. Con dos tipos de
+   * tracker mezclados eso numera los cortos como si fueran largos.
+   */
+  modulesPerString: number;
+  stringsPerRow: number;
+  modulesPerRow: number;
+  /** Los huecos grandes de esta fila, en metros. */
+  huecosM: Array<{ afterModule: number; m: number }>;
+  /** Ancho del modulo de esta fila, en metros. */
+  moduleWidthM: number;
+  /** Que variante se le aplico, y si se eligio sola o vino declarada. */
+  variantId?: string;
+  variantName?: string;
   originOffsetM: number;
   farOffsetM: number;
   /** Numeros de string ordenados ascendente: el menor es el mas cercano al origen. */

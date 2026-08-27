@@ -58,6 +58,29 @@ function extentConPaso(
   );
 }
 
+/**
+ * Una geometria completa del parque: la principal o una de sus variantes.
+ *
+ * Todo resuelto a numeros, sin herencias pendientes, para que elegir cual le
+ * toca a una fila sea comparar largos y nada mas.
+ */
+interface Geometria {
+  variantId?: string;
+  variantName?: string;
+  modulesPerString: number;
+  stringsPerRow: number;
+  modulesPerRow: number;
+  moduleWidthM: number;
+  huecosM: Hueco[];
+  totalHuecosM: number;
+  huecos: number;
+  nominalPitchM: number;
+  declaredPitch: number | null | "derive" | undefined;
+  offsetM: number;
+  /** Largo pica a pica que esta geometria predice, en metros. */
+  predichoM: number;
+}
+
 export function compileFarm(
   profileInput: unknown,
   rows: TrackerRow[],
@@ -107,6 +130,79 @@ export function compileFarm(
       "donde arrancan. Declara el paso.",
     ]);
   }
+  /**
+   * Las geometrias del parque: la principal y sus variantes.
+   *
+   * Un parque real puede mezclar dos tipos de tracker en los mismos bloques, en
+   * la misma lista de strings y en los mismos planos. Antes eso obligaba a dar
+   * de alta el parque dos veces —los mismos planos subidos dos veces, la lista
+   * de strings cortada a mano, los vuelos y los informes partidos al medio— y
+   * eso no es una limitacion tecnica sino un dia de trabajo perdido cada vez.
+   */
+  const armar = (v?: import("../types.js").TopologyVariant): Geometria => {
+    const mps = v?.modulesPerString ?? modulesPerString;
+    const spr = v?.stringsPerRow ?? stringsPerRow;
+    const anchoM = (v?.moduleWidthMm ?? profile.module.widthMm) / 1000;
+    const bahiaM = (v?.stringGapMm ?? profile.topology.stringGapMm ?? 0) / 1000;
+    const gaps = v?.gaps ?? (v ? undefined : profile.topology.gaps);
+    const hs: Hueco[] = gaps?.length
+      ? gaps.map((g) => ({ afterModule: g.afterModule, m: g.mm / 1000 }))
+      : huecosDeStrings(mps, spr, bahiaM);
+    const total = hs.reduce((acc, h) => acc + h.m, 0);
+    const pasoNominalM = (anchoM * 1000 + profile.module.gapMm) / 1000;
+    const geo = {
+      ...(v?.id ? { variantId: v.id } : {}),
+      ...(v?.name ? { variantName: v.name } : {}),
+      modulesPerString: mps,
+      stringsPerRow: spr,
+      modulesPerRow: mps * spr,
+      moduleWidthM: anchoM,
+      huecosM: hs,
+      totalHuecosM: total,
+      huecos: hs.length,
+      nominalPitchM: pasoNominalM,
+      declaredPitch: v && v.pitchMm !== undefined ? v.pitchMm : profile.module.pitchMm,
+      offsetM: (v?.endpointOffsetMm ?? profile.geometry.endpointOffsetMm) / 1000,
+      predichoM: 0,
+    };
+    // Con `centered` los voladizos absorben lo que sobra, asi que la mejor
+    // prediccion del largo pica a pica es lo que ocupan los modulos.
+    const voladizos =
+      offsetMode === "both" ? 2 * geo.offsetM : offsetMode === "origin" ? geo.offsetM : 0;
+    geo.predichoM = extentConPaso(geo, geo.nominalPitchM) + voladizos;
+    return geo;
+  };
+
+  const geometrias: Geometria[] = [
+    armar(),
+    ...(profile.topology.variants ?? []).map((v) => armar(v)),
+  ];
+
+  /**
+   * Que geometria le toca a esta fila.
+   *
+   * Si la fila lo declara, manda. Si no, gana la que predice un largo mas
+   * parecido al MEDIDO — que es un dato que ya viene en el archivo de picas y
+   * no hay que pedirle a nadie. Un tracker de 28 modulos mide 32 m y uno de 56
+   * mide 65: no hay forma de confundirlos.
+   */
+  const geometriaDe = (row: TrackerRow, lengthM: number): Geometria => {
+    if (geometrias.length === 1) return geometrias[0]!;
+    if (row.variantId) {
+      const pedida = geometrias.find((g) => g.variantId === row.variantId);
+      if (pedida) return pedida;
+      buildWarnings.push({
+        code: "missing-flag",
+        rowId: row.id,
+        message:
+          `La fila "${row.id}" pide el tipo de tracker "${row.variantId}", que el perfil no declara. ` +
+          `Elijo el que mejor cierra con su largo medido.`,
+      });
+    }
+    return geometrias.reduce((mejor, g) =>
+      Math.abs(lengthM - g.predichoM) < Math.abs(lengthM - mejor.predichoM) ? g : mejor);
+  };
+
   const tolerance =
     profile.geometry.lengthToleranceMmPerModule ?? DEFAULTS.lengthToleranceMmPerModule;
 
@@ -115,28 +211,55 @@ export function compileFarm(
   const origin = options.origin ?? centroid(rows);
   const frame = makeFrame(origin.lat, origin.lon);
 
-  const compiled: CompiledRow[] = rows.map((row) =>
-    compileRow(row, {
+  const compiled: CompiledRow[] = rows.map((row) => {
+    const a0 = toLocal(frame, row.start.lat, row.start.lon);
+    const b0 = toLocal(frame, row.end.lat, row.end.lon);
+    const g = geometriaDe(row, Math.hypot(b0.x - a0.x, b0.y - a0.y));
+    return compileRow(row, {
       frame,
       profile,
-      modulesPerRow,
-      modulesPerString,
-      moduleWidthM,
+      modulesPerRow: g.modulesPerRow,
+      modulesPerString: g.modulesPerString,
+      moduleWidthM: g.moduleWidthM,
       moduleGapM,
       stringGapM,
-      huecosM,
-      totalHuecosM,
-      huecos: huecosM.length,
-      nominalPitchM,
-      declaredPitch,
-      offsetM,
+      huecosM: g.huecosM,
+      totalHuecosM: g.totalHuecosM,
+      huecos: g.huecos,
+      nominalPitchM: g.nominalPitchM,
+      declaredPitch: g.declaredPitch,
+      offsetM: g.offsetM,
       offsetMode,
       maxDistanceM,
       tolerance,
-      stringsPerRow,
+      stringsPerRow: g.stringsPerRow,
       buildWarnings,
-    }),
-  );
+      ...(g.variantId ? { variantId: g.variantId } : {}),
+      ...(g.variantName ? { variantName: g.variantName } : {}),
+    });
+  });
+
+  /*
+    Cuantas filas quedaron de cada tipo. No es estadistica: si un parque de dos
+    tipos sale con CERO filas del tipo corto, el reparto se equivoco y todas
+    esas direcciones estan mal. Aparece al cargar el parque, no en el campo.
+  */
+  if (geometrias.length > 1) {
+    for (const g of geometrias) {
+      const n = compiled.filter((r) => r.variantId === g.variantId).length;
+      buildWarnings.push({
+        code: "missing-flag",
+        rowId: compiled.find((r) => r.variantId === g.variantId)?.source.id ?? rows[0]!.id,
+        message:
+          `${n} de ${rows.length} filas quedaron como ` +
+          `"${g.variantName ?? g.variantId ?? "el tipo principal"}" ` +
+          `(${g.modulesPerRow} modulos, ${g.predichoM.toFixed(1)} m de pica a pica). ` +
+          (n === 0
+            ? "Ninguna fila del parque se parece a ese tipo: sobra en el perfil, o sus medidas estan mal."
+            : "Se eligio comparando el largo medido de cada fila contra el que predice cada tipo."),
+      });
+    }
+  }
 
   /**
    * Lo que dijo la capa de estrategias tambien es un aviso de carga.
@@ -221,6 +344,8 @@ interface RowContext {
   tolerance: number;
   stringsPerRow: number;
   buildWarnings: Warning[];
+  variantId?: string;
+  variantName?: string;
 }
 
 function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
@@ -409,6 +534,16 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
       maxY: Math.max(a.y, b.y) + pad,
     },
     pitchM,
+    // La geometria de ESTA fila, congelada. `locate` la lee de aca y no del
+    // perfil del parque: con dos tipos de tracker mezclados, leer del perfil
+    // numera los cortos como si fueran largos.
+    modulesPerString: ctx.modulesPerString,
+    stringsPerRow: ctx.stringsPerRow,
+    modulesPerRow: ctx.modulesPerRow,
+    huecosM: ctx.huecosM,
+    moduleWidthM: ctx.moduleWidthM,
+    ...(ctx.variantId ? { variantId: ctx.variantId } : {}),
+    ...(ctx.variantName ? { variantName: ctx.variantName } : {}),
     originOffsetM,
     farOffsetM,
     stringNumbers,

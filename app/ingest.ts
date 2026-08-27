@@ -1254,3 +1254,101 @@ function conservarLoAplicado(previa: TrackerRow | undefined, nueva: TrackerRow):
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Tipos de tracker
+// ---------------------------------------------------------------------------
+
+export interface GrupoDeLargo {
+  /** Largo mediano del grupo, en metros. */
+  largoM: number;
+  filas: number;
+  /** Los dos extremos del grupo, para ver cuanto se dispersa. */
+  minM: number;
+  maxM: number;
+  /** Un par de ids de ejemplo, para poder ir a mirarlos al Excel. */
+  ejemplos: string[];
+}
+
+/**
+ * Cuantos LARGOS de tracker distintos hay en el parque.
+ *
+ * Existe por una pregunta del campo: "y si esos trackers cortos estan metidos
+ * en la misma lista de strings y en los mismos mapas que el resto, ¿subo los
+ * mapas dos veces?". La respuesta tiene que ser que no, y para eso lo primero
+ * es DARSE CUENTA de que el parque tiene dos tipos — sin que nadie lo declare,
+ * porque el archivo de picas no trae una columna de tipo de tracker.
+ *
+ * El metodo es el mismo que encuentra la calle en un plano: ordenar los largos
+ * y buscar el vacio grande. Dos tipos de tracker se separan por metros (un
+ * tracker de 28 modulos mide 32 m y uno de 56 mide 65), mientras que la
+ * dispersion adentro de un mismo tipo es de centimetros. Si el vacio mas grande
+ * no llega a ser una fraccion seria del largo, es un solo tipo con ruido.
+ */
+export function tiposDeTracker(
+  rows: TrackerRow[],
+  /** Cuanto tiene que separar el vacio, como fraccion del largo mayor. */
+  separacionMinima = 0.12,
+): GrupoDeLargo[] {
+  if (rows.length < 2) return [];
+
+  const frame = makeFrame(rows[0]!.start.lat, rows[0]!.start.lon);
+  const largos = rows
+    .map((r) => {
+      const a = toLocal(frame, r.start.lat, r.start.lon);
+      const b = toLocal(frame, r.end.lat, r.end.lon);
+      return { id: r.id, m: Math.hypot(b.x - a.x, b.y - a.y) };
+    })
+    .filter((x) => x.m > 0)
+    .sort((x, y) => x.m - y.m);
+
+  if (largos.length < 2) return [];
+
+  const mayor = largos[largos.length - 1]!.m;
+
+  // Cortar donde el salto entre dos largos consecutivos es grande de verdad.
+  const cortes: number[] = [];
+  for (let i = 1; i < largos.length; i++) {
+    if (largos[i]!.m - largos[i - 1]!.m > mayor * separacionMinima) cortes.push(i);
+  }
+  if (!cortes.length) return [];
+
+  const grupos: GrupoDeLargo[] = [];
+  let desde = 0;
+  for (const corte of [...cortes, largos.length]) {
+    const trozo = largos.slice(desde, corte);
+    desde = corte;
+    if (!trozo.length) continue;
+    grupos.push({
+      largoM: trozo[Math.floor(trozo.length / 2)]!.m,
+      filas: trozo.length,
+      minM: trozo[0]!.m,
+      maxM: trozo[trozo.length - 1]!.m,
+      ejemplos: trozo.slice(0, 2).map((x) => x.id),
+    });
+  }
+
+  // De mayor a menor: el tipo principal suele ser el mas largo y el mas comun.
+  return grupos.sort((a, b) => b.filas - a.filas || b.largoM - a.largoM);
+}
+
+/**
+ * Cuantos modulos entran en un largo dado, con la geometria del tipo principal.
+ *
+ * Sirve para proponer los numeros de una variante sin que nadie los cuente: si
+ * el parque tiene trackers de 32,8 m y el panel mide 1134 mm con 10 de hueco,
+ * son 28 modulos. Es una PROPUESTA — se muestra para confirmar, igual que todo
+ * lo demas de esta pantalla.
+ */
+export function modulosQueEntran(
+  largoM: number,
+  anchoModuloMm: number,
+  huecoModuloMm: number,
+  /** Lo que se lleva la bahia del motor y los voladizos, en mm. */
+  descuentoMm = 0,
+): number {
+  const paso = (anchoModuloMm + huecoModuloMm) / 1000;
+  if (paso <= 0) return 0;
+  const util = largoM - descuentoMm / 1000 + huecoModuloMm / 1000;
+  return Math.max(1, Math.round(util / paso));
+}

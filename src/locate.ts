@@ -11,7 +11,6 @@ import { makeFrame, toGeo, toLocal } from "./geo/frame.js";
 import { projectOnSegment } from "./geo/segment.js";
 import {
   distanceAtPosition,
-  huecosDeStrings,
   makeRowLayout,
   positionAtDistance,
   type RowLayout,
@@ -189,7 +188,7 @@ export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
   for (const entry of chosen) {
     const centre = positionAt(entry.row, entry.alongM, farm);
     const lo = Math.max(1, centre.positionInRow - neighborhood);
-    const hi = Math.min(farm.modulesPerRow, centre.positionInRow + neighborhood);
+    const hi = Math.min(entry.row.modulesPerRow, centre.positionInRow + neighborhood);
 
     for (let pos = lo; pos <= hi; pos++) {
       const key = `${entry.row.source.id}#${pos}`;
@@ -227,7 +226,7 @@ export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
     const alongFromOrigin = fromOrigin(row, winnerEntry.alongM);
     const winnerHit = positionAtDistance(layoutOf(row, farm), alongFromOrigin);
     const winnerPosition = winnerHit.positionInRow;
-    const winnerChunk = chunkOf(winnerPosition, farm.profile.topology.modulesPerString);
+    const winnerChunk = chunkOf(winnerPosition, row.modulesPerString);
 
     diagnostics.winner = {
       rowId: row.source.id,
@@ -259,7 +258,7 @@ export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
     const tol = farm.lengthToleranceMmPerModule;
     if (Math.abs(row.lengthResidualMmPerModule) > tol) {
       const corridoM =
-        (Math.abs(row.lengthResidualMmPerModule) * farm.modulesPerRow) / 2 / 1000;
+        (Math.abs(row.lengthResidualMmPerModule) * row.modulesPerRow) / 2 / 1000;
       warnings.push({
         code: "length-mismatch",
         rowId: row.source.id,
@@ -283,13 +282,13 @@ export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
     }
 
     const raw = winnerHit.raw;
-    if (raw < 1 || raw > farm.modulesPerRow) {
+    if (raw < 1 || raw > row.modulesPerRow) {
       warnings.push({
         code: "outside-row-extent",
         rowId: row.source.id,
         message:
           `La coordenada cae fuera de la extension de modulos de la fila ` +
-          `(posicion cruda ${raw.toFixed(1)} de ${farm.modulesPerRow}). ` +
+          `(posicion cruda ${raw.toFixed(1)} de ${row.modulesPerRow}). ` +
           `Recorte al modulo del extremo, pero puede que el punto pertenezca a la fila de al lado.`,
       });
     }
@@ -396,16 +395,16 @@ function fromOrigin(row: CompiledRow, alongFromStartM: number): number {
  * esta funcion y la del compilador se desincronizan, el error es de metros.
  */
 function layoutOf(row: CompiledRow, farm: CompiledFarm): RowLayout {
-  const t = farm.profile.topology;
+  // Todo sale de la FILA, no del perfil del parque. Un parque puede mezclar dos
+  // tipos de tracker —largos de 56 y cortos de 28— en los mismos bloques, y el
+  // compilador ya decidio cual es cual mirando el largo medido de cada una.
   return makeRowLayout({
-    modulesPerString: t.modulesPerString,
-    stringsPerRow: t.stringsPerRow,
+    modulesPerString: row.modulesPerString,
+    stringsPerRow: row.stringsPerRow,
     pitchM: row.pitchM,
     moduleGapM: farm.profile.module.gapMm / 1000,
-    moduleWidthM: farm.moduleWidthM,
-    huecosM: t.gaps?.length
-      ? t.gaps.map((g) => ({ afterModule: g.afterModule, m: g.mm / 1000 }))
-      : huecosDeStrings(t.modulesPerString, t.stringsPerRow, (t.stringGapMm ?? 0) / 1000),
+    moduleWidthM: row.moduleWidthM,
+    huecosM: row.huecosM,
     originOffsetM: row.originOffsetM,
   });
 }
@@ -427,7 +426,7 @@ function makeAddress(
   p: { x: number; y: number },
   offAxisM: number,
 ): Address {
-  const modulesPerString = farm.profile.topology.modulesPerString;
+  const modulesPerString = row.modulesPerString;
   const chunkIndex = chunkOf(positionInRow, modulesPerString);
   const inverted = row.inverted[chunkIndex] ?? false;
   const { module } = splitPosition(positionInRow, modulesPerString, inverted);
@@ -497,8 +496,8 @@ export interface ModuleRef {
  * seria invisible.
  */
 export function modulesOfRow(row: CompiledRow, farm: CompiledFarm): ModuleRef[] {
-  const modulesPerString = farm.profile.topology.modulesPerString;
-  const total = modulesPerString * farm.profile.topology.stringsPerRow;
+  const modulesPerString = row.modulesPerString;
+  const total = row.modulesPerRow;
   const layout = layoutOf(row, farm);
   const out: ModuleRef[] = [];
 

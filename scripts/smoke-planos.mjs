@@ -146,5 +146,66 @@ const resumen = await page.locator(".farm-open").first().innerText();
 console.log("Despues de recargar:", resumen.split("\n").filter((l) => l.includes("%")).join(" "));
 
 await page.screenshot({ path: "shots/12-planos.png", fullPage: true });
+
+// ---------------------------------------------------------------------------
+// Un plano de OTRO parque, que nombra sus trackers de una forma que el lector
+// no puede adivinar.
+//
+// Paso en el campo: se cargaron los planos de otra farm y la app contesto "el
+// archivo no tiene ningun bloque". El lector tenia UN formato adentro —el de
+// Edenvale— y ahi se terminaba el camino. Ahora tiene que (1) mostrar que SI
+// vio, y (2) dejar que se le enseñe el formato.
+// ---------------------------------------------------------------------------
+
+function planoRaro() {
+  const e = [];
+  for (let n = 1; n <= 24; n++) {
+    const izq = n <= 12;
+    const i = izq ? n - 1 : n - 13;
+    e.push({ x: (izq ? 60 : 400) + i * 12, y: 400, t: `TRK/B7/M${String(n).padStart(2, "0")}/W1` });
+  }
+  for (let k = 1; k <= 3; k++) e.push({ x: 300, y: 380 + k * 15, t: `CB-7.1.${k}` });
+  return e;
+}
+
+await page.locator('.farm-actions input[type="file"]').first().setInputFiles({
+  name: "07-otro-parque.pdf",
+  mimeType: "application/pdf",
+  buffer: pdfConEtiquetas(planoRaro()),
+});
+
+await page.getByRole("heading", { name: /El plano no entro/ }).waitFor({ timeout: 60_000 });
+const malo = await page.locator(".card", { hasText: "El plano no entro" }).innerText();
+console.log("\n   --- con un plano que no reconoce ---");
+console.log(malo.split("\n").filter((l) => l.trim()).slice(0, 8).map((l) => "   " + l).join("\n"));
+
+// Lo que faltaba: decir QUE vio, en vez de solo que no reconocio nada.
+if (!/24 veces con la forma/.test(malo)) {
+  console.error("ESPERABA que dijera que formas de etiqueta trae el PDF");
+  process.exitCode = 1;
+}
+if (!/TRK\/B7\/M01\/W1/.test(malo)) {
+  console.error("ESPERABA un ejemplo concreto de las etiquetas del archivo");
+  process.exitCode = 1;
+}
+
+// Y que se le pueda enseñar el formato sin volver a elegir los archivos.
+await page.getByLabel(/copiá una etiqueta de tracker/i).fill("TRK/B7/M01/W1");
+await page.getByRole("button", { name: /Volver a leer con ese formato/ }).click();
+await page.getByRole("heading", { name: /El plano de/ }).waitFor({ timeout: 60_000 });
+const bueno = await page.locator(".card", { hasText: "El plano de" }).innerText();
+console.log("\n   --- despues de enseñarle el formato ---");
+console.log(bueno.split("\n").filter((l) => l.trim()).slice(0, 4).map((l) => "   " + l).join("\n"));
+
+if (!/24 etiquetas de tracker/.test(bueno)) {
+  console.error("ESPERABA que leyera los 24 trackers con el formato enseñado");
+  process.exitCode = 1;
+}
+if (!/3 (cajas de continua|de caja de)/.test(bueno)) {
+  console.error("ESPERABA que reconociera las 3 cajas CB-7.1.x");
+  process.exitCode = 1;
+}
+
+await page.screenshot({ path: "shots/14-plano-otro-formato.png", fullPage: true });
 await browser.close();
 console.log(process.exitCode ? "PLANOS: FALLO" : "PLANOS: ok");

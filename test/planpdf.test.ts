@@ -315,3 +315,117 @@ describe("lo que sale entra en el importador de planos", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Otro parque nombra sus trackers distinto.
+ *
+ * Esto tumbo un supuesto en el campo: se cargaron los planos de otra farm y la
+ * app contesto "el archivo no tiene ningun bloque". El lector tenia UN formato
+ * escrito adentro —el de Edenvale, `bb-ttt-Rz`— que es la misma clase de error
+ * que tener el bloque "06" hardcodeado: un parque metido adentro de una
+ * herramienta que dice servir para cualquiera.
+ */
+describe("planos de un parque que nombra distinto", () => {
+  /** Un bloque de dos alas con las etiquetas escritas de la forma que se pida. */
+  const bloqueCon = (etiqueta: (n: number) => string, cajas: string[] = []): Etiqueta[] => {
+    const out: Etiqueta[] = [];
+    [1, 2, 3].forEach((n, i) => out.push({ x: 100 + i * 30, y: 100, t: etiqueta(n) }));
+    [10, 11, 12].forEach((n, i) => out.push({ x: 600 + i * 30, y: 100, t: etiqueta(n) }));
+    cajas.forEach((c, i) => out.push({ x: 400, y: 90 + i * 60, t: c }));
+    return out;
+  };
+
+  it("con puntos en vez de guiones", () => {
+    const r = planoDeEtiquetas(bloqueCon((n) => `04.${String(n).padStart(3, "0")}.R1`));
+    expect(r.leidas.trackers).toBe(6);
+    expect(Object.keys(r.plano)).toEqual(["04"]);
+  });
+
+  it("con la fila sin la R", () => {
+    const r = planoDeEtiquetas(bloqueCon((n) => `04-${String(n).padStart(3, "0")}-1`));
+    expect(r.leidas.trackers).toBe(6);
+  });
+
+  it("sin fila: un solo renglon de modulos por tracker", () => {
+    const r = planoDeEtiquetas(bloqueCon((n) => `04-${String(n).padStart(3, "0")}`));
+    expect(r.leidas.trackers).toBe(6);
+  });
+
+  it("con una letra adelante, como T04-001-R1", () => {
+    const r = planoDeEtiquetas(bloqueCon((n) => `T04-${String(n).padStart(3, "0")}-R1`));
+    expect(r.leidas.trackers).toBe(6);
+  });
+
+  it("las cajas se reconocen aunque el prefijo no sea DCB", () => {
+    const r = planoDeEtiquetas(
+      bloqueCon((n) => `04-${String(n).padStart(3, "0")}-R1`, ["CB-4.2.1", "CB-4.2.2", "CB-4.2.3"]),
+    );
+    expect(r.leidas.cajas).toBe(3);
+  });
+
+  it("y Edenvale sigue leyendose exactamente igual", () => {
+    const r = planoDeEtiquetas(bloque({ b: "04", izquierda: [1, 2, 3], derecha: [10, 11, 12], cajas: CAJAS }));
+    expect(r.leidas.trackers).toBe(12);
+    expect(r.leidas.cajas).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("cuando ningun formato conocido engancha", () => {
+  /** Etiquetas con una forma que el lector no puede adivinar. */
+  const raras = (): Etiqueta[] => {
+    const out: Etiqueta[] = [];
+    for (let n = 1; n <= 30; n++) {
+      const izq = n <= 15;
+      out.push({
+        x: (izq ? 60 : 400) + (n % 15) * 12, y: 400,
+        t: `TRK/B4/M${String(n).padStart(2, "0")}/W2`,
+      });
+    }
+    for (let i = 0; i < 10; i++) out.push({ x: 30, y: 700 + i, t: `NOTA ${i} DE LA LAMINA` });
+    return out;
+  };
+
+  /**
+   * Lo que estaba mal no era solo no reconocer: era no DECIR que se vio. Con el
+   * PDF abierto delante, "no reconoci ninguna etiqueta" no le deja a nadie
+   * nada que hacer.
+   */
+  it("muestra las formas que si trae el archivo, con ejemplos", () => {
+    const r = planoDeEtiquetas(raras());
+    expect(r.leidas.trackers).toBe(0);
+    const texto = r.avisos.join(" ");
+    expect(texto).toMatch(/30 veces con la forma/);
+    expect(texto).toMatch(/TRK\/B4\/M01\/W2/);
+  });
+
+  it("las formas tambien salen en el resultado, para poder mostrarlas aparte", () => {
+    const r = planoDeEtiquetas(raras());
+    expect(r.formas?.[0]).toMatchObject({ forma: "AAA/A#/A##/A#", veces: 30 });
+  });
+
+  /**
+   * Y la salida de emergencia: se copia UNA etiqueta del plano y el lector
+   * aprende el formato. Es lo que hace que esto no dependa de que yo haya
+   * previsto el nombre que usa tu parque.
+   */
+  it("con una etiqueta de ejemplo, lee el plano entero", () => {
+    const r = planoDeEtiquetas(raras(), { ejemploDeTracker: "TRK/B4/M01/W2" });
+    expect(r.leidas.trackers).toBe(30);
+    expect(r.patron).toMatch(/TRK\/B4\/M01\/W2/);
+  });
+
+  it("un ejemplo que no tiene forma de etiqueta lo dice, en vez de fallar callado", () => {
+    const r = planoDeEtiquetas(raras(), { ejemploDeTracker: "el tracker de la esquina" });
+    expect(r.avisos.join(" ")).toMatch(/no puedo sacar un formato/);
+  });
+
+  it("un PDF escaneado se distingue de uno con etiquetas que no entiendo", () => {
+    const r = planoDeEtiquetas([{ x: 1, y: 1, t: "SHEET 3 OF 12" }]);
+    expect(r.avisos.join(" ")).toMatch(/se escaneo o se aplano/);
+    expect(r.avisos.join(" ")).toMatch(/SHEET 3 OF 12/);
+  });
+});

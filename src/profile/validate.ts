@@ -80,50 +80,53 @@ export function validateProfile(input: unknown): FarmProfile {
      * modulos y devuelve un panel equivocado con toda confianza. Es el tipo de
      * error que solo aparece con alguien contando paneles con la mano.
      */
-    if (t.gaps != null) {
-      if (!Array.isArray(t.gaps)) {
-        issues.push("`topology.gaps` tiene que ser una lista de { afterModule, mm }.");
+    validarGaps(t.gaps, totalDe(t.modulesPerString, t.stringsPerRow), "topology.gaps", issues);
+
+    /**
+     * Las variantes: los otros tipos de tracker del mismo parque.
+     *
+     * Se valida cada una como si fuera una topologia completa, porque lo es una
+     * vez que hereda lo que no declara. Una variante mal escrita no rompe nada
+     * visible: reparte mal los modulos de las filas que le tocan, y esas filas
+     * contestan con toda confianza un panel corrido.
+     */
+    if (t.variants != null) {
+      if (!Array.isArray(t.variants)) {
+        issues.push("`topology.variants` tiene que ser una lista de tipos de tracker.");
       } else {
-        const total =
-          isPositiveInt(t.modulesPerString) && isPositiveInt(t.stringsPerRow)
-            ? t.modulesPerString * t.stringsPerRow
-            : null;
-        const vistos = new Set<number>();
-        let previo = 0;
-        t.gaps.forEach((g: unknown, i: number) => {
-          const h = g as { afterModule?: unknown; mm?: unknown } | null;
-          const donde = `topology.gaps[${i}]`;
-          if (!h || typeof h !== "object") {
-            issues.push(`\`${donde}\` tiene que ser un objeto { afterModule, mm }.`);
+        const ids = new Set<string>();
+        t.variants.forEach((raw: unknown, i: number) => {
+          const v = raw as Record<string, unknown> | null;
+          const donde = `topology.variants[${i}]`;
+          if (!v || typeof v !== "object") {
+            issues.push(`\`${donde}\` tiene que ser un objeto con al menos un \`id\`.`);
             return;
           }
-          if (!isPositiveInt(h.afterModule)) {
-            issues.push(`\`${donde}.afterModule\` tiene que ser un entero positivo.`);
+          if (typeof v.id !== "string" || !v.id.trim()) {
+            issues.push(`\`${donde}.id\` es obligatorio: es como cada fila dice de que tipo es.`);
+          } else if (ids.has(v.id)) {
+            issues.push(`\`${donde}.id\` repite "${v.id}". Los tipos de tracker tienen que ser unicos.`);
           } else {
-            if (total != null && h.afterModule >= total) {
-              issues.push(
-                `\`${donde}.afterModule\` es ${h.afterModule}, pero la fila tiene ${total} ` +
-                "modulos. Un hueco va ENTRE dos modulos, asi que el ultimo valido es " +
-                `${total - 1}. Un hueco despues del ultimo modulo es un voladizo, y eso se ` +
-                "declara en geometry.endpointOffsetMm.",
-              );
-            }
-            if (vistos.has(h.afterModule)) {
-              issues.push(`\`${donde}.afterModule\` repite el modulo ${h.afterModule}.`);
-            }
-            vistos.add(h.afterModule);
-            if (h.afterModule < previo) {
-              issues.push(
-                `\`${donde}\` viene despues del modulo ${previo} en la lista pero cae antes, ` +
-                "en el " + String(h.afterModule) + ". Ordenalos como estan en la fila: leerlos " +
-                "en orden es lo que deja comparar la lista contra el tracker de un vistazo.",
-              );
-            }
-            previo = h.afterModule;
+            ids.add(v.id);
           }
-          if (!isFiniteNumber(h.mm) || (h.mm as number) < 0) {
-            issues.push(`\`${donde}.mm\` tiene que ser un numero >= 0 (mm).`);
+          if (v.modulesPerString != null && !isPositiveInt(v.modulesPerString)) {
+            issues.push(`\`${donde}.modulesPerString\` tiene que ser un entero positivo.`);
           }
+          if (v.stringsPerRow != null && !isPositiveInt(v.stringsPerRow)) {
+            issues.push(`\`${donde}.stringsPerRow\` tiene que ser un entero positivo.`);
+          }
+          if (v.stringGapMm != null && (!isFiniteNumber(v.stringGapMm) || (v.stringGapMm as number) < 0)) {
+            issues.push(`\`${donde}.stringGapMm\` tiene que ser un numero >= 0 (mm).`);
+          }
+          if (v.moduleWidthMm != null && (!isFiniteNumber(v.moduleWidthMm) || (v.moduleWidthMm as number) <= 0)) {
+            issues.push(`\`${donde}.moduleWidthMm\` tiene que ser un numero positivo (mm).`);
+          }
+          if (v.endpointOffsetMm != null && !isFiniteNumber(v.endpointOffsetMm)) {
+            issues.push(`\`${donde}.endpointOffsetMm\` tiene que ser un numero (mm).`);
+          }
+          const mps = (v.modulesPerString ?? t.modulesPerString) as unknown;
+          const spr = (v.stringsPerRow ?? t.stringsPerRow) as unknown;
+          validarGaps(v.gaps, totalDe(mps, spr), `${donde}.gaps`, issues);
         });
       }
     }
@@ -191,4 +194,74 @@ export function validateProfile(input: unknown): FarmProfile {
 
   if (issues.length) throw new ProfileError(issues);
   return p as FarmProfile;
+}
+
+// ---------------------------------------------------------------------------
+
+/** Modulos por fila, si los dos numeros son validos. */
+function totalDe(modulesPerString: unknown, stringsPerRow: unknown): number | null {
+  return isPositiveInt(modulesPerString) && isPositiveInt(stringsPerRow)
+    ? (modulesPerString as number) * (stringsPerRow as number)
+    : null;
+}
+
+/**
+ * Los huecos enumerados de una topologia.
+ *
+ * Se valida con dureza porque un hueco mal puesto no rompe nada: corre los
+ * modulos y devuelve un panel equivocado con toda confianza. Es el tipo de
+ * error que solo aparece con alguien contando paneles con la mano.
+ *
+ * Vive en una funcion porque ahora hay mas de una topologia por parque —la
+ * principal y sus variantes— y una regla escrita dos veces es una regla que se
+ * arregla en un lado y no en el otro.
+ */
+function validarGaps(
+  gaps: unknown,
+  total: number | null,
+  donde: string,
+  issues: string[],
+): void {
+  if (gaps == null) return;
+  if (!Array.isArray(gaps)) {
+    issues.push(`\`${donde}\` tiene que ser una lista de { afterModule, mm }.`);
+    return;
+  }
+  const vistos = new Set<number>();
+  let previo = 0;
+  gaps.forEach((g: unknown, i: number) => {
+    const h = g as { afterModule?: unknown; mm?: unknown } | null;
+    const cual = `${donde}[${i}]`;
+    if (!h || typeof h !== "object") {
+      issues.push(`\`${cual}\` tiene que ser un objeto { afterModule, mm }.`);
+      return;
+    }
+    if (!isPositiveInt(h.afterModule)) {
+      issues.push(`\`${cual}.afterModule\` tiene que ser un entero positivo.`);
+    } else {
+      if (total != null && (h.afterModule as number) >= total) {
+        issues.push(
+          `\`${cual}.afterModule\` es ${h.afterModule}, pero la fila tiene ${total} ` +
+          "modulos. Un hueco va ENTRE dos modulos, asi que el ultimo valido es " +
+          `${total - 1}. Un hueco despues del ultimo modulo es un voladizo, y eso se ` +
+          "declara en geometry.endpointOffsetMm.",
+        );
+      }
+      if (vistos.has(h.afterModule as number)) {
+        issues.push(`\`${cual}.afterModule\` repite el modulo ${h.afterModule}.`);
+      }
+      vistos.add(h.afterModule as number);
+      if ((h.afterModule as number) < previo) {
+        issues.push(
+          `\`${cual}\` viene despues del modulo ${previo} en la lista pero cae antes, ` +
+          "en el " + String(h.afterModule) + ". Ordenalos como estan en la fila: leerlos " +
+          "en orden es lo que deja comparar la lista contra el tracker de un vistazo.",
+        );
+      }
+      previo = h.afterModule as number;
+    }
+    if (!isFiniteNumber(h.mm) || (h.mm as number) < 0) {
+      issues.push(`\`${cual}.mm\` tiene que ser un numero >= 0 (mm).`);
+    }
+  });
 }

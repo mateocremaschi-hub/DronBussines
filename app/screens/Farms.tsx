@@ -28,6 +28,14 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
   // que lo habia apretado.
   const [problemaPlano, setProblemaPlano] = useState<string[] | null>(null);
   const [leyendo, setLeyendo] = useState<string | null>(null);
+  /**
+   * Los ultimos PDF que se intentaron leer, y una etiqueta de ejemplo.
+   *
+   * Sirven para volver a leer el mismo lote con otro formato de nombre sin
+   * tener que volver a elegir 36 archivos a mano.
+   */
+  const [ultimosPdfs, setUltimosPdfs] = useState<{ farm: StoredFarm; files: File[] } | null>(null);
+  const [ejemploTracker, setEjemploTracker] = useState("");
 
   /**
    * Cargar el plano de interconexion de un parque.
@@ -41,8 +49,11 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
    * parques que ya se procesaron asi. Se distingue por la extension, no se
    * pregunta.
    */
-  async function cargarPlano(farm: StoredFarm, files: File[]) {
+  async function cargarPlano(farm: StoredFarm, files: File[], ejemploDeTracker?: string) {
     setProblema(null); setPlano(null); setProblemaPlano(null);
+    // Se guardan para poder releerlos con otro formato de etiqueta sin volver a
+    // elegir los 36 archivos.
+    setUltimosPdfs({ farm, files });
     const pdfs = files.filter((f) => f.name.toLowerCase().endsWith(".pdf"));
     const avisos: string[] = [];
     const previas: string[] = [];
@@ -57,12 +68,16 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
         const lectura = await etiquetasDePdfs(pdfs, (hecho, total, archivo) => {
           setLeyendo(archivo ? `Leyendo ${hecho + 1} de ${total}: ${archivo}` : "Armando el plano…");
         });
-        const extraido = planoDeEtiquetas(lectura.etiquetas);
+        const extraido = planoDeEtiquetas(
+          lectura.etiquetas,
+          ejemploDeTracker ? { ejemploDeTracker } : {},
+        );
         avisos.push(...lectura.avisos, ...extraido.avisos);
         previas.push(
           `De ${pdfs.length} PDF salieron ${extraido.leidas.total} textos: ` +
           `${extraido.leidas.trackers} etiquetas de tracker, ${extraido.leidas.cajas} de caja de ` +
-          `continua y ${extraido.leidas.strings} de string. El resto es rotulado de la lamina.`,
+          `continua y ${extraido.leidas.strings} de string. El resto es rotulado de la lamina.` +
+          (extraido.patron ? ` Formato de nombre: ${extraido.patron}.` : ""),
         );
         leido = leerPlano(JSON.stringify(extraido.plano));
       } else {
@@ -184,7 +199,7 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
                           const x = [...(e.target.files ?? [])];
                           // Se limpia para poder volver a elegir los mismos.
                           e.target.value = "";
-                          if (x.length) void cargarPlano(f, x);
+                          if (x.length) void cargarPlano(f, x, ejemploTracker.trim() || undefined);
                         }}
                       />
                     </label>
@@ -245,6 +260,41 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
         <section className="card">
           <h2>El plano no entro</h2>
           {problemaPlano.map((n, i) => (<p key={i} className="alert">{n}</p>))}
+
+          {/*
+            La salida sin la cual esta pantalla es un callejon.
+            ===================================================================
+            El lector conoce varios formatos de nombre, pero no puede conocerlos
+            todos: cada proyecto bautiza sus trackers como quiere. Cuando ninguno
+            engancha, arriba se listan las formas de texto que SI trae el PDF —
+            y acá se copia una y el lector aprende el formato y vuelve a leer.
+
+            Sin esto, "el archivo no tiene ningun bloque" es el final del camino
+            y el parque no se puede cargar hasta que alguien toque el codigo.
+          */}
+          {ultimosPdfs && (
+            <div className="field">
+              <label htmlFor="ej-tracker">Enseñale el formato: copiá una etiqueta de tracker del plano</label>
+              <div className="row">
+                <input
+                  id="ej-tracker" type="text" placeholder="ej: 05-042-R1"
+                  value={ejemploTracker}
+                  onChange={(e) => setEjemploTracker(e.target.value)}
+                />
+                <button
+                  disabled={!ejemploTracker.trim() || !!leyendo}
+                  onClick={() => void cargarPlano(ultimosPdfs.farm, ultimosPdfs.files, ejemploTracker.trim())}
+                >
+                  Volver a leer con ese formato
+                </button>
+              </div>
+              <span className="help">
+                Abrí el PDF, buscá el número que identifica un tracker cualquiera y copialo tal cual
+                está escrito. De ahí saco el formato de todo el parque: los grupos de números son el
+                bloque, el tracker y —si la trae— la fila.
+              </span>
+            </div>
+          )}
         </section>
       )}
 

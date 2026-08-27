@@ -30,9 +30,97 @@
 
 import type { PlanoDeParque } from "./plans";
 
-const TRACKER = /^(\d{2})-(\d{3})-R(\d)$/;
-const CAJA = /^DCB-(\d+)\.(\d+)\.(\d+)$/;
-const STRING = /^S-(\d+)\.(\d+)\.(\d+)\.\d+\.\d+$/;
+/**
+ * Como nombra este parque a sus trackers, cajas y strings.
+ *
+ * Esto ESTABA escrito como tres constantes: `bb-ttt-Rz`, `DCB-i.c.n` y
+ * `S-i.c.n.x.y`, que son los formatos de Edenvale. En otro parque el lector no
+ * reconocia una sola etiqueta y contestaba "el archivo no tiene ningun bloque",
+ * que es la misma clase de error que tener el bloque "06" escrito en el codigo:
+ * un parque metido adentro de una herramienta que dice servir para cualquiera.
+ *
+ * Ahora hay una familia de formatos conocidos, se prueban todos y gana el que
+ * reconoce mas etiquetas. Y si ninguno anda, el lector NO se queda en "no
+ * reconoci nada": muestra las formas de texto que si encontro, con ejemplos,
+ * para que se vea de una que hay adentro del PDF.
+ */
+export interface Patrones {
+  nombre: string;
+  /** Grupos: 1 = bloque, 2 = tracker, 3 = fila (opcional). */
+  tracker: RegExp;
+  /** Grupos: 1 = bloque/inversor, 2 = columna, 3 = numero de caja. */
+  caja: RegExp;
+  /** Grupos: 1 = bloque/inversor, 2 = columna, 3 = caja. */
+  string: RegExp;
+}
+
+/**
+ * Los separadores que aparecen en planos reales: guion, punto, guion bajo,
+ * barra y espacio. Un mismo proyecto usa uno, pero no siempre el mismo.
+ */
+const SEP = "[-._/ ]";
+
+export const PATRONES_CONOCIDOS: Patrones[] = [
+  {
+    // Edenvale y compania: 05-042-R1 · DCB-5.1.3 · S-5.1.3.2.1
+    nombre: "bloque-tracker-Rfila",
+    tracker: new RegExp(`^(\\d{1,3})${SEP}(\\d{1,4})${SEP}R\\s?(\\d{1,2})$`, "i"),
+    caja: new RegExp(`^[A-Z]{0,4}CB${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)$`, "i"),
+    string: new RegExp(`^S[A-Z]?${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)(?:${SEP}\\d+)*$`, "i"),
+  },
+  {
+    // Sin la R: 05-042-1, o con la fila pegada al tracker.
+    nombre: "bloque-tracker-fila",
+    tracker: new RegExp(`^(\\d{1,3})${SEP}(\\d{1,4})${SEP}(\\d{1,2})$`),
+    caja: new RegExp(`^[A-Z]{0,4}CB${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)$`, "i"),
+    string: new RegExp(`^S[A-Z]?${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)(?:${SEP}\\d+)*$`, "i"),
+  },
+  {
+    // Un tracker por fila: 05-042, sin fila R. El bloque sigue adelante.
+    nombre: "bloque-tracker",
+    tracker: new RegExp(`^(\\d{1,3})${SEP}(\\d{2,4})$`),
+    caja: new RegExp(`^[A-Z]{0,4}CB${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)$`, "i"),
+    string: new RegExp(`^S[A-Z]?${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)(?:${SEP}\\d+)*$`, "i"),
+  },
+  {
+    // Con letras adelante: T05-042-R1, TRK-05-042-R1, MESA 05-042-R1.
+    nombre: "prefijo-bloque-tracker-Rfila",
+    tracker: new RegExp(`^[A-Z]{1,4}${SEP}?(\\d{1,3})${SEP}(\\d{1,4})${SEP}R\\s?(\\d{1,2})$`, "i"),
+    caja: new RegExp(`^[A-Z]{0,4}CB${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)$`, "i"),
+    string: new RegExp(`^S[A-Z]?${SEP}(\\d+)${SEP}(\\d+)${SEP}(\\d+)(?:${SEP}\\d+)*$`, "i"),
+  },
+];
+
+/**
+ * El formato deducido de UNA etiqueta que la persona lee del plano.
+ *
+ * La salida de emergencia que hace que esto no dependa de que yo haya previsto
+ * el formato de tu parque: parado frente al plano, se copia una etiqueta de
+ * tracker —la que sea— y de ahi sale el patron. Dos grupos de digitos son
+ * bloque y tracker; tres, bloque, tracker y fila.
+ */
+export function patronDesdeEjemplo(ejemplo: string): Patrones | null {
+  const t = ejemplo.trim();
+  if (!t) return null;
+
+  // Se reemplaza cada grupo de digitos por una captura y se escapa el resto,
+  // asi el patron respeta EXACTAMENTE los separadores y las letras del ejemplo.
+  const partes = t.split(/(\d+)/).filter((x) => x !== "");
+  const grupos = partes.filter((x) => /^\d+$/.test(x)).length;
+  if (grupos < 2 || grupos > 3) return null;
+
+  const cuerpo = partes
+    .map((x) => (/^\d+$/.test(x) ? "(\\d+)" : x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+    .join("");
+
+  const base = PATRONES_CONOCIDOS[0]!;
+  return {
+    nombre: `como "${t}"`,
+    tracker: new RegExp(`^${cuerpo}$`, "i"),
+    caja: base.caja,
+    string: base.string,
+  };
+}
 
 /** Una etiqueta de texto del plano, con su centro. Y crece hacia abajo. */
 export interface Etiqueta {
@@ -41,11 +129,66 @@ export interface Etiqueta {
   t: string;
 }
 
+export interface FormaDeEtiqueta {
+  /** La forma, con # por cada digito y A por cada letra. Ej: "##-###-A#". */
+  forma: string;
+  veces: number;
+  ejemplos: string[];
+}
+
 export interface ResultadoPdf {
   plano: PlanoDeParque;
   /** Cuantas etiquetas de cada tipo se reconocieron. */
   leidas: { trackers: number; cajas: number; strings: number; total: number };
   avisos: string[];
+  /** Que formato de nombre se uso para leer el plano. */
+  patron?: string;
+  /**
+   * Las formas de texto que trae el PDF, las mas repetidas primero.
+   *
+   * Existe para el caso que importa: cuando no se reconocio nada. Decir "no
+   * reconoci ninguna etiqueta" y nada mas deja a la persona sin nada que hacer
+   * — con el PDF abierto delante y una app que no le dice que vio. Con esto se
+   * ve de una que hay adentro, y alcanza con copiar una etiqueta para que el
+   * lector aprenda el formato.
+   */
+  formas?: FormaDeEtiqueta[];
+}
+
+/**
+ * La forma de un texto: digitos a `#`, letras a `A`, el resto tal cual.
+ *
+ * "05-042-R1" da "##-###-A#". Agrupar por forma es lo que convierte 3458
+ * etiquetas sueltas en una linea que se lee de un vistazo.
+ */
+export function formaDe(texto: string): string {
+  return texto.trim().replace(/\d/g, "#").replace(/[A-Za-z]/g, "A");
+}
+
+/**
+ * Las formas de etiqueta que trae el PDF, las mas repetidas primero.
+ *
+ * Se filtran las que aparecen una o dos veces —el rotulo de la lamina, el
+ * numero de revision, el norte— porque lo que se busca es lo que se repite
+ * cientos de veces, que es la grilla de trackers.
+ */
+export function formasDeEtiqueta(etiquetas: Etiqueta[], cuantas = 6): FormaDeEtiqueta[] {
+  const m = new Map<string, { veces: number; ejemplos: string[] }>();
+  for (const e of etiquetas) {
+    const t = e.t.trim();
+    if (!t || t.length > 40) continue;
+    // Sin al menos un digito no es una etiqueta de grilla, es texto de la lamina.
+    if (!/\d/.test(t)) continue;
+    const f = formaDe(t);
+    const v = m.get(f);
+    if (v) { v.veces++; if (v.ejemplos.length < 3 && !v.ejemplos.includes(t)) v.ejemplos.push(t); }
+    else m.set(f, { veces: 1, ejemplos: [t] });
+  }
+  return [...m.entries()]
+    .map(([forma, v]) => ({ forma, veces: v.veces, ejemplos: v.ejemplos }))
+    .filter((f) => f.veces >= 3)
+    .sort((a, b) => b.veces - a.veces)
+    .slice(0, cuantas);
 }
 
 // ---------------------------------------------------------------------------
@@ -90,11 +233,11 @@ export function huecoInterior(vals: number[]): { hueco: number; pos: number } {
  * las cajas quedan en null. Por eso se avisa cuando un bloque no encontro
  * ninguna, en vez de devolver el plano a medias en silencio.
  */
-export function planoDeEtiquetas(etiquetas: Etiqueta[]): ResultadoPdf {
+/** Reparte las etiquetas en trackers, cajas y strings con un formato dado. */
+function repartir(etiquetas: Etiqueta[], pat: Patrones) {
   const trackers = new Map<string, Etiqueta[]>();
   const cajas = new Map<string, Etiqueta[]>();
   const strings = new Map<string, Etiqueta[]>();
-  const avisos: string[] = [];
 
   const empujar = (m: Map<string, Etiqueta[]>, k: string, e: Etiqueta) => {
     const v = m.get(k);
@@ -102,13 +245,55 @@ export function planoDeEtiquetas(etiquetas: Etiqueta[]): ResultadoPdf {
   };
 
   for (const e of etiquetas) {
-    const mt = TRACKER.exec(e.t);
+    const t = e.t.trim();
+    const mt = pat.tracker.exec(t);
     if (mt) { empujar(trackers, String(+mt[1]!).padStart(2, "0"), e); continue; }
-    const mc = CAJA.exec(e.t);
+    const mc = pat.caja.exec(t);
     if (mc) { empujar(cajas, String(+mc[1]!).padStart(2, "0"), e); continue; }
-    const ms = STRING.exec(e.t);
+    const ms = pat.string.exec(t);
     if (ms) empujar(strings, String(+ms[1]!).padStart(2, "0"), e);
   }
+  return { trackers, cajas, strings };
+}
+
+export interface OpcionesDePlano {
+  /**
+   * Una etiqueta de tracker copiada del plano, cuando ninguno de los formatos
+   * conocidos engancha. De ahi sale el patron.
+   */
+  ejemploDeTracker?: string;
+}
+
+export function planoDeEtiquetas(
+  etiquetas: Etiqueta[],
+  opts: OpcionesDePlano = {},
+): ResultadoPdf {
+  const avisos: string[] = [];
+
+  /*
+    Se prueban todos los formatos conocidos y gana el que reconoce mas
+    trackers. Antes habia UN formato —el de Edenvale— escrito como constante:
+    en otro parque no enganchaba una sola etiqueta y la app contestaba "el
+    archivo no tiene ningun bloque", que suena a que el PDF esta mal cuando lo
+    que estaba mal era la herramienta.
+  */
+  const delEjemplo = opts.ejemploDeTracker ? patronDesdeEjemplo(opts.ejemploDeTracker) : null;
+  if (opts.ejemploDeTracker && !delEjemplo) {
+    avisos.push(
+      `De "${opts.ejemploDeTracker}" no puedo sacar un formato: una etiqueta de tracker tiene que ` +
+      "traer dos o tres grupos de numeros (bloque y tracker, o bloque, tracker y fila). " +
+      "Copiá una etiqueta tal cual está en el plano.",
+    );
+  }
+
+  const candidatos = delEjemplo ? [delEjemplo, ...PATRONES_CONOCIDOS] : PATRONES_CONOCIDOS;
+  let mejor = { pat: candidatos[0]!, r: repartir(etiquetas, candidatos[0]!), n: 0 };
+  for (const pat of candidatos) {
+    const r = repartir(etiquetas, pat);
+    const n = [...r.trackers.values()].reduce((s, v) => s + v.length, 0);
+    if (n > mejor.n) mejor = { pat, r, n };
+  }
+  const { trackers, cajas, strings } = mejor.r;
 
   const cuenta = (m: Map<string, Etiqueta[]>) =>
     [...m.values()].reduce((s, v) => s + v.length, 0);
@@ -119,12 +304,45 @@ export function planoDeEtiquetas(etiquetas: Etiqueta[]): ResultadoPdf {
     total: etiquetas.length,
   };
 
+  const formas = formasDeEtiqueta(etiquetas);
+
   if (!leidas.trackers) {
-    avisos.push(
-      "No reconoci ninguna etiqueta de tracker con la forma bb-ttt-Rz. O los PDF no son los de " +
-      "interconexion, o el texto viene como dibujo en vez de como texto — eso pasa cuando el PDF " +
-      "se escaneo o se aplano, y ahi no hay nada que extraer por mas que se vea igual en pantalla.",
-    );
+    /*
+      El mensaje que importa. Antes decia "no reconoci ninguna etiqueta con la
+      forma bb-ttt-Rz" y se terminaba ahi: la persona queda con el PDF abierto
+      delante y una app que no le dice que vio. Ahora se muestra lo que SI hay.
+    */
+    /*
+      Una lamina de interconexion de verdad trae CIENTOS de etiquetas: una por
+      tracker, una por caja, una por string. Con un punado de textos —el rotulo,
+      el numero de revision, "SHEET 3 OF 12"— lo que hay adentro es un dibujo,
+      no texto: el PDF esta escaneado o aplanado a imagen. Se ve identico en
+      pantalla y no hay nada que extraer.
+    */
+    if (etiquetas.length < 20) {
+      avisos.push(
+        `El PDF trae ${etiquetas.length === 0 ? "cero" : "apenas " + etiquetas.length} textos ` +
+        "adentro, y una lamina de interconexion tiene cientos. Casi siempre significa que el PDF " +
+        "se escaneo o se aplano a imagen: se ve igual en pantalla, pero adentro es un dibujo y no " +
+        "hay una sola letra que leer. Pedile al proyecto el PDF original, el que sale del CAD." +
+        (etiquetas.length ? ` Lo unico que pude leer fue: ${etiquetas.slice(0, 5).map((e) => `"${e.t.trim()}"`).join(", ")}.` : ""),
+      );
+    } else if (!formas.length) {
+      avisos.push(
+        `Lei ${etiquetas.length} textos del PDF pero ninguno se repite lo suficiente como para ser ` +
+        "una grilla de trackers. Puede que estos no sean los planos de interconexion sino otra " +
+        "lamina del proyecto.",
+      );
+    } else {
+      avisos.push(
+        `Lei ${etiquetas.length} textos del PDF y ninguno tiene forma de etiqueta de tracker que yo ` +
+        "conozca. Estas son las formas que mas se repiten en tu archivo — si alguna es la de los " +
+        "trackers, copiala en el campo de abajo y vuelvo a leer el plano con ese formato:",
+      );
+      for (const f of formas) {
+        avisos.push(`   ${f.veces} veces con la forma ${f.forma} — por ejemplo ${f.ejemplos.join(", ")}`);
+      }
+    }
   }
 
   const plano: PlanoDeParque = {};
@@ -134,13 +352,20 @@ export function planoDeEtiquetas(etiquetas: Etiqueta[]): ResultadoPdf {
       trackers.get(bloque)!,
       cajas.get(bloque) ?? [],
       strings.get(bloque) ?? [],
+      mejor.pat,
     );
     if ("aviso" in armado) { avisos.push(`Bloque ${bloque}: ${armado.aviso}`); continue; }
     plano[bloque] = armado.bloque;
     avisos.push(...armado.avisos.map((a) => `Bloque ${bloque}: ${a}`));
   }
 
-  return { plano, leidas, avisos };
+  return {
+    plano,
+    leidas,
+    avisos,
+    patron: mejor.pat.nombre,
+    ...(leidas.trackers ? {} : { formas }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -156,13 +381,13 @@ interface Tk {
 }
 
 function armarBloque(
-  bnum: string, T: Etiqueta[], D: Etiqueta[], S: Etiqueta[],
+  bnum: string, T: Etiqueta[], D: Etiqueta[], S: Etiqueta[], pat: Patrones,
 ): { bloque: PlanoDeParque[string]; avisos: string[] } | { aviso: string } {
   const avisos: string[] = [];
   const tmap = new Map<string, Tk>();
 
   for (const e of T) {
-    const m = TRACKER.exec(e.t)!;
+    const m = pat.tracker.exec(e.t.trim())!;
     const k = `${m[1]}-${m[2]}`;
     const row = `R${m[3]}`;
     let t = tmap.get(k);
@@ -228,11 +453,11 @@ function armarBloque(
     if (!sl.length || !nombres.size) { t.dcbox = null; continue; }
     const s = sl.reduce((a, b) =>
       (b.x - t.cx) ** 2 + (b.y - t.cy) ** 2 < (a.x - t.cx) ** 2 + (a.y - t.cy) ** 2 ? b : a);
-    const m = STRING.exec(s.n);
+    const m = pat.string.exec(s.n.trim());
     if (!m) { t.dcbox = null; continue; }
     const [inv, col, caja] = [+m[1]!, +m[2]!, +m[3]!];
     const cands = dl.filter((d) => {
-      const mm = CAJA.exec(d.name);
+      const mm = pat.caja.exec(d.name.trim());
       return mm && +mm[1]! === inv && +mm[2]! === col && Math.abs(+mm[3]! - caja) <= 2;
     });
     if (cands.length) {
