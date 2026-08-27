@@ -43,12 +43,33 @@ function stringSpanM(profile: FarmProfile): number {
   return profile.topology.modulesPerString * pitchOf(profile) - profile.module.gapMm / 1000;
 }
 
-/** Largo pica a pica que el perfil predice para una fila completa. */
+/**
+ * Largo pica a pica que el perfil predice para una fila completa.
+ *
+ * Honra `topology.gaps` cuando esta declarado, igual que el compilador. Sin eso,
+ * cualquier perfil con huecos enumerados —un tracker de 28 modulos que es UN
+ * solo string partido por la bahia del motor, por ejemplo— generaba filas
+ * sinteticas mas cortas que lo que el motor espera, y los tests fallaban
+ * culpando al motor por un error del andamio.
+ */
 export function nominalLengthM(profile: FarmProfile): number {
-  const { stringsPerRow, stringGapMm } = profile.topology;
+  const { modulesPerString, stringsPerRow, stringGapMm, gaps } = profile.topology;
   const offsetM = profile.geometry.endpointOffsetMm / 1000;
   const mode = profile.geometry.endpointOffsetMode ?? "both";
   const offsets = mode === "both" ? 2 * offsetM : mode === "origin" ? offsetM : 0;
+
+  if (gaps?.length) {
+    // Los huecos enumerados MANDAN sobre stringGapMm, igual que en el compilador.
+    const total = modulesPerString * stringsPerRow;
+    const huecosM = gaps.reduce((s, g) => s + g.mm / 1000, 0);
+    const pasosNormales = total - 1 - gaps.length;
+    const extent =
+      pasosNormales * pitchOf(profile) +
+      (gaps.length + 1) * (profile.module.widthMm / 1000) +
+      huecosM;
+    return extent + offsets;
+  }
+
   const extent =
     stringsPerRow * stringSpanM(profile) + (stringsPerRow - 1) * ((stringGapMm ?? 0) / 1000);
   return extent + offsets;
@@ -101,6 +122,28 @@ export function pointAtSlot(
   const widthM = profile.module.widthMm / 1000;
   const mode = profile.geometry.endpointOffsetMode ?? "both";
   const offsetM = mode === "none" ? 0 : profile.geometry.endpointOffsetMm / 1000;
+
+  /*
+    Los huecos enumerados MANDAN sobre stringGapMm, igual que en el compilador.
+
+    Sin esta rama, un perfil con `topology.gaps` —el tracker de 28 modulos que
+    es UN string partido por la bahia del motor— ponia los modulos de despues
+    del hueco en el lugar equivocado, y el test acusaba al motor de un error
+    del andamio.
+  */
+  const gaps = profile.topology.gaps;
+  if (gaps?.length) {
+    const porModulo = new Map<number, number>();
+    for (const g of gaps) porModulo.set(g.afterModule, (porModulo.get(g.afterModule) ?? 0) + g.mm / 1000);
+    let x = offsetM;
+    for (let i = 1; i < slot; i++) {
+      const grande = porModulo.get(i);
+      x += widthM + (grande ?? pitchM - widthM);
+    }
+    const fromRefG = x + widthM / 2;
+    const fromStartG = from === "start" ? fromRefG : len - fromRefG;
+    return toGeo(frame, ux * fromStartG - uy * offAxisM, uy * fromStartG + ux * offAxisM);
+  }
 
   // El hueco `slot` cuenta modulos fisicos: hay que saltear la bahia de motor
   // que separa un string del siguiente.

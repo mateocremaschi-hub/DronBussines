@@ -352,12 +352,38 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
     stringNumbers = pares.map((q) => q.n);
     if (row.stringLabels?.length) stringLabels = pares.map((q) => q.label ?? "");
     if (stringNumbers.length !== ctx.stringsPerRow) {
+      /*
+        Esto no es un detalle de bookkeeping: es LA pregunta que decide como se
+        numeran los modulos, y la geometria no la puede contestar.
+
+        Una fila de 28 modulos con una bahia en el medio se ve EXACTAMENTE
+        igual si son dos strings de 14 o uno solo de 28 partido por el motor.
+        Los modulos caen en los mismos milimetros. Lo que cambia es la
+        direccion que se entrega: con dos strings, el modulo 17 se reporta como
+        "string 2, modulo 3"; con uno, como "modulo 17". El tecnico sale a
+        buscar un string que no existe.
+
+        La lista de strings SI lo sabe, porque la trae el proyecto. Cuando la
+        lista y el perfil no coinciden, el que tiene razon es casi siempre la
+        lista — y antes esto se resolvia inventando un string correlativo y
+        diciendo "completo con correlativos", que no le dice a nadie que hacer.
+      */
+      const menos = stringNumbers.length < ctx.stringsPerRow;
       ctx.buildWarnings.push({
         code: "missing-flag",
         rowId: row.id,
         message:
-          `La fila "${row.id}" trae ${stringNumbers.length} numero(s) de string pero el perfil declara ` +
-          `${ctx.stringsPerRow} por fila. Completo con correlativos.`,
+          `La fila "${row.id}" trae ${stringNumbers.length} numero(s) de string y el perfil declara ` +
+          `${ctx.stringsPerRow} por fila. ` +
+          (menos
+            ? `Casi seguro el perfil esta mal: si el tracker es UN string partido por la bahia del ` +
+              `motor, va "strings por fila = 1" y "modulos por string = ${ctx.modulesPerRow}", y la ` +
+              `bahia se declara como hueco despues del modulo ` +
+              `${Math.round(ctx.modulesPerRow / 2)} en "los huecos uno por uno". Cargado como ` +
+              `${ctx.stringsPerRow} strings, la app va a reportar "string 2, modulo 3" donde el ` +
+              `plano dice "modulo ${Math.round(ctx.modulesPerRow / 2) + 3}".`
+            : `Sobran numeros de string para lo que declara el perfil: reviso cual de los dos esta mal ` +
+              `antes de usar las direcciones.`),
       });
       while (stringNumbers.length < ctx.stringsPerRow) {
         stringNumbers.push((stringNumbers[stringNumbers.length - 1] ?? 0) + 1);

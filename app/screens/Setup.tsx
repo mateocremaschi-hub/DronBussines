@@ -577,10 +577,19 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
             </select>
             {crs.type === "utm" && (
               <>
+                {/*
+                  Vacio, no "0".
+
+                  Cero no es una zona: es el centinela de "todavia no la sabemos".
+                  Mostrado como 0 en la casilla se lee como un valor cargado, y
+                  el cartel rojo de abajo parece un error de la app en vez de un
+                  campo que falta. Con la casilla vacia, falta se ve que falta.
+                */}
                 <label className="inline">Zona
                   <input
-                    type="number" min={1} max={60} value={crs.zone}
-                    onChange={(e) => setCrs({ ...crs, zone: Number(e.target.value) })}
+                    type="number" min={1} max={60} placeholder="1 a 60"
+                    value={crs.zone || ""}
+                    onChange={(e) => setCrs({ ...crs, zone: Number(e.target.value) || 0 })}
                   />
                 </label>
                 <label className="inline">Hemisferio
@@ -606,7 +615,7 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
               <label className="inline">
                 ¿No la sabés? Pegá una coordenada del parque
                 <input
-                  type="text" placeholder="-26.92, 150.58"
+                  type="text" placeholder="ej: -26.92, 150.58"
                   onChange={(e) => {
                     const m = /(-?\d+[.,]?\d*)\s*[,;\s]\s*(-?\d+[.,]?\d*)/.exec(e.target.value);
                     if (!m) return;
@@ -847,6 +856,19 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
                 }))}
               />
             </div>
+            {/*
+              LA pregunta que la geometria no puede contestar.
+              ===================================================================
+              Una fila de 28 modulos con una bahia en el medio se ve EXACTAMENTE
+              igual si son dos strings de 14 o uno solo de 28 partido por el
+              motor. Los modulos caen en los mismos milimetros y el cuadro cierra
+              igual. Lo unico que cambia es la direccion que se entrega: con dos
+              strings, el modulo 17 se reporta "string 2, modulo 3"; con uno,
+              "modulo 17". El tecnico sale a buscar un string que no existe.
+
+              No hay forma de deducirlo del archivo de picas. Lo unico honesto es
+              preguntarlo bien, con el ejemplo adelante.
+            */}
             <div className="field">
               <label>Strings por fila</label>
               <input
@@ -855,6 +877,22 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
                   ...d, topology: { ...d.topology, stringsPerRow: Number(e.target.value) },
                 }))}
               />
+              <span className="help">
+                Strings <strong>electricos</strong>, no mitades del tracker. Si el tracker tiene una
+                bahia en el medio pero las dos mitades son <strong>un solo string</strong>, acá va{" "}
+                <strong>1</strong> y arriba el total de modulos: la bahia se declara aparte, en "los
+                huecos uno por uno". Se ve igual de las dos formas y numera distinto.
+              </span>
+              {profileDraft.topology.stringsPerRow > 1 && (
+                <p className="note">
+                  Con {profileDraft.topology.stringsPerRow} strings por fila, el modulo{" "}
+                  {profileDraft.topology.modulesPerString + 1} se va a reportar como{" "}
+                  <strong>"string 2, modulo 1"</strong>, no como "modulo{" "}
+                  {profileDraft.topology.modulesPerString + 1}". Si el plano de tu parque lo numera
+                  de corrido hasta {modulesPerRowDraft}, poné 1 string de {modulesPerRowDraft}{" "}
+                  modulos y declará la bahia como hueco.
+                </p>
+              )}
             </div>
             <div className="field">
               <label>Ancho del modulo sobre el eje (mm)</label>
