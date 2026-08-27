@@ -35,6 +35,20 @@ export interface Camera {
   /** Campo de vision horizontal y vertical, en grados. */
   hfovDeg: number;
   vfovDeg: number;
+  /**
+   * Que aeronave lleva esta camara, por el id de `PERFILES_DJI`.
+   *
+   * La camara y el dron no son dos elecciones: son una. La pantalla tenia dos
+   * listas sueltas —el sensor con el que se planifica y el dron con el que se
+   * exporta— y se podia planificar con la huella de un 4T y exportar el archivo
+   * de un Mavic 3T. Eso no falla al exportar: falla en el campo, con las lineas
+   * separadas para una camara y el dron llevando otra.
+   *
+   * Sin id, la camara vuela en algo que este archivo no sabe describir en WPML
+   * —el H30T va en un Matrice 350 o 400— y ahi hay que decirlo en vez de
+   * ofrecer el perfil equivocado.
+   */
+  djiId?: string;
 }
 
 /**
@@ -47,11 +61,11 @@ export interface Camera {
  * alguien busca un panel y no hay foto. Por eso se derivan del diagonal con
  * la relacion de aspecto del sensor, en vez de cargarse a mano.
  */
-function desdeDiagonal(name: string, dfovDeg: number, imageW: number, imageH: number): Camera {
+function desdeDiagonal(name: string, dfovDeg: number, imageW: number, imageH: number, djiId?: string): Camera {
   const d = Math.hypot(imageW, imageH);
   const t = Math.tan((dfovDeg * Math.PI) / 180 / 2);
   const grados = (x: number) => (2 * Math.atan(t * x)) / RAD;
-  return { name, imageW, imageH, hfovDeg: grados(imageW / d), vfovDeg: grados(imageH / d) };
+  return { name, imageW, imageH, hfovDeg: grados(imageW / d), vfovDeg: grados(imageH / d), ...(djiId ? { djiId } : {}) };
 }
 
 /** Diagonal de un cuadro de 35 mm, que es la referencia de la equivalencia. */
@@ -76,18 +90,25 @@ export function camaraDesdeEquivalente35(
   mm35: number,
   imageW: number,
   imageH: number,
+  djiId?: string,
 ): Camera {
   const t = DIAGONAL_35MM / (2 * mm35);
   const d = Math.hypot(imageW, imageH);
   const grados = (x: number) => (2 * Math.atan(t * x)) / RAD;
-  return { name, imageW, imageH, hfovDeg: grados(imageW / d), vfovDeg: grados(imageH / d) };
+  return {
+    name, imageW, imageH,
+    hfovDeg: grados(imageW / d), vfovDeg: grados(imageH / d),
+    ...(djiId ? { djiId } : {}),
+  };
 }
 
 export const CAMARAS: Camera[] = [
-  camaraDesdeEquivalente35("Mavic 3T · termica 640x512 (40 mm eq)", 40, 640, 512),
-  desdeDiagonal("Matrice 4T · termica 640x512 (DFOV 45°)", 45, 640, 512),
+  camaraDesdeEquivalente35("Mavic 3T · termica 640x512 (40 mm eq)", 40, 640, 512, "m3t"),
+  desdeDiagonal("Matrice 4T · termica 640x512 (DFOV 45°)", 45, 640, 512, "m4t"),
+  // El H30T no lleva id: va colgado de un Matrice 350 o 400, que no estan en
+  // PERFILES_DJI. Inventarle uno seria peor que no tenerlo.
   desdeDiagonal("Zenmuse H30T · termica 1280x1024 (DFOV 45.2°)", 45.2, 1280, 1024),
-  camaraDesdeEquivalente35("Mavic 3T · visible 4000x3000 (24 mm eq)", 24, 4000, 3000),
+  camaraDesdeEquivalente35("Mavic 3T · visible 4000x3000 (24 mm eq)", 24, 4000, 3000, "m3t"),
 ];
 
 const huella = (alturaM: number, fovDeg: number) => 2 * alturaM * Math.tan((fovDeg * RAD) / 2);

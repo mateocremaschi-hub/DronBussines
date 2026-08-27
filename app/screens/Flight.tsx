@@ -36,7 +36,15 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   const [baterias, setBaterias] = useState(4);
   const [bloqueAbierto, setBloqueAbierto] = useState<string | null>(null);
   const [agrupar, setAgrupar] = useState(true);
-  const [perfilDji, setPerfilDji] = useState(0);
+  /**
+   * La aeronave sale de la camara elegida, no de una segunda lista.
+   *
+   * Antes eran dos elecciones sueltas y se podian contradecir: planificar con
+   * la huella del Matrice 4T y exportar el archivo del Mavic 3T. El KMZ salia
+   * sin quejarse, y el error aparecia recien en el campo — con las lineas
+   * separadas para una camara y el dron llevando otra.
+   */
+  const perfil = PERFILES_DJI.find((p) => p.id === CAMARAS[camIndex]!.djiId);
 
   const opts: MissionOptions = { camera: CAMARAS[camIndex]!, ...o };
 
@@ -370,23 +378,30 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             </p>
             <GeometryPlot farm={farm} mission={mission} height={480} />
             <h3>Llevarlo al dron</h3>
-            <div className="row">
-              <label className="inline">
-                Dron
-                <select value={perfilDji} onChange={(e) => setPerfilDji(Number(e.target.value))}>
-                  {PERFILES_DJI.map((p, i) => (
-                    <option key={p.id} value={i}>{p.nombre}{p.confirmado ? "" : " (sin confirmar)"}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
+            {perfil ? (
+              <p className="help">
+                Se exporta para <strong>{perfil.nombre}</strong>, que es el dron de la cámara que
+                elegiste arriba. No se elige aparte: si la huella con la que se planificó y el dron
+                que vuela no son el mismo, las líneas quedan separadas para una cámara y el archivo
+                sale para otra.
+                {!perfil.confirmado && ` ${perfil.nota ?? ""}`}
+              </p>
+            ) : (
+              <p className="alert">
+                {CAMARAS[camIndex]!.name} no va en ninguno de los drones que esta app sabe escribir
+                en WPML, así que no se puede exportar el KMZ. El plan es correcto: bajá el KML o los
+                waypoints y armá la misión en Pilot 2 a mano, con esta separación entre líneas.
+              </p>
+            )}
 
             <div className="actions">
               <button
+                disabled={!perfil}
                 onClick={() => {
+                  if (!perfil) return;
                   const bytes = toKmz(mission, opts, {
                     nombre: `${stored.profile.name} — ${etiqueta}`,
-                    perfil: PERFILES_DJI[perfilDji]!,
+                    perfil,
                     fecha: new Date(),
                   });
                   descargarBytes(
@@ -409,9 +424,10 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             <div className="warnbox">
               <h3>Antes de copiarlo al controlador</h3>
               <ul>
-                {avisosDeKmz(mission, opts, {
-                  nombre: etiqueta, perfil: PERFILES_DJI[perfilDji]!, fecha: new Date(),
-                }).map((a, i) => (<li key={i}>{a}</li>))}
+                {(perfil
+                  ? avisosDeKmz(mission, opts, { nombre: etiqueta, perfil, fecha: new Date() })
+                  : []
+                ).map((a, i) => (<li key={i}>{a}</li>))}
               </ul>
             </div>
 
