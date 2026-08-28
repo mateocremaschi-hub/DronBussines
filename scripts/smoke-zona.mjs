@@ -72,42 +72,48 @@ await page.getByRole("button", { name: "Guardar el parque" }).click();
 await page.getByRole("heading", { name: "Parques" }).waitFor();
 console.log("Parque guardado con la zona 56.");
 
-// --- entrar por "Ajustar parametros" y corregirla --------------------------
-// El paso que no existia.
+// --- entrar por "Ajustar parametros" y corregirlo ------------------------
+//
+// PRIMERO se entra y se GUARDA sin tocar nada. Eso reproduce el bug real: esta
+// pantalla borraba la zona UTM del parque al guardar, porque su estado de CRS
+// arrancaba en "grados decimales". Despues, al querer corregir la zona, no
+// habia zona que corregir — la habia borrado ella misma.
 await page.getByRole("button", { name: "Ajustar parametros" }).first().click();
 await page.getByRole("heading", { name: /Como esta armado/ }).waitFor();
 
-/*
-  El titulo tiene que decir en que pantalla estas.
-
-  "Ajustar parametros" y "Agregar geometria" son botones pegados y las dos
-  abrian una pantalla titulada "Agregar mas geometria". Cuando el campo que
-  buscabas no aparecia, no habia forma de distinguir "me equivoque de boton"
-  de "la app no lo tiene".
-*/
 const titulo = await page.locator("h1").first().innerText();
 if (!/Ajustar los parametros/i.test(titulo)) {
   mal(`el titulo dice "${titulo}" — tiene que decir en que pantalla estas`);
 }
 
-const selector = page.getByLabel("Zona UTM");
-if (!(await selector.count())) {
-  mal('no hay selector de "Zona UTM" en Ajustar parametros — el parque no se puede corregir');
+await page.getByRole("button", { name: "Siguiente" }).click();
+await page.getByRole("heading", { name: /^4 · Revision$/ }).waitFor();
+await page.waitForTimeout(400);
+await page.getByRole("button", { name: "Guardar los parametros" }).click();
+await page.getByRole("heading", { name: "Parques" }).waitFor();
+console.log("Guardado sin tocar nada (aca antes se perdia la zona).");
+
+// Ahora si, corregirlo. Tiene que poder aunque el paso anterior haya tocado el
+// perfil: el arreglo no puede depender de un dato que se pueda perder.
+await page.getByRole("button", { name: "Ajustar parametros" }).first().click();
+await page.getByRole("heading", { name: /Como esta armado/ }).waitFor();
+
+const tarjeta = page.locator(".note", { hasText: /Donde cae el parque/ });
+if (!(await tarjeta.count())) {
+  mal("no aparece la tarjeta de donde cae el parque");
   await browser.close();
   process.exit(1);
 }
-const zonaGuardada = await selector.inputValue();
-if (zonaGuardada !== "56") mal(`el selector arranca en ${zonaGuardada}, tenia que arrancar en la zona guardada (56)`);
+const donde = await tarjeta.first().innerText();
+console.log("Tarjeta:", donde.replace(/\s+/g, " ").trim().slice(0, 110));
+if (!/zona UTM 56/.test(donde)) mal("la tarjeta no dice en que zona cae hoy");
 
-await selector.selectOption("55");
+await page.getByRole("button", { name: /Moverlo 6° al oeste/ }).click();
 await page.waitForTimeout(300);
 
-// El aviso de a donde se va a mover, ANTES de guardar.
-const aviso = await page.locator(".note.bad", { hasText: /se mueve/ }).first().innerText();
-console.log("Aviso:", aviso.replace(/\s+/g, " ").trim().slice(0, 160));
-if (!/6° de longitud/.test(aviso)) mal("el aviso no dice cuanto se mueve");
-if (!/oeste/.test(aviso)) mal("el aviso no dice para que lado");
-if (!(await page.locator("a", { hasText: /ver en el mapa/ }).count())) mal("falta el link al mapa");
+const aviso = await tarjeta.first().innerText();
+if (!/se mueven 6° al oeste/.test(aviso)) mal("no avisa que se van a mover las filas");
+if (!(await page.locator("a", { hasText: /ver mapa/ }).count())) mal("falta el link al mapa de destino");
 
 await page.getByRole("button", { name: "Siguiente" }).click();
 await page.getByRole("heading", { name: /^4 · Revision$/ }).waitFor();
@@ -118,10 +124,13 @@ await page.getByRole("heading", { name: "Parques" }).waitFor();
 // --- lo unico que prueba algo: ¿se movieron las filas? ---------------------
 // Se lee del parque guardado, no de la pantalla: la pantalla puede mostrar
 // bien un dato que no se guardo.
+// La zona guardada tiene que haber seguido al parque: decir 56 con el parque
+// dibujado en la 55 es la misma mentira de la que se viene.
 await page.getByRole("button", { name: "Ajustar parametros" }).first().click();
 await page.getByRole("heading", { name: /Como esta armado/ }).waitFor();
-const zonaAhora = await page.getByLabel("Zona UTM").inputValue();
-if (zonaAhora !== "55") mal(`la zona guardada quedo en ${zonaAhora}, esperaba 55`);
+const despues = await page.locator(".note", { hasText: /Donde cae el parque/ }).first().innerText();
+console.log("Despues de mover:", despues.replace(/\s+/g, " ").trim().slice(0, 90));
+if (!/zona UTM 55/.test(despues)) mal("el parque no quedo en la zona 55");
 
 await page.getByRole("banner").getByRole("button", { name: "Cancelar" }).click();
 await page.getByRole("heading", { name: "Parques" }).waitFor();
