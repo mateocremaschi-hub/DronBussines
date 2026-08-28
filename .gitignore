@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+dist-app/
+shots/
+public/termicas/
+
+# Los planos del cliente no van al repo: la prueba que los usa se saltea sola.
+fixtures/planos/

@@ -147,7 +147,23 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
   const [sheets, setSheets] = useState<Sheet[]>([]);
   const [sheetIndex, setSheetIndex] = useState(0);
   const [mapping, setMapping] = useState<Mapping>({});
-  const [crs, setCrs] = useState<Crs>({ type: "wgs84" });
+  /*
+    Ajustando parametros no entra ningun archivo, asi que la deteccion nunca
+    corre: el estado tiene que arrancar del parque que ya esta. Sin esto el
+    selector de zona del paso 3 aparecia vacio y guardar pisaba el CRS con
+    "grados decimales", que es exactamente lo que no puede pasar.
+  */
+  const [crs, setCrs] = useState<Crs>(
+    soloParametros && existing?.profile.crs ? existing.profile.crs : { type: "wgs84" },
+  );
+  /**
+   * La zona UTM nueva, cuando se esta corrigiendo un parque ya cargado.
+   *
+   * Va aparte de `crs` porque no alcanza con cambiar el perfil: las filas
+   * guardadas ya tienen la latitud y la longitud convertidas, asi que hay que
+   * MOVERLAS. Ver el paso 3 y `save()`.
+   */
+  const [zonaCorregida, setZonaCorregida] = useState<number | null>(null);
   /** Lo que la deteccion no pudo saber sola y hay que confirmar a mano. */
   const [crsAConfirmar, setCrsAConfirmar] = useState<string[]>([]);
 
@@ -428,9 +444,34 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
   async function save() {
     if (!farm || !merge) return;
     if (!soloParametros && !built) return;
+
+    /*
+      Corregir la zona mueve las filas, no solo el perfil.
+
+      Las coordenadas guardadas ya estan en grados: cambiar el numero del perfil
+      y dejar las filas donde estaban seria peor que el error original, porque
+      el parque diria una zona y estaria dibujado en otra.
+
+      El traslado es exacto: para el mismo par este/norte, una zona de
+      diferencia corre la longitud 6 grados justos y deja la latitud igual. Por
+      eso no hace falta el archivo original ni reproyectar nada. Hay test en
+      test/utm.test.ts, en los dos hemisferios: si eso dejara de valer, esto
+      corrompe el parque en silencio.
+    */
+    let filas = merge.rows;
+    const zonaVieja = existing?.profile.crs?.type === "utm" ? existing.profile.crs.zone : null;
+    if (soloParametros && zonaCorregida != null && zonaVieja != null && zonaCorregida !== zonaVieja) {
+      const dLon = (zonaCorregida - zonaVieja) * 6;
+      filas = filas.map((r) => ({
+        ...r,
+        start: { ...r.start, lon: r.start.lon + dLon },
+        end: { ...r.end, lon: r.end.lon + dLon },
+      }));
+    }
+
     const stored: StoredFarm = {
       profile,
-      rows: merge.rows,
+      rows: filas,
       savedAt: new Date().toISOString(),
       // Ajustando parametros no entro ningun archivo: se conserva de donde
       // vinieron las filas en su momento, en vez de pisarlo con vacio.
@@ -691,6 +732,52 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
                 con la zona o el hemisferio equivocados todo lo demás sigue dando bien y el parque
                 queda a miles de kilómetros.
               </p>
+              {/*
+                Y si cae en el mar, qué.
+
+                El cartel de arriba ya avisaba —mostraba el punto y el mapa— pero
+                dejaba a la persona sin la salida: ver océano no dice qué número
+                cambiar, y la zona UTM no es algo que alguien sepa de memoria.
+                Wellington North se cargó con la zona 56 y cayó 560 km adentro
+                del mar de Tasmania; la correcta era la 55, la de al lado.
+
+                Errarle por una zona es EL error de este campo, porque las zonas
+                miden 6° y los parques no vienen con una etiqueta. Y se arregla
+                mirando: cambiar de zona corre la longitud exactamente 6°, la
+                latitud no se mueve, así que las vecinas se calculan sin volver a
+                convertir nada. Con los tres puntos a la vista, elegir es
+                reconocer el lugar en el mapa en vez de saber de cartografía.
+              */}
+              {crs.type === "utm" && !!crs.zone && (
+                <p className="help">
+                  ¿Cayó en el mar o en otro país? Casi siempre es la zona de al lado — cambiarla
+                  corre el parque 6° de longitud y nada más. Con las vecinas caería en:{" "}
+                  {[crs.zone - 1, crs.zone + 1]
+                    .filter((z) => z >= 1 && z <= 60)
+                    .map((z, i, arr) => {
+                      const lat = (built.bounds!.minLat + built.bounds!.maxLat) / 2;
+                      const lon =
+                        (built.bounds!.minLon + built.bounds!.maxLon) / 2 + (z - crs.zone) * 6;
+                      return (
+                        <span key={z}>
+                          <button
+                            className="link"
+                            onClick={() => setCrs({ ...crs, zone: z })}
+                          >
+                            zona {z}
+                          </button>{" "}
+                          <a
+                            href={`https://www.google.com/maps/search/?api=1&query=${lat},${lon}`}
+                            target="_blank" rel="noreferrer"
+                          >
+                            ({lat.toFixed(3)}, {lon.toFixed(3)})
+                          </a>
+                          {i < arr.length - 1 ? " · " : "."}
+                        </span>
+                      );
+                    })}
+                </p>
+              )}
               {built.sospechas.map((t, i) => (<p key={i} className="alert">{t}</p>))}
             </div>
           )}
@@ -821,6 +908,76 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
       {step === 3 && (
         <section className="card">
           <h2>3 · Como esta armado el parque</h2>
+
+          {/*
+            Corregir la zona UTM de un parque que ya existe.
+            ===================================================================
+            Esto faltaba, y el agujero era feo: la zona se elige en el paso 2,
+            que solo existe cuando entra un archivo. Un parque cargado con la
+            zona equivocada —Wellington North entro con la 56 en vez de la 55 y
+            quedo 560 km adentro del mar de Tasmania— no se podia arreglar sin
+            volver a importar las coordenadas, o sea tirando los planos y la
+            lista de strings que ya estaban aplicados encima.
+
+            Y el error no se nota hasta el final: con la zona equivocada todas
+            las medidas internas siguen bien, el cuadre cierra y el dibujo sale.
+            El primer sintoma es el KML.
+
+            Cambiar de zona corre la longitud EXACTAMENTE 6 grados por zona y no
+            toca la latitud (hay test). Asi que la correccion no reproyecta nada
+            ni necesita el archivo original: mueve las filas que ya estan.
+          */}
+          {soloParametros && existing?.profile.crs?.type === "utm" && (
+            <div className="field">
+              {/*
+                `htmlFor` + `id` no es decoracion: sin asociar, el label es texto
+                suelto y ni un lector de pantalla ni la prueba de humo pueden
+                encontrar el campo por su nombre.
+              */}
+              <label htmlFor="zona-utm">Zona UTM</label>
+              <select
+                id="zona-utm"
+                value={crs.type === "utm" ? crs.zone : 0}
+                onChange={(e) => {
+                  const z = Number(e.target.value);
+                  if (!z || crs.type !== "utm") return;
+                  setCrs({ ...crs, zone: z });
+                  setZonaCorregida(z);
+                }}
+              >
+                {Array.from({ length: 60 }, (_, i) => i + 1).map((z) => (
+                  <option key={z} value={z}>zona {z}</option>
+                ))}
+              </select>
+              <span className="help">
+                Solo tocala si el parque cae en el lugar equivocado del mapa. Cambiarla mueve las{" "}
+                {existing.rows.length} filas que ya estan cargadas — los planos, los strings y el
+                sentido de conteo no se tocan, porque nada de eso depende de la zona.
+              </span>
+              {zonaCorregida != null && existing.profile.crs?.type === "utm" &&
+                zonaCorregida !== existing.profile.crs.zone && (
+                <p className="note bad">
+                  De la zona {existing.profile.crs.zone} a la {zonaCorregida}: el parque se mueve{" "}
+                  <strong>{Math.abs(zonaCorregida - existing.profile.crs.zone) * 6}° de longitud</strong>{" "}
+                  hacia el {zonaCorregida > existing.profile.crs.zone ? "este" : "oeste"}. Va a caer en{" "}
+                  <span className="mono">
+                    {existing.rows[0]!.start.lat.toFixed(4)},{" "}
+                    {(existing.rows[0]!.start.lon +
+                      (zonaCorregida - existing.profile.crs.zone) * 6).toFixed(4)}
+                  </span>{" "}
+                  <a
+                    href={`https://www.google.com/maps/search/?api=1&query=${
+                      existing.rows[0]!.start.lat
+                    },${existing.rows[0]!.start.lon + (zonaCorregida - existing.profile.crs.zone) * 6}`}
+                    target="_blank" rel="noreferrer"
+                  >
+                    ver en el mapa →
+                  </a>
+                  . Abrilo antes de guardar: es el unico chequeo que no se puede fingir.
+                </p>
+              )}
+            </div>
+          )}
 
           {!existing && (
             <div className="field">
