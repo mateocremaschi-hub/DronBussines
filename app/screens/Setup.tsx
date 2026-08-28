@@ -494,7 +494,20 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
       <header className="screen-head">
         <div>
           <p className="eyebrow">{existing ? existing.profile.name : "Nuevo parque"}</p>
-          <h1>{existing ? "Agregar mas geometria" : "Cargar los datos que tengas"}</h1>
+          {/*
+            Las dos pantallas decian lo mismo.
+
+            "Ajustar parametros" y "Agregar geometria" son botones pegados en la
+            lista de parques y las dos abrian una pantalla titulada "Agregar mas
+            geometria". Sin manera de saber en cual estas: si el campo que
+            buscas no aparece, no podes distinguir "me equivoque de boton" de
+            "la app no lo tiene". Paso justo eso.
+          */}
+          <h1>
+            {soloParametros
+              ? "Ajustar los parametros"
+              : existing ? "Agregar mas geometria" : "Cargar los datos que tengas"}
+          </h1>
         </div>
         <button className="ghost" onClick={onCancel}>Cancelar</button>
       </header>
@@ -927,6 +940,28 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
             toca la latitud (hay test). Asi que la correccion no reproyecta nada
             ni necesita el archivo original: mueve las filas que ya estan.
           */}
+          {/*
+            La tarjeta se muestra SIEMPRE en este modo, aunque el parque no
+            tenga zona UTM guardada.
+
+            Antes la condicion pedia `crs.type === "utm"` y, si no se cumplia,
+            no se renderizaba nada: la pantalla quedaba identica a la de antes y
+            era imposible saber si faltaba la funcion o si el parque no tenia
+            zona. Un campo que a veces no existe y no dice por que es peor que
+            uno deshabilitado que lo explica.
+          */}
+          {soloParametros && existing?.profile.crs?.type !== "utm" && (
+            <div className="field">
+              <label>Zona UTM</label>
+              <p className="note">
+                Este parque no tiene una zona UTM guardada: sus coordenadas estan en{" "}
+                <strong>grados decimales</strong>, asi que no hay ninguna zona que corregir. Si el
+                parque igual cae en el lugar equivocado del mapa, el problema esta en el archivo de
+                coordenadas y hay que volver a importarlo — decilo antes de tocar nada.
+              </p>
+            </div>
+          )}
+
           {soloParametros && existing?.profile.crs?.type === "utm" && (
             <div className="field">
               {/*

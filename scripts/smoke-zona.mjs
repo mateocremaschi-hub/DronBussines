@@ -77,6 +77,19 @@ console.log("Parque guardado con la zona 56.");
 await page.getByRole("button", { name: "Ajustar parametros" }).first().click();
 await page.getByRole("heading", { name: /Como esta armado/ }).waitFor();
 
+/*
+  El titulo tiene que decir en que pantalla estas.
+
+  "Ajustar parametros" y "Agregar geometria" son botones pegados y las dos
+  abrian una pantalla titulada "Agregar mas geometria". Cuando el campo que
+  buscabas no aparecia, no habia forma de distinguir "me equivoque de boton"
+  de "la app no lo tiene".
+*/
+const titulo = await page.locator("h1").first().innerText();
+if (!/Ajustar los parametros/i.test(titulo)) {
+  mal(`el titulo dice "${titulo}" — tiene que decir en que pantalla estas`);
+}
+
 const selector = page.getByLabel("Zona UTM");
 if (!(await selector.count())) {
   mal('no hay selector de "Zona UTM" en Ajustar parametros — el parque no se puede corregir');
