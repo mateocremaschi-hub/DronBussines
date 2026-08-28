@@ -371,6 +371,7 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
             bahiaMm: profileDraft.topology.stringGapMm ?? 0,
             ...(profileDraft.topology.gaps?.length ? { huecos: profileDraft.topology.gaps } : {}),
             offsetMm: profileDraft.geometry.endpointOffsetMm,
+            modo: profileDraft.geometry.endpointOffsetMode ?? "both",
             largoMedidoM: offsetHint.medianLengthM,
             medidos: {
               ancho: !!medidos.ancho, hueco: !!medidos.hueco,
@@ -1041,13 +1042,55 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
               </label>
             </div>
             <div className="field">
+              <label>Que marca el punto que trae el archivo</label>
+              <select
+                value={profileDraft.geometry.endpointOffsetMode ?? "both"}
+                onChange={(e) => setProfileDraft((d) => ({
+                  ...d,
+                  geometry: {
+                    ...d.geometry,
+                    endpointOffsetMode: e.target.value as "both" | "origin" | "none" | "centered",
+                  },
+                }))}
+              >
+                <option value="centered">La punta del recorrido de modulos (o casi)</option>
+                <option value="both">Un punto a una distancia fija del primer modulo, en las dos puntas</option>
+                <option value="origin">Lo mismo, pero solo en la punta desde donde se cuenta</option>
+                <option value="none">Justo el borde del primer modulo, sin nada de sobra</option>
+              </select>
+              <span className="help">
+                Esta es la pregunta de fondo, y conviene contestarla mirando el archivo y no de
+                memoria. Si el topografo tomo el punto sobre el <strong>primer panel</strong> —no
+                sobre la pila de fundacion— la primera opcion es la que corresponde: los modulos se
+                acomodan adentro del largo real de cada fila y esa distancia deja de ser un dato que
+                haya que acertar. La diferencia de pocos centimetros que igual queda se reparte sola
+                entre las dos puntas. Elegi una de las otras solo si el punto esta a una distancia
+                que <em>mediste</em>.
+              </span>
+            </div>
+            <div
+              className="field"
+              style={
+                (profileDraft.geometry.endpointOffsetMode ?? "both") === "centered"
+                  ? { opacity: 0.5 }
+                  : undefined
+              }
+            >
               <label>Distancia del punto del archivo al primer modulo (mm)</label>
               <input
                 type="number" value={profileDraft.geometry.endpointOffsetMm}
+                disabled={(profileDraft.geometry.endpointOffsetMode ?? "both") === "centered"}
                 onChange={(e) => setProfileDraft((d) => ({
                   ...d, geometry: { ...d.geometry, endpointOffsetMm: Number(e.target.value) },
                 }))}
               />
+              {(profileDraft.geometry.endpointOffsetMode ?? "both") === "centered" && (
+                <span className="help">
+                  Con la opcion de arriba, este numero <strong>no se usa para nada</strong>: no hace
+                  falta que lo pongas en cero ni que lo toques. Lo que aplica de verdad es el reparto
+                  que ves en el cuadre, aca abajo.
+                </span>
+              )}
               {offsetHint && (
                 <span className="help">
                   El fierro suma <strong>{(offsetHint.extentMm / 1000).toFixed(3)} m</strong>:{" "}
@@ -1062,7 +1105,8 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
                   <strong>{Math.abs(offsetHint.offsetMm * 2).toFixed(0)} mm</strong> repartidos en
                   las dos puntas: <strong>{offsetHint.offsetMm.toFixed(0)} mm</strong> cada una
                   {offsetHint.offsetMm < 0 ? " (negativo: los modulos sobresalen mas alla del punto del archivo)" : ""}.
-                  {Math.abs(offsetHint.offsetMm - profileDraft.geometry.endpointOffsetMm) > 50 && (
+                  {(profileDraft.geometry.endpointOffsetMode ?? "both") !== "centered" &&
+                    Math.abs(offsetHint.offsetMm - profileDraft.geometry.endpointOffsetMm) > 50 && (
                     <>
                       {" "}
                       <button
@@ -1087,11 +1131,13 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
                   )}
                 </span>
               )}
-              <label className="cinta">
-                <input type="checkbox" checked={!!medidos.offset}
-                  onChange={(e) => setMedidos((m) => ({ ...m, offset: e.target.checked }))} />
-                lo medí con cinta
-              </label>
+              {(profileDraft.geometry.endpointOffsetMode ?? "both") !== "centered" && (
+                <label className="cinta">
+                  <input type="checkbox" checked={!!medidos.offset}
+                    onChange={(e) => setMedidos((m) => ({ ...m, offset: e.target.checked }))} />
+                  lo medí con cinta
+                </label>
+              )}
               <span className="help">
                 Cuidado con la palabra <em>pica</em>: no siempre es lo mismo. Esta distancia es contra
                 el punto que trae el archivo, que suele marcar la punta del recorrido de modulos. La
@@ -1102,12 +1148,27 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
             </div>
 
             {cuadre && (
-              <div className={cuadre.cierra ? "cuadre" : "cuadre no"}>
+              <div
+                className={
+                  // Centrado cierra siempre, asi que pintarlo de verde por
+                  // "cierra" seria dar por bueno un parque mal declarado. Lo
+                  // que decide el color ahi es cuanto se esta repartiendo.
+                  (cuadre.repartoPorPuntaMm != null
+                    ? Math.abs(cuadre.repartoPorPuntaMm) < nominalPitchMm / 2
+                    : cuadre.cierra)
+                    ? "cuadre"
+                    : "cuadre no"
+                }
+              >
                 <h3>El cuadre de la fila</h3>
                 <p className="help">
-                  Todo esto esta atado: si dejas uno sin medir, se despeja solo para que la cuenta
-                  cierre — y entonces cerrar no prueba nada. Marca con la casilla lo que mediste
-                  de verdad.
+                  {cuadre.repartoPorPuntaMm != null
+                    ? "Como los modulos se centran solos en el largo real, esta cuenta da cero por " +
+                      "construccion. No la leas como un visto bueno: leela para ver cuanto sobra " +
+                      "en las puntas y si el fierro declarado explica la fila."
+                    : "Todo esto esta atado: si dejas uno sin medir, se despeja solo para que la " +
+                      "cuenta cierre — y entonces cerrar no prueba nada. Marca con la casilla lo " +
+                      "que mediste de verdad."}
                 </p>
                 <table>
                   <tbody>

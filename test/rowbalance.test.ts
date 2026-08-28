@@ -125,3 +125,111 @@ describe("que dice cuando no cierra", () => {
     expect(c.cierra).toBe(true);
   });
 });
+
+/**
+ * El modo de las puntas.
+ *
+ * Esto salio de una pregunta de campo: "en este parque la coordenada se saco
+ * desde el primer panel, no desde la pica; entonces pongo cero, no?". La
+ * respuesta correcta era que con el preset PVH ese numero ya no se usaba para
+ * nada —el modo es centrado— pero el cuadre lo seguia sumando dos veces y
+ * mostraba un residuo que el motor no tenia. La tabla decia una cosa y la app
+ * hacia otra.
+ */
+describe("a que puntas aplica el offset", () => {
+  it("en modo centrado no usa el numero declarado: lo despeja del largo real", () => {
+    const conUno = cuadreDeFila({ ...base, modo: "centered", offsetMm: -25 });
+    const conOtro = cuadreDeFila({ ...base, modo: "centered", offsetMm: 9999 });
+    // El offset declarado no mueve nada.
+    expect(conOtro.predichoMm).toBe(conUno.predichoMm);
+    expect(conOtro.repartoPorPuntaMm).toBe(conUno.repartoPorPuntaMm);
+    // Y lo que reparte es exactamente lo que sobra, mitad y mitad.
+    expect(conUno.repartoPorPuntaMm).toBeCloseTo((65145 - conUno.fierroMm) / 2, 6);
+    expect(conUno.residuoMm).toBeCloseTo(0, 6);
+  });
+
+  it("centrado nunca se cuenta como medido, ni con la casilla tildada", () => {
+    const c = cuadreDeFila({
+      ...base, modo: "centered",
+      medidos: { ancho: true, hueco: true, bahia: true, offset: true },
+    });
+    const punta = c.partes.find((p) => p.concepto.includes("reparte"))!;
+    expect(punta.medido).toBe(false);
+    expect(c.medidos).toBeLessThan(c.total);
+  });
+
+  it("centrado no dice 'la fila cierra': dice cuanto esta repartiendo", () => {
+    const c = cuadreDeFila({ ...base, modo: "centered" });
+    const texto = c.notas.join(" ");
+    expect(texto).toMatch(/cierra siempre/);
+    expect(texto).toMatch(/no prueba nada/i);
+    expect(texto).not.toMatch(/Esto si es evidencia/);
+  });
+
+  it("centrado avisa cuando lo que reparte es medio modulo o mas", () => {
+    // Un modulo de menos por string: el centrado lo taparia en silencio.
+    const c = cuadreDeFila({ ...base, modo: "centered", modulosPorFila: 54 });
+    expect(Math.abs(c.repartoPorPuntaMm!)).toBeGreaterThan(500);
+    expect(c.notas.join(" ")).toMatch(/falta un hueco por declarar|sobra o falta un modulo/);
+  });
+
+  it("modo origin aplica el offset en una sola punta", () => {
+    const c = cuadreDeFila({ ...base, modo: "origin" });
+    const punta = c.partes.find((p) => p.concepto.includes("Pica por fuera"))!;
+    expect(punta.cantidad).toBe(1);
+    expect(c.predichoMm).toBe(c.fierroMm + base.offsetMm);
+  });
+
+  it("modo none no agrega ninguna linea de punta", () => {
+    const c = cuadreDeFila({ ...base, modo: "none" });
+    expect(c.partes.some((p) => p.concepto.includes("Pica") || p.concepto.includes("reparte"))).toBe(false);
+    expect(c.predichoMm).toBe(c.fierroMm);
+  });
+
+  it("sin modo declarado se porta como antes: las dos puntas", () => {
+    const c = cuadreDeFila(base);
+    expect(c.predichoMm).toBe(c.fierroMm + 2 * base.offsetMm);
+    expect(c.repartoPorPuntaMm).toBe(null);
+  });
+});
+
+/**
+ * El caso concreto de Wellington North, con los numeros del manual AXD.
+ *
+ * Sirve de red: si alguien vuelve a tocar el reparto, este test dice en
+ * milimetros lo que el parque real tiene que dar.
+ */
+describe("Wellington North: la coordenada esta sobre el primer panel", () => {
+  const wen: EntradaCuadre = {
+    modulosPorFila: 56,
+    stringsPorFila: 2,
+    anchoModuloMm: 1134,
+    huecoEntreModulosMm: 10,
+    bahiaMm: 824,
+    offsetMm: 0,
+    modo: "centered",
+    largoMedidoM: 65.018,
+  };
+
+  it("el fierro declarado da los 64,868 m del manual", () => {
+    expect(cuadreDeFila(wen).fierroMm).toBeCloseTo(64868, 6);
+  });
+
+  it("lo que sobra son 75 mm por punta: menos de un decimo de modulo", () => {
+    const c = cuadreDeFila(wen);
+    expect(c.repartoPorPuntaMm).toBeCloseTo(75, 6);
+    expect(Math.abs(c.repartoPorPuntaMm!) / (wen.anchoModuloMm + wen.huecoEntreModulosMm))
+      .toBeLessThan(0.1);
+    expect(c.notas.join(" ")).toMatch(/explica la fila entera/);
+  });
+
+  it("con los numeros de Edenvale en su lugar, el reparto se dispara", () => {
+    const conEdenvale = cuadreDeFila({
+      ...wen, anchoModuloMm: 1135, huecoEntreModulosMm: 20, bahiaMm: 555,
+    });
+    // 65145 predicho contra 65018 medido: el centrado lo tapa, pero el reparto
+    // se va a negativo y eso es lo que hay que ver.
+    expect(conEdenvale.repartoPorPuntaMm!).toBeLessThan(0);
+    expect(Math.abs(conEdenvale.repartoPorPuntaMm!)).toBeGreaterThan(60);
+  });
+});

@@ -53,6 +53,17 @@ export interface EntradaCuadre {
    * Negativo = la pica queda por DENTRO, los modulos sobresalen.
    */
   offsetMm: number;
+  /**
+   * A que puntas aplica el offset, igual que `geometry.endpointOffsetMode`.
+   *
+   * Esto NO es un detalle de presentacion. El cuadre sumaba siempre dos veces
+   * el offset declarado, pero el motor no lo usa asi: en `origin` lo aplica en
+   * una sola punta y en `centered` lo IGNORA por completo y reparte lo que
+   * sobra. Con el preset PVH —que viene centrado— la tabla mostraba un offset
+   * de -25 mm que no movia un solo modulo, y el residuo que mostraba no era el
+   * residuo real. Un cuadre que miente es peor que no tener cuadre.
+   */
+  modo?: "both" | "origin" | "none" | "centered";
   /** Largo real de pica a pica, en metros. */
   largoMedidoM: number;
   /** Cuales de los parametros se midieron con cinta. */
@@ -73,6 +84,12 @@ export interface CuadreDeFila {
   /** Cuantos de los parametros vienen de una cinta. */
   medidos: number;
   total: number;
+  /**
+   * En modo centrado el residuo se reparte solo, asi que el cuadre cierra
+   * siempre. Esto es lo que de verdad hay que mirar ahi: cuanto se esta
+   * repartiendo en cada punta. `null` en los demas modos.
+   */
+  repartoPorPuntaMm: number | null;
   notas: string[];
 }
 
@@ -127,17 +144,35 @@ export function cuadreDeFila(e: EntradaCuadre): CuadreDeFila {
   }
 
   const fierroMm = partes.reduce((s, p) => s + p.totalMm, 0);
-
-  partes.push({
-    concepto: e.offsetMm >= 0 ? "Pica por fuera del modulo" : "Modulo sobresale de la pica",
-    cantidad: 2,
-    cadaUnoMm: e.offsetMm,
-    totalMm: 2 * e.offsetMm,
-    medido: !!m.offset,
-  });
-
-  const predichoMm = fierroMm + 2 * e.offsetMm;
   const medidoMm = e.largoMedidoM * 1000;
+  const modo = e.modo ?? "both";
+
+  // Cuantas puntas se llevan el offset, y con que valor. Centrado no usa el
+  // valor declarado: lo despeja de lo que sobra, que es exactamente lo que
+  // hace el motor.
+  const puntas = modo === "none" ? 0 : modo === "origin" ? 1 : 2;
+  const repartoPorPuntaMm = modo === "centered" ? (medidoMm - fierroMm) / 2 : null;
+  const offsetEfectivoMm = repartoPorPuntaMm ?? e.offsetMm;
+
+  if (puntas > 0) {
+    partes.push({
+      concepto:
+        modo === "centered"
+          ? "Se reparte solo en las dos puntas (centrado)"
+          : offsetEfectivoMm >= 0
+            ? `Pica por fuera del modulo${puntas === 1 ? " (solo la punta de conteo)" : ""}`
+            : `Modulo sobresale de la pica${puntas === 1 ? " (solo la punta de conteo)" : ""}`,
+      cantidad: puntas,
+      cadaUnoMm: offsetEfectivoMm,
+      totalMm: puntas * offsetEfectivoMm,
+      // Centrado despeja el numero, asi que no puede venir de una cinta por
+      // mas que la casilla este tildada: marcarlo como medido seria contar
+      // como evidencia justo lo que se calculo para que cierre.
+      medido: modo === "centered" ? false : !!m.offset,
+    });
+  }
+
+  const predichoMm = fierroMm + puntas * offsetEfectivoMm;
   const residuoMm = medidoMm - predichoMm;
   const paso = e.anchoModuloMm + e.huecoEntreModulosMm;
   const residuoEnModulos = residuoMm / Math.max(1, paso);
@@ -148,16 +183,47 @@ export function cuadreDeFila(e: EntradaCuadre): CuadreDeFila {
 
   return {
     partes, fierroMm, predichoMm, medidoMm, residuoMm, residuoEnModulos, cierra,
-    medidos, total,
-    notas: notasDe({ cierra, residuoMm, residuoEnModulos, medidos, total, offsetMm: e.offsetMm, paso }),
+    medidos, total, repartoPorPuntaMm,
+    notas: notasDe({
+      cierra, residuoMm, residuoEnModulos, medidos, total,
+      offsetMm: offsetEfectivoMm, paso, repartoPorPuntaMm,
+    }),
   };
 }
 
 function notasDe(x: {
   cierra: boolean; residuoMm: number; residuoEnModulos: number;
   medidos: number; total: number; offsetMm: number; paso: number;
+  repartoPorPuntaMm?: number | null;
 }): string[] {
   const notas: string[] = [];
+
+  // Centrado cierra por construccion. Decir "la fila cierra" seria el peor
+  // resultado posible de esta pantalla: el numero que la hace cerrar es el
+  // unico que no se comparo con nada. Lo util es el tamano del reparto.
+  if (x.repartoPorPuntaMm != null) {
+    const porPunta = x.repartoPorPuntaMm;
+    const enModulos = Math.abs(porPunta) / Math.max(1, x.paso);
+    notas.push(
+      `Este parque esta en modo centrado: los modulos se acomodan solos adentro del largo real de ` +
+      `cada fila, asi que el numero de arriba NO se usa y esta cuenta cierra siempre. Cerrar aca no ` +
+      `prueba nada. Lo que hay que mirar es cuanto se esta repartiendo: ` +
+      `${porPunta.toFixed(0)} mm en cada punta.`,
+    );
+    if (enModulos >= 0.5) {
+      notas.push(
+        `Y eso es mucho: ${enModulos.toFixed(1)} de un modulo por punta. El centrado lo va a tapar ` +
+        `igual, pero significa que falta un hueco por declarar o que sobra o falta un modulo por ` +
+        `string. Revisalo antes de salir a campo.`,
+      );
+    } else {
+      notas.push(
+        `Son ${enModulos.toFixed(2)} de un modulo, o sea que la geometria declarada explica la fila ` +
+        `entera. Igual, lo unico que decide de que punta se empieza a contar es un conteo en campo.`,
+      );
+    }
+    return notas;
+  }
 
   if (x.cierra) {
     notas.push(
