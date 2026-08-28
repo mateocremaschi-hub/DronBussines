@@ -339,6 +339,18 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
     () => (origenes?.blocks ?? []).filter((b) => b.status !== "ok"),
     [origenes],
   );
+  /*
+    Que fraccion del parque quedo con el sentido resuelto.
+
+    Importa porque el cartel era verde siempre. En Wellington decia "2348 de
+    13606 filas con el sentido resuelto" en verde, al lado de un titulo que
+    dice "no hay nada para elegir aca": se lee como que esta todo bien, y lo
+    que informa es que el 83% del parque va a contar desde una punta que no se
+    verifico. Un cartel verde sobre un numero malo es peor que no tenerlo.
+  */
+  const fraccionResuelta =
+    origenes && merge?.rows.length ? origenes.origins.size / merge.rows.length : null;
+  const sentidoOk = fraccionResuelta != null && fraccionResuelta >= 0.99;
 
   // El largo real de las filas despeja el offset de pica: las tres cantidades
   // (modulos, paso, offset) estan atadas, asi que conociendo dos sale la tercera.
@@ -1233,7 +1245,7 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
           */}
           <div className="field">
             <label>Desde que punta se cuenta el modulo 1</label>
-            <p className="note ok">
+            <p className={sentidoOk || fraccionResuelta == null ? "note ok" : "note"}>
               Lo resuelve la app fila por fila, midiendo cual de las dos puntas da a la calle donde
               estan las cajas de continua. No hay nada para elegir aca: una regla escrita a mano
               ("siempre desde el norte") se equivoca en el primer bloque que este rotado.
@@ -1241,7 +1253,10 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
                 <>
                   {" "}En este parque quedaron{" "}
                   <strong>{origenes.origins.size} de {merge?.rows.length ?? 0} filas</strong>{" "}
-                  con el sentido resuelto.
+                  con el sentido resuelto
+                  {fraccionResuelta != null && (
+                    <> — el <strong>{(fraccionResuelta * 100).toFixed(0)}%</strong></>
+                  )}.
                 </>
               )}
             </p>
@@ -1251,9 +1266,36 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
                   ? "Un bloque quedo sin resolver"
                   : `${origenesSinResolver.length} bloques quedaron sin resolver`}
                 {" "}({origenesSinResolver.map((b) => b.block).slice(0, 6).join(", ")}
-                {origenesSinResolver.length > 6 ? "…" : ""}). Esas filas van a contar desde una
-                punta cualquiera hasta que cargues el plano de interconexion del bloque o marques
-                un modulo en el campo.
+                {origenesSinResolver.length > 6 ? "…" : ""}), que son{" "}
+                <strong>
+                  {origenesSinResolver.reduce((s, b) => s + b.rows, 0)} filas
+                </strong>.{" "}
+                {/*
+                  El motivo no es un detalle tecnico: cambia que hacer. Un bloque
+                  de un solo banco no tiene calle que medir y lo unico que lo
+                  cierra es el plano o un conteo. Uno de varios bancos si tiene
+                  calles, pero no se sabe en cual estan las cajas.
+                */}
+                {(() => {
+                  const porMotivo = new Map<string, number>();
+                  for (const b of origenesSinResolver) {
+                    porMotivo.set(b.status, (porMotivo.get(b.status) ?? 0) + 1);
+                  }
+                  const nombre: Record<string, string> = {
+                    "un-solo-lado": "no tienen calle en el medio que medir",
+                    "varias-calles": "tienen mas de una calle y no se sabe en cual van las cajas",
+                    escalonado: "tienen los grupos corridos, no enfrentados",
+                    ambiguo: "tienen muy pocas filas",
+                  };
+                  return [...porMotivo]
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([st, n]) => `${n} ${nombre[st] ?? st}`)
+                    .join("; ") + ". ";
+                })()}
+                Esas filas van a contar desde una punta cualquiera. En el campo eso significa que el
+                numero de modulo puede salir espejado: donde la app diga 5, puede ser el 52. Se cierra
+                cargando el plano de interconexion del bloque, o contando un modulo una sola vez por
+                bloque —con eso la app da vuelta el resto sola—.
               </p>
             )}
           </div>

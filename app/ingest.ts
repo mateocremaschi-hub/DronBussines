@@ -886,7 +886,7 @@ export interface SideDerivation {
   blocks: Array<{
     block: string;
     rows: number;
-    status: "dos-lados" | "un-solo-lado" | "escalonado" | "ambiguo";
+    status: "dos-lados" | "un-solo-lado" | "escalonado" | "varias-calles" | "ambiguo";
     detail: string;
   }>;
 }
@@ -912,7 +912,7 @@ export interface SideDerivation {
  * conteo por una etiqueta cardinal en vez de sacarlo directo del terreno.
  */
 export interface GruposDeCalle {
-  status: "ok" | "un-solo-lado" | "escalonado" | "ambiguo";
+  status: "ok" | "un-solo-lado" | "escalonado" | "varias-calles" | "ambiguo";
   detail: string;
   /** Direccion media de las filas, normalizada hacia el norte (o hacia el este si corren E-O). */
   u?: { x: number; y: number };
@@ -991,12 +991,16 @@ export function agruparPorCalle(group: TrackerRow[]): GruposDeCalle {
 
   let gapAt = -1;
   let gapSize = 0;
+  // Todos los cortes que dan la talla, no solo el mayor. Ver abajo por que
+  // quedarse con el mayor era peor que no contestar.
+  const cortes: Array<{ at: number; size: number }> = [];
+  const threshold = medianLength * 0.5;
   for (let i = 1; i < proj.length; i++) {
     const d = proj[i]!.t - proj[i - 1]!.t;
     if (d > gapSize) { gapSize = d; gapAt = i; }
+    if (d >= threshold) cortes.push({ at: i, size: d });
   }
 
-  const threshold = medianLength * 0.5;
   if (gapAt < 1 || gapSize < threshold) {
     return {
       status: "un-solo-lado",
@@ -1004,6 +1008,33 @@ export function agruparPorCalle(group: TrackerRow[]): GruposDeCalle {
         `Las ${group.length} filas caen todas juntas (la mayor separacion es de ` +
         `${gapSize.toFixed(0)} m, y para ser dos lados de una calle harian falta mas de ` +
         `${threshold.toFixed(0)} m).`,
+    };
+  }
+
+  /*
+    Mas de una calle: el bloque tiene tres bancos o mas.
+
+    Esto es lo mas peligroso que hacia esta funcion. Se quedaba con el corte
+    MAS GRANDE y devolvia "ok" — con dos grupos armados por una diferencia de
+    centimetros entre calles practicamente iguales. Un bloque de cuatro bancos
+    quedaba partido dos y dos, y despues el sentido de conteo se decidia por
+    "que punta cae mas cerca del corte", que para los dos bancos de las orillas
+    da la punta equivocada. La mitad del bloque contando al reves, sin un solo
+    aviso y con el cartel en verde.
+
+    Con varias calles la geometria sola NO alcanza: hay que saber en cual de
+    ellas estan las cajas, y eso no esta en un archivo de coordenadas. Lo
+    correcto es decirlo y esperar el plano.
+  */
+  if (cortes.length > 1) {
+    const anchos = cortes.map((c) => c.size).sort((a, b) => b - a);
+    return {
+      status: "varias-calles",
+      detail:
+        `El bloque tiene ${cortes.length + 1} bancos de filas separados por ${cortes.length} calles ` +
+        `(de ${anchos.map((a) => a.toFixed(0)).join(", ")} m entre centros). Con una sola calle se ` +
+        `sabe que punta da a las cajas; con ${cortes.length} no, porque no hay nada en las ` +
+        `coordenadas que diga en cual de ellas estan.`,
     };
   }
 
@@ -1076,7 +1107,9 @@ export function deriveSides(rows: TrackerRow[]): SideDerivation {
       const consecuencia =
         g.status === "escalonado"
           ? " No les asigno lado: partirlos invertiria el conteo de uno de los dos grupos entero."
-          : " No le asigno lado.";
+          : g.status === "varias-calles"
+            ? " No les asigno lado: con mas de dos bancos, \"norte y sur\" no nombra nada."
+            : " No le asigno lado.";
       blocks.push({ block, rows: group.length, status: g.status, detail: g.detail + consecuencia });
       continue;
     }
@@ -1138,7 +1171,7 @@ export interface OriginDerivation {
   blocks: Array<{
     block: string;
     rows: number;
-    status: "ok" | "un-solo-lado" | "escalonado" | "ambiguo";
+    status: "ok" | "un-solo-lado" | "escalonado" | "varias-calles" | "ambiguo";
     detail: string;
   }>;
 }

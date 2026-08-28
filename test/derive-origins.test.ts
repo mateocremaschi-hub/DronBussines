@@ -134,3 +134,81 @@ describe("dejarlo escrito en las filas", () => {
     expect(out.every((r) => r.originEnd === undefined)).toBe(true);
   });
 });
+
+/**
+ * Bloques de mas de dos bancos.
+ *
+ * El caso que aparecio en Wellington North, y el mas peligroso que tenia esta
+ * funcion. Buscaba el corte MAS GRANDE y devolvia "ok" con dos grupos, aunque
+ * el bloque tuviera cuatro bancos y tres calles casi iguales: la eleccion la
+ * decidian centimetros. Despues el sentido salia de "que punta cae mas cerca
+ * del corte", que para los bancos de las orillas da la punta equivocada — o
+ * sea medio bloque contando al reves, con el cartel en verde.
+ *
+ * Lo correcto es no contestar: en cual de las calles estan las cajas no esta
+ * en un archivo de coordenadas.
+ */
+describe("un bloque con mas de una calle", () => {
+  /** N bancos de filas norte-sur, apilados con calles entre medio. */
+  function bancos(block: string, cuantos: number, filasPorBanco = 4): TrackerRow[] {
+    const largo = 0.000586; // ~65 m
+    const calle = 0.00008; // ~9 m
+    const out: TrackerRow[] = [];
+    for (let b = 0; b < cuantos; b++) {
+      const pie = -26.9 + b * (largo + calle);
+      for (let i = 0; i < filasPorBanco; i++) {
+        const id = `${block}-B${b}F${i}`;
+        const lon = 150.58 + i * 0.00006;
+        out.push({
+          ...makeRow(
+            { id, block, tracker: id, anchor: { lat: 0, lon: 0 }, azimuthDeg: 0 },
+            profile,
+          ),
+          id, block, tracker: id,
+          start: { lat: pie, lon },
+          end: { lat: pie + largo, lon },
+        });
+      }
+    }
+    return out;
+  }
+
+  it("con dos bancos sigue resolviendo, que es el caso normal", () => {
+    const g = agruparPorCalle(bancos("20", 2));
+    expect(g.status).toBe("ok");
+  });
+
+  it("con cuatro bancos no inventa una calle: avisa que hay tres", () => {
+    const g = agruparPorCalle(bancos("21", 4));
+    expect(g.status).toBe("varias-calles");
+    expect(g.detail).toMatch(/4 bancos/);
+    expect(g.detail).toMatch(/3 calles/);
+  });
+
+  it("y por lo tanto no le asigna sentido a ninguna de esas filas", () => {
+    const filas = bancos("21", 4);
+    const d = deriveOriginEnds(filas);
+    expect(d.origins.size).toBe(0);
+    expect(d.blocks[0]!.status).toBe("varias-calles");
+  });
+
+  // La razon de ser del cambio, dicha como test: la respuesta vieja no era
+  // "un poco imprecisa", era medio bloque al reves.
+  it("antes hubiera partido 2+2 y dado vuelta los bancos de las orillas", () => {
+    const filas = bancos("21", 4);
+    // Con la regla vieja los dos bancos de abajo son "lower" y los dos de
+    // arriba "upper", y el corte cae en la calle del medio. Para el banco 0 la
+    // punta mas cercana a ese corte es la de arriba... igual que para el banco
+    // 1, que si esta pegado a la calle. Las dos darian lo mismo aunque una este
+    // a 75 m de distancia: eso es el error.
+    const g = agruparPorCalle(filas);
+    // Ahora no hay `corte` que usar mal.
+    expect(g.corte).toBeUndefined();
+    expect(g.lower).toBeUndefined();
+    expect(g.upper).toBeUndefined();
+  });
+
+  it("tres bancos tampoco: dos calles ya son ambiguas", () => {
+    expect(agruparPorCalle(bancos("22", 3)).status).toBe("varias-calles");
+  });
+});
