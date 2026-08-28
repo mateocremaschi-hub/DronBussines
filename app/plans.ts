@@ -20,6 +20,7 @@
  */
 
 import type { TrackerRow } from "@locator";
+import { bancosDelBloque, sentidoDesdeElPlano, type TrackerDelPlano as TrackerParaTramos } from "./bancos";
 
 // ---------------------------------------------------------------------------
 // Lo que trae el archivo del extractor
@@ -34,6 +35,13 @@ interface TrackerDelPlano {
   /** Rango fisico desde la calle. NO es la posicion electrica. */
   pos?: number;
   pos_total?: number;
+  /**
+   * Si el tracker esta en el perimetro norte de su banco, en el sur, o en el
+   * medio — tal como lo dice la etiqueta del plano. Ver `app/bancos.ts`: de
+   * aca sale la calle del medio del bloque, que es lo que la app venia
+   * adivinando con las coordenadas.
+   */
+  perimetro?: "norte" | "sur" | "centro" | "perimetro-2";
 }
 
 interface BloqueDelPlano {
@@ -103,6 +111,17 @@ export interface AplicacionDelPlano {
   /** Filas de la geometria que el plano no menciona. */
   sinPlano: string[];
   /**
+   * Filas cuyo sentido de conteo salio del PLANO, no de medir coordenadas.
+   *
+   * La app deducia la calle del medio comparando huecos entre las picas del
+   * relevamiento, y en Wellington North erraba en los 52 bloques de 52. El
+   * plano la trae escrita en la etiqueta de cada tracker —PERIMETER 1 NORTH /
+   * SOUTH— y el lector lo estaba tirando. Ver `app/bancos.ts`.
+   */
+  conSentido: number;
+  /** Bloques cuyo plano no alcanza para saber donde esta la calle. */
+  sinCalleEnElPlano: string[];
+  /**
    * Donde el plano contradice lo que ya estaba cargado.
    *
    * No se ocultan ni se resuelven solos: el plano es mas confiable que una
@@ -123,7 +142,11 @@ const LADOS: Record<string, TrackerRow["side"]> = {
  * El plano manda sobre las deducciones —esta dibujado, no inferido— pero no
  * pisa en silencio: cada desacuerdo con lo que ya estaba queda listado.
  */
-export function aplicarPlano(rows: TrackerRow[], plano: PlanoDeParque): AplicacionDelPlano {
+export function aplicarPlano(
+  rows: TrackerRow[],
+  plano: PlanoDeParque,
+  dcBoxPlacement: "center-road" | "outer-edge" = "center-road",
+): AplicacionDelPlano {
   const conflictos: Conflicto[] = [];
   const sinPlano: string[] = [];
   let conLado = 0;
@@ -143,6 +166,7 @@ export function aplicarPlano(rows: TrackerRow[], plano: PlanoDeParque): Aplicaci
   // error y sin excepcion: el plano entraba, se aplicaba a nada, y lo decia
   // con un numero que era facil leer como "faltan PDF".
   const porTracker = new Map<string, { side?: TrackerRow["side"]; dcbox?: string }>();
+  const paraTramos: TrackerParaTramos[] = [];
   const ejemplosPlano: string[] = [];
   for (const [bloqueId, bloque] of Object.entries(plano)) {
     for (const [tracker, t] of Object.entries(bloque.trackers ?? {})) {
@@ -154,6 +178,9 @@ export function aplicarPlano(rows: TrackerRow[], plano: PlanoDeParque): Aplicaci
         ...(lado ? { side: lado } : {}),
         ...(caja ? { dcbox: caja } : {}),
       });
+      if (t.perimetro) {
+        paraTramos.push({ block: bloqueId, tracker, perimetro: t.perimetro });
+      }
       if (ejemplosPlano.length < 3) ejemplosPlano.push(`${bloqueId} / ${tracker}`);
     }
   }
@@ -187,15 +214,75 @@ export function aplicarPlano(rows: TrackerRow[], plano: PlanoDeParque): Aplicaci
     return next;
   });
 
+  /*
+    El sentido de conteo, sacado del plano.
+
+    Va DESPUES de aplicar lado y caja porque usa las filas ya cruzadas, y se
+    escribe encima de lo que hubiera deducido el heuristico de coordenadas: el
+    plano esta dibujado, la deduccion no. Un parque cuyo plano no marque el
+    perimetro no pierde nada — `porBloque` queda vacio y todo sigue como antes.
+  */
+  const porBloque = new Map<string, TrackerParaTramos[]>();
+  for (const t of paraTramos) {
+    porBloque.set(t.block, [...(porBloque.get(t.block) ?? []), t]);
+  }
+  const tramos = [...porBloque.values()]
+    .map((ts) => bancosDelBloque(ts))
+    .filter((x): x is NonNullable<typeof x> => x != null);
+  const sentido = sentidoDesdeElPlano(out, tramos, dcBoxPlacement);
+  const conSentido = sentido.origins.size;
+  const rowsFinal = conSentido
+    ? out.map((r) => {
+        const o = sentido.origins.get(r.id);
+        return o ? { ...r, originEnd: o } : r;
+      })
+    : out;
+
   return {
-    rows: out,
+    rows: rowsFinal,
     conLado,
     conCajaDc,
+    conSentido,
+    sinCalleEnElPlano: sentido.sinCalle,
     sinPlano,
     conflictos,
-    notas: notasDe(conLado, conCajaDc, sinPlano.length, conflictos.length, rows.length,
-                   ejemplosPlano, ejemplosGeometria),
+    notas: [
+      ...notasDe(conLado, conCajaDc, sinPlano.length, conflictos.length, rows.length,
+                 ejemplosPlano, ejemplosGeometria),
+      ...notasDelSentido(conSentido, tramos, sentido.sinCalle, rowsFinal.length),
+    ],
   };
+}
+
+function notasDelSentido(
+  conSentido: number,
+  tramos: Array<{ block: string; calleDespuesDelTramo: number | null; detail: string }>,
+  sinCalle: string[],
+  totalFilas: number,
+): string[] {
+  if (!tramos.length) return [];
+  const notas: string[] = [];
+  const conCalle = tramos.filter((t) => t.calleDespuesDelTramo != null).length;
+
+  notas.push(
+    `El plano marca el perimetro de cada tracker (PERIMETER 1 NORTH / SOUTH), asi que la calle del ` +
+    `medio no hubo que deducirla de las coordenadas: salio escrita en ${conCalle} de ` +
+    `${tramos.length} bloques. Con eso quedaron ${conSentido} de ${totalFilas} filas con el sentido ` +
+    `de conteo resuelto.`,
+  );
+  if (sinCalle.length) {
+    notas.push(
+      `Quedan ${sinCalle.length} bloques sin calle en el plano (${sinCalle.slice(0, 6).join(", ")}` +
+      `${sinCalle.length > 6 ? "…" : ""}): o el plano no marca ningun borde norte-sur, o marca mas ` +
+      `de uno y elegir seria adivinar.`,
+    );
+  }
+  notas.push(
+    "Lo unico que este plano no dice es si las cajas de continua estan sobre esa calle del medio o " +
+    "en el borde de afuera. Pero eso es UN dato para todo el parque, no uno por bloque: se confirma " +
+    "contando un modulo una sola vez, en cualquier bloque.",
+  );
+  return notas;
 }
 
 /**

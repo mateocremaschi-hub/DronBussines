@@ -52,6 +52,46 @@ export interface Analisis {
   tracker?: string;
   /** Fila dentro del tracker: "R1", "R2"… Solo si la etiqueta la trae. */
   fila?: string;
+  /**
+   * Donde cae este tracker respecto del borde del banco, si la etiqueta lo dice.
+   *
+   * Esto se venia TIRANDO. Habia un comentario en este mismo archivo que decia
+   * "las de atras son codigos de pila" y descartaba el pedazo. No son codigos
+   * de pila: la leyenda de los planos de Wellington North lo aclara arriba de
+   * la lamina, impreso.
+   *
+   *     R1-P1N  =  ROW 1 - PERIMETER 1 NORTH
+   *     R1-C    =  ROW 1 - CENTER
+   *     R1-P1S  =  ROW 1 - PERIMETER 1 SOUTH
+   *     R1-P2   =  ROW 1 - PERIMETER 2
+   *
+   * O sea que el plano dice, tracker por tracker, si esta en el perimetro NORTE
+   * de su banco, en el SUR, o en el medio. Leido sobre las 12 laminas cargadas,
+   * cada bloque da la misma forma de norte a sur —por ejemplo el 02, de ocho
+   * bancos: N . . S N . . .— y ese borde donde una S toca una N es la calle del
+   * medio del bloque.
+   *
+   * Que importa: la calle es justo lo que `agruparPorCalle` trataba de adivinar
+   * midiendo huecos entre coordenadas, y con lo que erraba en los 52 bloques.
+   * El plano no la insinua, la escribe.
+   */
+  perimetro?: "norte" | "sur" | "centro" | "perimetro-2";
+}
+
+/**
+ * El pedazo que dice el borde del banco, si lo hay.
+ *
+ * Se lee por significado y no por lista cerrada: `P` de perimetro, el numero de
+ * perimetro, y la cardinal opcional. Asi entra `P1N`, `P1S`, `P2`, y `C` de
+ * centro. Cualquier otra cosa devuelve `undefined` — un parque que no marque
+ * esto sigue funcionando igual que antes.
+ */
+export function leerPerimetro(p: string): Analisis["perimetro"] | undefined {
+  if (/^C$/i.test(p)) return "centro";
+  const m = /^P(\d)([NS])?$/i.exec(p);
+  if (!m) return undefined;
+  if (m[2]) return m[2]!.toUpperCase() === "N" ? "norte" : "sur";
+  return Number(m[1]) === 1 ? "centro" : "perimetro-2";
 }
 
 /**
@@ -120,11 +160,24 @@ export function analizarEtiqueta(
   */
   if (/^R(?:OW)?\d{1,2}$/i.test(partes[0]!)) return null;
 
-  /** La fila del TRACKER: la primera R+numero. Las de atras son codigos de pila. */
+  /*
+    La fila del TRACKER: la primera R+numero.
+
+    Lo que viene INMEDIATAMENTE despues, si tiene forma de perimetro, es el
+    borde del banco. Antes esto decia "las de atras son codigos de pila" y lo
+    tiraba. Ver `Analisis.perimetro`: no eran codigos de pila, era la unica
+    cosa del plano que dice donde esta la calle del medio.
+  */
   let fila: string | undefined;
-  for (const p of partes) {
+  let perimetro: Analisis["perimetro"] | undefined;
+  for (const [i, p] of partes.entries()) {
     const mr = /^R(?:OW)?(\d{1,2})$/i.exec(p);
-    if (mr) { fila = `R${Number(mr[1])}`; break; }
+    if (mr) {
+      fila = `R${Number(mr[1])}`;
+      const sig = partes[i + 1];
+      if (sig) perimetro = leerPerimetro(sig);
+      break;
+    }
   }
 
   /*
@@ -176,6 +229,7 @@ export function analizarEtiqueta(
     bloque: dosDigitos(bloque),
     tracker: String(tracker),
     ...(fila ? { fila } : {}),
+    ...(perimetro ? { perimetro } : {}),
   };
 }
 
@@ -458,6 +512,8 @@ interface Tk {
   cy: number;
   side?: string;
   dcbox?: string | null;
+  /** Donde cae respecto del borde del banco, si la etiqueta lo dice. */
+  perimetro?: "norte" | "sur" | "centro" | "perimetro-2";
 }
 
 function armarBloque(
@@ -478,6 +534,9 @@ function armarBloque(
     t.rows.push(row);
     t.pts.push([e.x, e.y]);
     t.rowy[row] = [e.x, e.y];
+    // R1 y R2 traen la misma marca; alcanza con quedarse con la primera que
+    // aparezca, y no pisarla con una etiqueta recortada que no la traiga.
+    if (a.perimetro && !t.perimetro) t.perimetro = a.perimetro;
   }
   for (const t of tmap.values()) {
     t.cx = t.pts.reduce((s, p) => s + p[0], 0) / t.pts.length;
@@ -661,6 +720,7 @@ function armarBloque(
       cy: Math.round(t.cy * 10) / 10,
       side: t.side,
       dcbox: t.dcbox ?? null,
+      ...(t.perimetro ? { perimetro: t.perimetro } : {}),
     };
   }
 

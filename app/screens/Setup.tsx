@@ -1292,10 +1292,43 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
                     .map(([st, n]) => `${n} ${nombre[st] ?? st}`)
                     .join("; ") + ". ";
                 })()}
-                Esas filas van a contar desde una punta cualquiera. En el campo eso significa que el
-                numero de modulo puede salir espejado: donde la app diga 5, puede ser el 52. Se cierra
-                cargando el plano de interconexion del bloque, o contando un modulo una sola vez por
-                bloque —con eso la app da vuelta el resto sola—.
+                Esas filas quedan igual todas apuntando a la misma punta fisica, asi que el conteo
+                es consistente pero puede estar espejado: donde la app diga 5, puede ser el 52.
+              </p>
+            )}
+            {/*
+              Este aviso existe porque el de arriba, solo, daba una impresion
+              falsa y desmoralizante.
+
+              En este paso del asistente todavia no entro ningun plano: lo unico
+              que hay es un archivo de coordenadas. O sea que la app esta
+              deduciendo del terreno algo que los planos dicen dibujado, y
+              despues muestra el resultado como si fuera un veredicto sobre el
+              parque. No lo es: es un veredicto sobre lo poco que se cargo hasta
+              aca. Leerlo como "el parque no se puede resolver" y salir a contar
+              modulos al campo es exactamente el dia perdido que esto tiene que
+              evitar.
+
+              El orden correcto se dice aca, y el conteo de campo queda donde
+              corresponde: ultimo, para cuando no hay plano.
+            */}
+            {origenesSinResolver.length > 0 && (
+              <p className="note">
+                <strong>Esto no se arregla en esta pantalla, y no hace falta que lo arregles
+                ahora.</strong>{" "}
+                Aca todavia no cargaste ningun plano: lo unico que entro son las coordenadas, asi
+                que la app esta tratando de deducir del terreno algo que el plano trae dibujado.
+                Cargalos y estos {origenesSinResolver.length} bloques se cierran solos.
+                {origenes && origenes.bancos.length > 0 && (
+                  <>
+                    {" "}Recien si no aparece el plano de algun bloque hace falta ir al campo, y ahi
+                    es un conteo por banco:{" "}
+                    <strong>
+                      {origenes.bancos.filter((b) => !b.verificado).length} en total
+                    </strong>{" "}
+                    si no apareciera ninguno.
+                  </>
+                )}
               </p>
             )}
           </div>

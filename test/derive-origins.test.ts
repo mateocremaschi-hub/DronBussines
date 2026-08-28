@@ -109,7 +109,7 @@ describe("de que punta se cuenta", () => {
     const d = deriveOriginEnds(solo);
     expect(d.origins.size).toBe(0);
     expect(d.blocks[0]!.status).toBe("un-solo-lado");
-    expect(d.blocks[0]!.detail).toMatch(/sentido sin resolver/);
+    expect(d.blocks[0]!.detail).toMatch(/sentido sin verificar/);
   });
 
   it("resuelve cada bloque por separado", () => {
@@ -128,10 +128,50 @@ describe("dejarlo escrito en las filas", () => {
     expect(out.find((r) => r.id === "04-S0")!.originEnd).toBe("end");
   });
 
-  it("a una fila que no se pudo resolver no le inventa un sentido", () => {
+  /*
+    Este test decia lo contrario: que a una fila sin resolver no se le escribia
+    nada. Sonaba prudente y era el peor de los dos comportamientos.
+
+    Sin `originEnd` la fila cae en la salida de emergencia de `per-row-flag`,
+    que cuenta desde `start` — la primera pica del Excel. Ese orden no es un
+    dato del terreno: el topografo tomo unas filas de sur a norte y otras al
+    reves. O sea que "no inventar nada" terminaba inventando, y peor: fila por
+    fila, para lados distintos. Un bloque asi ni siquiera se puede arreglar
+    yendo a contar un modulo, porque no hay un sentido comun que dar vuelta.
+
+    Lo que corresponde es escribir una punta consistente y no contarla como
+    verificada.
+  */
+  it("a una fila sin resolver le escribe una punta, pero no la cuenta como resuelta", () => {
     const solo = bloqueConCalle("07").filter((r) => r.id.includes("N"));
-    const out = aplicarOrigenes(solo, deriveOriginEnds(solo));
-    expect(out.every((r) => r.originEnd === undefined)).toBe(true);
+    const d = deriveOriginEnds(solo);
+    const out = aplicarOrigenes(solo, d);
+    expect(d.origins.size).toBe(0);
+    expect(d.provisionales.size).toBe(solo.length);
+    expect(out.every((r) => r.originEnd)).toBe(true);
+  });
+
+  it("y esa punta es la MISMA en el terreno, aunque las picas vengan al reves", () => {
+    // Un solo banco, con la mitad de las filas cargadas de sur a norte y la
+    // otra mitad de norte a sur. Es lo que trae un relevamiento real.
+    const solo = bloqueConCalle("08")
+      .filter((r) => r.id.includes("N"))
+      .map((r, i) => (i % 2 === 0 ? r : { ...r, start: r.end, end: r.start }));
+
+    const d = deriveOriginEnds(solo);
+    const out = aplicarOrigenes(solo, d);
+
+    // La punta elegida tiene que caer siempre del mismo lado: la mas al sur.
+    for (const r of out) {
+      const elegida = r.originEnd === "start" ? r.start : r.end;
+      const otra = r.originEnd === "start" ? r.end : r.start;
+      expect(elegida.lat).toBeLessThan(otra.lat);
+    }
+
+    // Y con las picas al reves, `start` NO sirve: es justamente lo que hacia
+    // la salida de emergencia.
+    const alReves = out.filter((r) => r.originEnd === "end");
+    expect(alReves.length).toBeGreaterThan(0);
   });
 });
 
@@ -185,11 +225,31 @@ describe("un bloque con mas de una calle", () => {
     expect(g.detail).toMatch(/3 calles/);
   });
 
-  it("y por lo tanto no le asigna sentido a ninguna de esas filas", () => {
+  it("no da ninguna de esas filas por verificada", () => {
     const filas = bancos("21", 4);
     const d = deriveOriginEnds(filas);
     expect(d.origins.size).toBe(0);
     expect(d.blocks[0]!.status).toBe("varias-calles");
+  });
+
+  it("pero deja los cuatro bancos apuntando al sur, listos para un conteo cada uno", () => {
+    const filas = bancos("21", 4);
+    const d = deriveOriginEnds(filas);
+    expect(d.provisionales.size).toBe(filas.length);
+    expect(d.bancos.filter((b) => b.block === "21")).toHaveLength(4);
+    expect(d.bancos.every((b) => !b.verificado)).toBe(true);
+
+    for (const r of aplicarOrigenes(filas, d)) {
+      const elegida = r.originEnd === "start" ? r.start : r.end;
+      const otra = r.originEnd === "start" ? r.end : r.start;
+      expect(elegida.lat).toBeLessThan(otra.lat);
+    }
+  });
+
+  it("dice cuantos bancos son, que es cuantos conteos hacen falta", () => {
+    const d = deriveOriginEnds(bancos("21", 4));
+    expect(d.blocks[0]!.detail).toMatch(/4 en este bloque/);
+    expect(d.blocks[0]!.detail).toMatch(/punta sur/);
   });
 
   // La razon de ser del cambio, dicha como test: la respuesta vieja no era

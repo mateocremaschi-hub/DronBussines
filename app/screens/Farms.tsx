@@ -94,11 +94,23 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
 
     if ("error" in leido) { setProblemaPlano([leido.error, ...avisos]); return; }
 
-    const a = aplicarPlano(farm.rows, leido.plano);
-    const sentido = resolverSentidoPorGeometria({ profile: farm.profile, rows: a.rows });
+    /*
+      El orden importa, y estaba al reves.
+
+      `resolverSentidoPorGeometria` deduce la calle del medio midiendo huecos
+      entre las picas del relevamiento. `aplicarPlano` ahora la LEE de la
+      etiqueta de cada tracker, donde el plano la trae escrita. Corriendo la
+      geometria despues del plano, la deduccion pisaba el dato — justo al
+      reves de lo que corresponde.
+
+      Ahora el heuristico va primero y queda de relleno: cubre los bloques que
+      el plano no resuelve, y el plano manda sobre los que si.
+    */
+    const sentido = resolverSentidoPorGeometria({ profile: farm.profile, rows: farm.rows });
+    const a = aplicarPlano(sentido.rows, leido.plano, farm.profile.addressing.dcBoxPlacement);
     await saveFarm({
       ...farm,
-      rows: sentido.rows,
+      rows: a.rows,
       profile: sentido.profile,
       savedAt: new Date().toISOString(),
     });
@@ -109,7 +121,10 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
         `${leido.resumen.bloques} bloques, ${leido.resumen.trackers} trackers y ` +
         `${leido.resumen.cajas} cajas de continua leidos del plano.`,
         ...a.notas,
-        `El sentido del conteo quedo resuelto en ${sentido.resueltas} filas.`,
+        a.conSentido
+          ? `El sentido del conteo salio del PLANO en ${a.conSentido} filas` +
+            (sentido.resueltas ? `, y de medir las coordenadas en otras ${sentido.resueltas}.` : ".")
+          : `El sentido del conteo quedo resuelto en ${sentido.resueltas} filas, midiendo coordenadas.`,
       ],
       avisos,
     });

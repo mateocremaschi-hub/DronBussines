@@ -222,3 +222,71 @@ describe("la caja de continua no se cuenta y se tira", () => {
     expect(r.conCajaDc).toBe(0);
   });
 });
+
+/**
+ * El sentido de conteo sacado del plano, no de medir coordenadas.
+ *
+ * El bug de fondo era de orden: `aplicarPlano` escribia el sentido leido del
+ * plano y despues el heuristico de coordenadas lo pisaba. Estos tests fijan
+ * que el plano manda.
+ */
+describe("el plano trae la calle del medio escrita", () => {
+  /** Dos tramos enfrentados: 1-2 con perimetro sur, 3-4 con perimetro norte. */
+  const planoConPerimetro = {
+    "07": {
+      trackers: {
+        "07-001": { rows: ["R1"], perimetro: "sur" as const },
+        "07-002": { rows: ["R1"], perimetro: "sur" as const },
+        "07-003": { rows: ["R1"], perimetro: "norte" as const },
+        "07-004": { rows: ["R1"], perimetro: "norte" as const },
+      },
+    },
+  };
+
+  function filas() {
+    return [1, 2, 3, 4].map((n, i) => {
+      const sur = { lat: -32.5 + n * 0.001, lon: 148.9 };
+      const norte = { lat: sur.lat + 0.000586, lon: 148.9 };
+      const [start, end] = i % 2 === 0 ? [sur, norte] : [norte, sur];
+      return {
+        id: `07-${n}`, block: "07", tracker: `07-00${n}`, row: "R1", start, end,
+      } as unknown as TrackerRow;
+    });
+  }
+
+  it("resuelve el sentido sin usar una sola coordenada para encontrar la calle", () => {
+    const a = aplicarPlano(filas(), planoConPerimetro as never);
+    expect(a.conSentido).toBe(4);
+    expect(a.sinCalleEnElPlano).toEqual([]);
+    expect(a.rows.every((r) => r.originEnd)).toBe(true);
+  });
+
+  it("los tramos marcados sur cuentan desde su punta sur", () => {
+    const a = aplicarPlano(filas(), planoConPerimetro as never);
+    for (const r of a.rows) {
+      const punta = r.originEnd === "start" ? r.start : r.end;
+      const otra = r.originEnd === "start" ? r.end : r.start;
+      // 1 y 2 tienen la calle al sur; 3 y 4 al norte.
+      const n = Number(r.id.split("-")[1]);
+      if (n <= 2) expect(punta.lat).toBeLessThan(otra.lat);
+      else expect(punta.lat).toBeGreaterThan(otra.lat);
+    }
+  });
+
+  it("lo dice en las notas, y dice tambien lo que el plano NO trae", () => {
+    const a = aplicarPlano(filas(), planoConPerimetro as never);
+    const texto = a.notas.join(" ");
+    expect(texto).toMatch(/PERIMETER 1 NORTH \/ SOUTH/);
+    expect(texto).toMatch(/no hubo que deducirla de las coordenadas/);
+    expect(texto).toMatch(/UN dato para todo el parque/);
+  });
+
+  it("un plano sin la marca de perimetro se comporta igual que antes", () => {
+    const sinMarca = {
+      "07": { trackers: { "07-001": { rows: ["R1"], side: "north" } } },
+    };
+    const a = aplicarPlano(filas(), sinMarca as never);
+    expect(a.conSentido).toBe(0);
+    expect(a.notas.join(" ")).not.toMatch(/PERIMETER/);
+  });
+})

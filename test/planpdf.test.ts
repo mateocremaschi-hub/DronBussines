@@ -454,12 +454,16 @@ describe("cuando ningun formato conocido engancha", () => {
  */
 describe("etiquetas de un plano de fundaciones real", () => {
   it("saca bloque, tracker y fila de una etiqueta larga", () => {
+    // El `C` de atras de la fila NO es basura: la leyenda de la lamina dice
+    // que es ROW 1 - CENTER. Ver `Analisis.perimetro` — de ese campo sale la
+    // calle del medio, que la app venia adivinando con las coordenadas.
     expect(analizarEtiqueta("17-017-INT-R1-C-L-S2")).toEqual({
-      tipo: "tracker", bloque: "17", tracker: "17", fila: "R1",
+      tipo: "tracker", bloque: "17", tracker: "17", fila: "R1", perimetro: "centro",
     });
     expect(analizarEtiqueta("19-062-INT-R1-P1S-S-S2")).toEqual({
-      tipo: "tracker", bloque: "19", tracker: "62", fila: "R1",
+      tipo: "tracker", bloque: "19", tracker: "62", fila: "R1", perimetro: "sur",
     });
+    // La zona EXT no trae el campo, y eso esta bien: no se inventa uno.
     expect(analizarEtiqueta("19-061-EXT-R2-L-S2")).toEqual({
       tipo: "tracker", bloque: "19", tracker: "61", fila: "R2",
     });

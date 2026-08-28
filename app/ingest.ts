@@ -931,6 +931,15 @@ export interface GruposDeCalle {
   upper?: TrackerRow[];
   /** Donde cae la calle sobre ese eje. */
   corte?: number;
+  /**
+   * Los bancos de filas, en orden a lo largo del eje, partidos en cada calle.
+   *
+   * Se devuelven SIEMPRE que se pueda calcularlos, tambien cuando el status no
+   * es "ok". Justamente ahi hacen falta: es lo que permite dejar cada banco
+   * apuntando para el mismo lado y arreglarlo despues con un solo conteo, en
+   * vez de tirar el bloque entero a la salida de emergencia.
+   */
+  bancos?: TrackerRow[][];
 }
 
 export function agruparPorCalle(group: TrackerRow[]): GruposDeCalle {
@@ -1001,8 +1010,23 @@ export function agruparPorCalle(group: TrackerRow[]): GruposDeCalle {
     if (d >= threshold) cortes.push({ at: i, size: d });
   }
 
+  // Los bancos: se corta en cada calle. Salen igual en todos los status, y en
+  // los que fallan son justamente lo que salva al bloque de contar al azar.
+  const bancos: TrackerRow[][] = [];
+  {
+    let desde = 0;
+    for (const c of cortes) {
+      bancos.push(proj.slice(desde, c.at).map((p) => p.row));
+      desde = c.at;
+    }
+    bancos.push(proj.slice(desde).map((p) => p.row));
+  }
+  const eje: "norte-sur" | "este-oeste" = esteOeste ? "este-oeste" : "norte-sur";
+  const geo = { u: { x: ux, y: uy }, eje, frame, bancos };
+
   if (gapAt < 1 || gapSize < threshold) {
     return {
+      ...geo,
       status: "un-solo-lado",
       detail:
         `Las ${group.length} filas caen todas juntas (la mayor separacion es de ` +
@@ -1023,12 +1047,14 @@ export function agruparPorCalle(group: TrackerRow[]): GruposDeCalle {
     aviso y con el cartel en verde.
 
     Con varias calles la geometria sola NO alcanza: hay que saber en cual de
-    ellas estan las cajas, y eso no esta en un archivo de coordenadas. Lo
-    correcto es decirlo y esperar el plano.
+    ellas estan las cajas, y eso no esta en un archivo de coordenadas. Se dice,
+    se devuelven los bancos, y cada uno queda apuntando para el mismo lado
+    hasta que un plano o un conteo lo confirme.
   */
   if (cortes.length > 1) {
     const anchos = cortes.map((c) => c.size).sort((a, b) => b - a);
     return {
+      ...geo,
       status: "varias-calles",
       detail:
         `El bloque tiene ${cortes.length + 1} bancos de filas separados por ${cortes.length} calles ` +
@@ -1066,6 +1092,7 @@ export function agruparPorCalle(group: TrackerRow[]): GruposDeCalle {
   if (gapSize < minimoParaCalle * 0.95) {
     const solape = minimoParaCalle - gapSize;
     return {
+      ...geo,
       status: "escalonado",
       detail:
         `Hay dos grupos de ${upper.length} y ${lower.length} filas separados por ` +
@@ -1077,12 +1104,10 @@ export function agruparPorCalle(group: TrackerRow[]): GruposDeCalle {
   }
 
   return {
+    ...geo,
     status: "ok",
     detail:
       `Dos grupos de ${lower.length} y ${upper.length} filas separados por ${gapSize.toFixed(0)} m.`,
-    u: { x: ux, y: uy },
-    eje: esteOeste ? "este-oeste" : "norte-sur",
-    frame,
     lower: lower.map((p) => p.row),
     upper: upper.map((p) => p.row),
     // La calle cae en el medio del hueco entre los dos grupos.
@@ -1167,7 +1192,34 @@ export function deriveSides(rows: TrackerRow[]): SideDerivation {
  * un conteo de campo confirma para todo el parque de una vez.
  */
 export interface OriginDerivation {
+  /** Las que salieron de MEDIR la calle. Estas son las verificadas. */
   origins: Map<string, "start" | "end">;
+  /**
+   * Las que no se pudieron medir, pero que igual se escriben apuntando todas
+   * al mismo lado fisico.
+   *
+   * Esto es la diferencia entre un parque usable y uno que no lo es. Sin esto
+   * la fila caia en la salida de emergencia de `per-row-flag`, que cuenta desde
+   * `start` — la PRIMERA PICA DEL EXCEL. Y el orden de las picas en el Excel no
+   * significa nada: el topografo tomo unas filas de sur a norte y otras al
+   * reves. O sea que dos filas pegadas, del mismo banco, contaban para lados
+   * opuestos. Con eso ni siquiera sirve ir a contar un modulo al campo: no hay
+   * nada que dar vuelta, porque no hay un sentido comun que corregir.
+   *
+   * Apuntando todas al mismo lado, un solo conteo por banco da vuelta el banco
+   * entero. El dato sigue sin estar verificado —por eso va aparte de `origins`
+   * y la pantalla no lo cuenta como resuelto— pero es corregible, que es lo
+   * unico que se le puede pedir a un dato que falta.
+   */
+  provisionales: Map<string, "start" | "end">;
+  /**
+   * Los bancos de filas de cada bloque, en orden a lo largo del eje.
+   *
+   * Un bloque de una sola calle es un banco de cada lado. Uno de cuatro bancos
+   * son cuatro. La unidad de correccion en campo es esta, no el bloque: un
+   * conteo arregla el banco donde estas parado.
+   */
+  bancos: Array<{ block: string; banco: number; rows: number; verificado: boolean }>;
   blocks: Array<{
     block: string;
     rows: number;
@@ -1181,6 +1233,8 @@ export function deriveOriginEnds(
   dcBoxPlacement: "center-road" | "outer-edge" = "center-road",
 ): OriginDerivation {
   const origins = new Map<string, "start" | "end">();
+  const provisionales = new Map<string, "start" | "end">();
+  const bancos: OriginDerivation["bancos"] = [];
   const blocks: OriginDerivation["blocks"] = [];
 
   const byBlock = new Map<string, TrackerRow[]>();
@@ -1189,12 +1243,46 @@ export function deriveOriginEnds(
   for (const [block, group] of [...byBlock.entries()].sort()) {
     const g = agruparPorCalle(group);
     if (g.status !== "ok") {
+      /*
+        No se pudo medir la calle. Antes el bloque se soltaba aca y cada fila
+        caia en la salida de emergencia de `per-row-flag`, que cuenta desde
+        `start` — la primera pica del Excel. Ese orden no es un dato del
+        terreno: el topografo tomo unas filas de sur a norte y otras al reves,
+        asi que dos filas pegadas del mismo banco contaban para lados opuestos.
+        Un bloque asi no se arregla yendo a contar un modulo, porque no hay un
+        sentido comun que dar vuelta.
+
+        Ahora, mientras se pueda calcular el eje, cada fila queda apuntando a
+        la MISMA punta fisica —la de menor proyeccion sobre el eje, o sea la
+        del sur si las filas corren norte-sur—. Sigue sin estar verificado, y
+        por eso va a `provisionales` y la pantalla no lo cuenta como resuelto.
+        Pero ahora un solo conteo da vuelta el banco entero.
+      */
+      if (g.frame && g.u && g.bancos) {
+        for (const [i, banco] of g.bancos.entries()) {
+          for (const r of banco) {
+            const a = toLocal(g.frame, r.start.lat, r.start.lon);
+            const b = toLocal(g.frame, r.end.lat, r.end.lon);
+            const ta = a.x * g.u.x + a.y * g.u.y;
+            const tb = b.x * g.u.x + b.y * g.u.y;
+            provisionales.set(r.id, ta <= tb ? "start" : "end");
+          }
+          bancos.push({ block, banco: i + 1, rows: banco.length, verificado: false });
+        }
+      }
+      const puntaComun =
+        g.eje === "este-oeste" ? "la punta oeste" : "la punta sur";
       blocks.push({
         block, rows: group.length, status: g.status,
         detail:
           g.detail +
           " Sin la calle no se puede saber que punta da a las cajas, asi que estas filas quedan " +
-          "con el sentido sin resolver.",
+          "con el sentido sin verificar." +
+          (g.bancos
+            ? ` Igual quedan todas contando desde ${puntaComun}, que es la misma para todas: con ` +
+              `un conteo de campo por banco (${g.bancos.length} en este bloque) se da vuelta lo ` +
+              `que haga falta.`
+            : ""),
       });
       continue;
     }
@@ -1221,6 +1309,9 @@ export function deriveOriginEnds(
       asignadas++;
     }
 
+    for (const [i, banco] of (g.bancos ?? []).entries()) {
+      bancos.push({ block, banco: i + 1, rows: banco.length, verificado: true });
+    }
     blocks.push({
       block, rows: group.length, status: "ok",
       detail:
@@ -1231,13 +1322,16 @@ export function deriveOriginEnds(
     });
   }
 
-  return { origins, blocks };
+  return { origins, provisionales, bancos, blocks };
 }
 
 /** Escribe el sentido deducido en las filas, para que quede a la vista. */
 export function aplicarOrigenes(rows: TrackerRow[], d: OriginDerivation): TrackerRow[] {
   return rows.map((r) => {
-    const o = d.origins.get(r.id);
+    // Lo verificado manda. Si no hay, el provisional es infinitamente mejor
+    // que dejar la fila sin `originEnd`: sin esto cae en el `start` del Excel,
+    // que apunta para cualquier lado fila por fila.
+    const o = d.origins.get(r.id) ?? d.provisionales.get(r.id);
     return o ? { ...r, originEnd: o } : r;
   });
 }
