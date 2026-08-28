@@ -1318,7 +1318,9 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
                 ahora.</strong>{" "}
                 Aca todavia no cargaste ningun plano: lo unico que entro son las coordenadas, asi
                 que la app esta tratando de deducir del terreno algo que el plano trae dibujado.
-                Cargalos y estos {origenesSinResolver.length} bloques se cierran solos.
+                Termina de guardar el parque y cargalos desde <strong>Parques → Antes de volar →
+                Cargar los planos</strong>; ahi estos {origenesSinResolver.length} bloques se
+                cierran solos.
                 {origenes && origenes.bancos.length > 0 && (
                   <>
                     {" "}Recien si no aparece el plano de algun bloque hace falta ir al campo, y ahi

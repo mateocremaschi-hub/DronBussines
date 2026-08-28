@@ -91,6 +91,21 @@ export interface TramosDelBloque {
    * marca ningun borde S|N.
    */
   calleDespuesDelTramo: number | null;
+  /**
+   * Por que salio o no salio la calle. Los dos motivos de fracaso NO son lo
+   * mismo y llevan a hacer cosas distintas:
+   *
+   * - `sin-borde`: el plano no marca ningun perimetro norte-sur en ese bloque.
+   *   No hay nada mas que sacarle; se cierra con un conteo o con el plano de
+   *   interconexion.
+   * - `varias-calles`: el plano marca DOS o mas calles internas. El dato esta,
+   *   lo que falta es cual de ellas lleva las cajas. Eso lo contesta el plano
+   *   de interconexion de UN bloque de esos.
+   *
+   * Decir "o una o la otra" obliga a la persona a ir a averiguar cual, que es
+   * justo el trabajo que esta pantalla tiene que ahorrarle.
+   */
+  motivo: "una-calle" | "sin-borde" | "varias-calles";
   detail: string;
 }
 
@@ -164,7 +179,7 @@ export function bancosDelBloque(trackers: TrackerDelPlano[]): TramosDelBloque | 
   if (varias) {
     // Elegir uno seria volver a adivinar, que es de donde venimos.
     return {
-      block, tramos, calleDespuesDelTramo: null,
+      block, tramos, calleDespuesDelTramo: null, motivo: "varias-calles",
       detail:
         `El plano marca ${tramos.length} tramos (${forma}) y mas de un borde norte-sur, asi que no ` +
         `hay una sola calle del medio. Hace falta el plano de interconexion para saber cual lleva ` +
@@ -176,6 +191,7 @@ export function bancosDelBloque(trackers: TrackerDelPlano[]): TramosDelBloque | 
     block,
     tramos,
     calleDespuesDelTramo: calle,
+    motivo: calle != null ? "una-calle" : "sin-borde",
     detail:
       calle != null
         ? `El plano marca ${tramos.length} tramos (${forma}) y la calle del medio entre el ${calle} ` +

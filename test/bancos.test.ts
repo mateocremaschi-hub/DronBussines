@@ -125,6 +125,7 @@ describe("los bancos que dice el plano de Wellington North", () => {
     ];
     const b = bancosDelBloque(dosCalles)!;
     expect(b.calleDespuesDelTramo).toBe(null);
+    expect(b.motivo).toBe("varias-calles");
     expect(b.detail).toMatch(/plano de interconexion/);
   });
 
@@ -132,7 +133,18 @@ describe("los bancos que dice el plano de Wellington North", () => {
     const sinMarca: TrackerDelPlano[] = [1, 2, 3, 4].map((n) => ({ block: "98", tracker: String(n) }));
     const b = bancosDelBloque(sinMarca)!;
     expect(b.calleDespuesDelTramo).toBe(null);
+    // Los dos fracasos NO son el mismo: este no tiene arreglo desde el plano,
+    // el de varias calles si. Confundirlos manda a hacer el trabajo equivocado.
+    expect(b.motivo).toBe("sin-borde");
     expect(b.detail).toMatch(/ningun borde/);
+  });
+
+  it("los bloques de Wellington se reparten en los dos motivos, no en uno solo", () => {
+    const motivos = Object.keys(datos).map((b) => bancosDelBloque(delPlano(b))!.motivo);
+    expect(motivos.filter((m) => m === "una-calle").length).toBeGreaterThanOrEqual(12);
+    // El 07 marca dos bordes norte-sur: ese es el caso que se puede cerrar con
+    // un solo plano de interconexion, no con conteos de campo.
+    expect(motivos).toContain("varias-calles");
   });
 });
 

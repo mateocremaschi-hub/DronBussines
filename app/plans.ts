@@ -256,7 +256,7 @@ export function aplicarPlano(
 
 function notasDelSentido(
   conSentido: number,
-  tramos: Array<{ block: string; calleDespuesDelTramo: number | null; detail: string }>,
+  tramos: Array<{ block: string; calleDespuesDelTramo: number | null; motivo: string; detail: string }>,
   sinCalle: string[],
   totalFilas: number,
 ): string[] {
@@ -270,11 +270,37 @@ function notasDelSentido(
     `${tramos.length} bloques. Con eso quedaron ${conSentido} de ${totalFilas} filas con el sentido ` +
     `de conteo resuelto.`,
   );
-  if (sinCalle.length) {
+  /*
+    Los dos motivos por separado.
+
+    Estaban juntos en un "o una o la otra", y eso deja al que lee sin saber que
+    hacer: son dos problemas distintos con dos soluciones distintas. Con varias
+    calles el dato ESTA y lo que falta es cual lleva las cajas —lo contesta el
+    plano de interconexion de uno solo de esos bloques—. Sin ningun borde no hay
+    nada mas que sacarle al plano y hace falta un conteo.
+  */
+  const varias = tramos.filter((t) => t.motivo === "varias-calles").map((t) => t.block);
+  const sinBorde = tramos.filter((t) => t.motivo === "sin-borde").map((t) => t.block);
+  const lista = (bs: string[]) => `${bs.slice(0, 6).join(", ")}${bs.length > 6 ? "…" : ""}`;
+
+  if (varias.length) {
     notas.push(
-      `Quedan ${sinCalle.length} bloques sin calle en el plano (${sinCalle.slice(0, 6).join(", ")}` +
-      `${sinCalle.length > 6 ? "…" : ""}): o el plano no marca ningun borde norte-sur, o marca mas ` +
-      `de uno y elegir seria adivinar.`,
+      `${varias.length} bloques (${lista(varias)}) marcan MAS DE UNA calle interna. Ahi el plano si ` +
+      `dice donde estan las calles; lo que falta es cual de ellas lleva las cajas. El plano de ` +
+      `interconexion de uno solo de esos bloques contesta para todos.`,
+    );
+  }
+  if (sinBorde.length) {
+    notas.push(
+      `${sinBorde.length} bloques (${lista(sinBorde)}) no marcan ningun perimetro norte-sur. A esos ` +
+      `el plano de fundaciones ya no les puede dar nada mas: se cierran con un conteo de campo, uno ` +
+      `por bloque.`,
+    );
+  }
+  if (!varias.length && !sinBorde.length && sinCalle.length) {
+    notas.push(
+      `Quedan ${sinCalle.length} bloques sin resolver (${lista(sinCalle)}) porque el plano no ` +
+      `menciona ninguno de sus trackers.`,
     );
   }
   notas.push(
