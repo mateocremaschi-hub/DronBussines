@@ -7,6 +7,7 @@
 
 import { useMemo, useState, useEffect } from "react";
 import { compileFarm, ProfileError } from "@locator";
+import { crsAparente, reproyectar } from "../../src/geo/utm";
 import { cuadreDeFila } from "../rowbalance";
 import type { CompiledFarm, FarmProfile, TrackerRow } from "@locator";
 import {
@@ -109,23 +110,6 @@ export function traducirError(err: string): string {
   return [...dichas].join(" ");
 }
 
-/**
- * El CRS que le queda al parque despues de moverlo.
- *
- * Si el parque tenia zona UTM y se lo corre 6 grados, la zona pasa a ser la de
- * al lado: dejar la vieja escrita mentiria sobre donde esta el parque, que es
- * exactamente el error del que se viene.
- *
- * Si no tenia zona —o esta en grados decimales— no hay nada que ajustar: se
- * devuelve tal cual. Mover el parque no inventa un sistema de coordenadas.
- */
-export function crsDespuesDelMovimiento(crs: Crs, desplazoLon: number): Crs {
-  if (crs.type !== "utm" || !desplazoLon) return crs;
-  const zona = crs.zone + Math.round(desplazoLon / 6);
-  if (zona < 1 || zona > 60) return crs;
-  return { ...crs, zone: zona };
-}
-
 const slug = (s: string) =>
   s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
     .replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "parque";
@@ -173,16 +157,18 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
   const [crs, setCrs] = useState<Crs>(
     soloParametros && existing?.profile.crs ? existing.profile.crs : { type: "wgs84" },
   );
-  /**
-   * Cuantos grados de longitud mover el parque guardado, si cayo en el lugar
-   * equivocado. Multiplo de 6: una zona UTM.
-   *
-   * Es un desplazamiento y NO "la zona nueva" a proposito. La zona guardada es
-   * un dato que se puede perder —esta misma pantalla la borraba— y entonces no
-   * hay de donde restar. Donde CAE el parque, en cambio, esta siempre, y es lo
-   * que se puede verificar en un mapa.
-   */
-  const [desplazoLon, setDesplazoLon] = useState(0);
+  /*
+    Corregir un parque guardado que cayo en el lugar equivocado del planeta.
+
+    Nada de esto sale del perfil a proposito: la zona guardada es un dato que se
+    puede perder —esta misma pantalla la borraba— y si el arreglo depende de el,
+    cuando hace falta no esta. Lo que nunca se pierde es donde cae el parque.
+  */
+  const [corrigiendo, setCorrigiendo] = useState(false);
+  /** La zona con la que se importo. Se pide: la apuesta puede errarle por una. */
+  const [origenZona, setOrigenZona] = useState<number | null>(null);
+  const [destinoZona, setDestinoZona] = useState<number | null>(null);
+  const [destinoHem, setDestinoHem] = useState<"N" | "S">("S");
   /** Lo que la deteccion no pudo saber sola y hay que confirmar a mano. */
   const [crsAConfirmar, setCrsAConfirmar] = useState<string[]>([]);
 
@@ -465,20 +451,29 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
     if (!soloParametros && !built) return;
 
     /*
-      Mover el parque mueve las FILAS, no un numero del perfil.
+      Corregir el sistema de coordenadas mueve las FILAS, no un numero.
 
-      Las coordenadas guardadas ya estan en grados. El traslado es exacto: para
-      el mismo par este/norte, una zona de diferencia corre la longitud 6 grados
-      justos y deja la latitud igual. Por eso no hace falta el archivo original
-      ni reproyectar nada. Hay test en test/utm.test.ts, en los dos hemisferios:
-      si eso dejara de valer, esto corrompe el parque en silencio.
+      Se deshace la proyeccion con la zona y el hemisferio con los que se
+      importo y se rehace con los correctos. El par este/norte del archivo se
+      recupera exacto, asi que el parque no se deforma: adentro queda identico y
+      lo unico que cambia es donde esta en el planeta. Hay tests en
+      test/utm.test.ts —incluido el caso real, del mar Baltico a Wellington— y
+      uno que verifica que el este/norte de cada punta sobrevive intacto.
     */
     let filas = merge.rows;
-    if (soloParametros && desplazoLon) {
+    if (soloParametros && corrigiendo && destinoZona != null && existing?.rows.length) {
+      const r0 = existing.rows[0]!;
+      const centro = {
+        lat: (r0.start.lat + r0.end.lat) / 2,
+        lon: (r0.start.lon + r0.end.lon) / 2,
+      };
+      const apuesta = crsAparente(centro);
+      const origen = { zone: origenZona ?? apuesta.zone, hemisphere: apuesta.hemisphere };
+      const destino = { zone: destinoZona, hemisphere: destinoHem };
       filas = filas.map((r) => ({
         ...r,
-        start: { ...r.start, lon: r.start.lon + desplazoLon },
-        end: { ...r.end, lon: r.end.lon + desplazoLon },
+        start: { ...r.start, ...reproyectar(r.start, origen, destino) },
+        end: { ...r.end, ...reproyectar(r.end, origen, destino) },
       }));
     }
 
@@ -495,14 +490,15 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
       un solo sintoma. Y despues, al ir a corregir la zona, la pantalla decia
       "este parque no tiene zona guardada" — la habia borrado ella misma.
 
-      Ajustando parametros el CRS del parque no se toca nunca: no hay ninguna
-      informacion nueva sobre el, y lo unico que puede hacer esta pantalla con
-      ese dato es perderlo.
+      Ajustando parametros el CRS del parque solo cambia si se lo corrigio a
+      mano, con el mapa a la vista. Nunca por el estado inicial de la pantalla.
     */
+    const crsCorregido: Crs | undefined =
+      corrigiendo && destinoZona != null
+        ? { type: "utm", zone: destinoZona, hemisphere: destinoHem }
+        : existing?.profile.crs;
     const perfilFinal: FarmProfile =
-      soloParametros && existing?.profile.crs
-        ? { ...profile, crs: crsDespuesDelMovimiento(existing.profile.crs, desplazoLon) }
-        : profile;
+      soloParametros && crsCorregido ? { ...profile, crs: crsCorregido } : profile;
 
     const stored: StoredFarm = {
       profile: perfilFinal,
@@ -958,25 +954,29 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
           <h2>3 · Como esta armado el parque</h2>
 
           {/*
-            Donde cae el parque, y como moverlo si cayo mal.
+            Donde cae el parque, y como arreglarlo si cayo mal.
             ===================================================================
-            Esto empezo como un selector de zona UTM y estaba mal planteado.
+            Esto se rehizo dos veces, y las dos por asumir de mas.
 
-            Wellington North entro con la zona 56 en vez de la 55 y quedo 560 km
-            adentro del mar de Tasmania. Pero cuando fui a corregirlo, el
-            selector no aparecia: el parque YA NO TENIA zona guardada. La habia
-            borrado esta misma pantalla —ver el guard en `save()`— asi que
-            corregir "la zona" era imposible por construccion.
+            Primero fue un selector de zona UTM. No servia: el parque ya no
+            tenia zona guardada, la habia borrado esta misma pantalla.
 
-            La leccion es que la zona guardada es un dato que se puede perder, y
-            no puede ser de lo que dependa poder arreglar el parque. Lo que
-            nunca se pierde es DONDE CAE. Asi que la pregunta ya no es "¿que
-            zona es?" sino "¿cae donde tiene que caer?", y la respuesta se
-            verifica en un mapa, que es lo unico que no se puede fingir.
+            Despues fueron dos botones de "moverlo 6 grados", asumiendo que el
+            error era de una zona. Tampoco: Wellington North habia entrado como
+            zona 33 NORTE y estaba en el mar Baltico, cerca de Gotland, a 15.000
+            km de donde va. El hemisferio cambia el signo de la latitud y suma
+            diez millones de metros al norte — ningun corrimiento de longitud
+            tapa eso.
 
-            Mover una zona son 6 grados de longitud exactos, sin tocar la
-            latitud (test en test/utm.test.ts). Eso vale igual tenga el parque
-            zona guardada o no.
+            Lo que corresponde es deshacer la proyeccion y rehacerla. El par
+            este/norte del archivo se recupera exacto, asi que el parque se
+            arregla sin volver a cargar el Excel: los planos y la lista de
+            strings quedan intactos.
+
+            La zona de ORIGEN se PIDE, no se deduce. Se ofrece una apuesta, pero
+            puede errarle por una cuando el este esta lejos del meridiano
+            central —el caso de Wellington— y hay un test que lo deja escrito.
+            Lo que decide es el mapa.
           */}
           {soloParametros && !!existing?.rows.length && (() => {
             const r0 = existing.rows[0]!;
@@ -984,52 +984,85 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
             const lon = (r0.start.lon + r0.end.lon) / 2;
             const mapa = (la: number, lo: number) =>
               `https://www.google.com/maps/search/?api=1&query=${la},${lo}`;
-            const zonaDe = (lo: number) => Math.floor((lo + 180) / 6) + 1;
+            const apuesta = crsAparente({ lat, lon });
+            const origen = { zone: origenZona ?? apuesta.zone, hemisphere: apuesta.hemisphere };
+            const destinoOk = destinoZona != null;
+            const destino = { zone: destinoZona ?? origen.zone, hemisphere: destinoHem };
+            const preview = destinoOk ? reproyectar({ lat, lon }, origen, destino) : null;
+
             return (
-              <div className={desplazoLon ? "note bad" : "note"}>
+              <div className={destinoOk ? "note bad" : "note"}>
                 <h3>Donde cae el parque</h3>
                 <p>
-                  Hoy cae en{" "}
-                  <span className="mono">{lat.toFixed(5)}, {lon.toFixed(5)}</span>{" "}
+                  Hoy cae en <span className="mono">{lat.toFixed(5)}, {lon.toFixed(5)}</span>{" "}
                   <a href={mapa(lat, lon)} target="_blank" rel="noreferrer">ver en el mapa →</a>
-                  {" "}(zona UTM {zonaDe(lon)}).
                 </p>
                 <p className="help">
-                  Abrilo y fijate que se vean los paneles. Con la zona equivocada todo lo demas
-                  sigue dando bien —el cuadre cierra, el dibujo sale, los planos cruzan— y el unico
-                  sintoma aparece parado en el campo o al exportar el KML.
+                  Abrilo y fijate que se vean los paneles. Es el unico chequeo que no se puede
+                  fingir: con el sistema de coordenadas equivocado todo lo demas sigue dando bien
+                  —el cuadre cierra, los planos cruzan— y el primer sintoma aparece parado en el
+                  campo o al exportar el KML.
                 </p>
-                <p className="help">
-                  Si cayo en el lugar equivocado, casi siempre es la zona UTM de al lado: eso corre
-                  el parque 6 grados de longitud y no toca nada mas. Adentro del parque no cambia
-                  nada — mismo tracker, mismo string, mismo modulo.
-                </p>
-                <div className="acciones-zona">
-                  {[-6, 6].map((d) => (
-                    <span key={d}>
-                      <button
-                        className="link"
-                        onClick={() => setDesplazoLon(desplazoLon === d ? 0 : d)}
-                      >
-                        {desplazoLon === d ? "✓ " : ""}Moverlo 6° al {d < 0 ? "oeste" : "este"}
-                      </button>{" "}
-                      <a href={mapa(lat, lon + d)} target="_blank" rel="noreferrer">
-                        ({(lon + d).toFixed(4)}, zona {zonaDe(lon + d)}) ver mapa →
-                      </a>
-                      {d < 0 ? " · " : ""}
-                    </span>
-                  ))}
-                </div>
-                {!!desplazoLon && (
-                  <p>
-                    <strong>
-                      Al guardar, las {existing.rows.length} filas se mueven 6° al{" "}
-                      {desplazoLon < 0 ? "oeste" : "este"}
-                    </strong>{" "}
-                    y el parque queda en{" "}
-                    <span className="mono">{lat.toFixed(5)}, {(lon + desplazoLon).toFixed(5)}</span>.
-                    Abri ese mapa antes de guardar.
-                  </p>
+
+                {!corrigiendo ? (
+                  <button className="link" onClick={() => setCorrigiendo(true)}>
+                    Cayo en el lugar equivocado →
+                  </button>
+                ) : (
+                  <>
+                    <p className="help">
+                      Se deshace la proyeccion y se rehace con el sistema correcto. Las{" "}
+                      {existing.rows.length} filas se mueven; adentro del parque no cambia nada
+                      —mismo tracker, mismo string, mismo modulo— y los planos y los strings que ya
+                      cargaste quedan como estan.
+                    </p>
+                    <div className="grid-2">
+                      <div className="field">
+                        <label htmlFor="origen-zona">Zona con la que se importo</label>
+                        <input
+                          id="origen-zona" type="number" min={1} max={60}
+                          value={origenZona ?? apuesta.zone}
+                          onChange={(e) => setOrigenZona(Number(e.target.value) || null)}
+                        />
+                        <span className="help">
+                          La app apuesta <strong>{apuesta.zone}</strong> por donde cae hoy, pero
+                          puede errarle por una. Si el mapa de abajo no da, proba la de al lado.
+                        </span>
+                      </div>
+                      <div className="field">
+                        <label htmlFor="destino-zona">Zona correcta</label>
+                        <input
+                          id="destino-zona" type="number" min={1} max={60}
+                          placeholder="1 a 60"
+                          value={destinoZona ?? ""}
+                          onChange={(e) => setDestinoZona(Number(e.target.value) || null)}
+                        />
+                        <label className="inline">Hemisferio
+                          <select
+                            value={destinoHem}
+                            onChange={(e) => setDestinoHem(e.target.value as "N" | "S")}
+                          >
+                            <option value="S">Sur</option>
+                            <option value="N">Norte</option>
+                          </select>
+                        </label>
+                      </div>
+                    </div>
+                    {preview && (
+                      <p>
+                        <strong>
+                          Al guardar, el parque queda en{" "}
+                          <span className="mono">
+                            {preview.lat.toFixed(5)}, {preview.lon.toFixed(5)}
+                          </span>
+                        </strong>{" "}
+                        <a href={mapa(preview.lat, preview.lon)} target="_blank" rel="noreferrer">
+                          ver en el mapa →
+                        </a>
+                        . Abrilo antes de guardar.
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             );

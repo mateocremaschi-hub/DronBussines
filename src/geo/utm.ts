@@ -116,3 +116,63 @@ export function wgs84ToUtm(lat: number, lon: number, zone?: number): UtmPoint {
 
   return { easting, northing, zone: z, hemisphere };
 }
+
+/**
+ * Volver a proyectar un punto que se importo con la zona o el hemisferio
+ * equivocados.
+ *
+ * Wellington North entro como zona 33 NORTE y quedo en el mar Baltico, cerca
+ * de Gotland. Lo correcto era zona 55 SUR. Un desplazamiento de longitud no
+ * arregla eso: el hemisferio cambia el signo de la latitud y le suma diez
+ * millones de metros al norte, asi que no hay ningun corrimiento que lo tape.
+ *
+ * Pero el par este/norte del archivo original SI se puede recuperar: la
+ * proyeccion es invertible. Se deshace con la zona y el hemisferio con los que
+ * se importo, y se rehace con los correctos. El parque se arregla sin volver a
+ * cargar el Excel — o sea sin perder los planos y la lista de strings que ya
+ * estan aplicados encima.
+ *
+ * `desde` es la zona y el hemisferio con los que se importo. Se pueden deducir
+ * del propio punto (`crsAparente`) porque una conversion siempre deja el punto
+ * adentro de la banda de su zona y del lado de su hemisferio.
+ */
+export function reproyectar(
+  p: { lat: number; lon: number },
+  desde: { zone: number; hemisphere: "N" | "S" },
+  hacia: { zone: number; hemisphere: "N" | "S" },
+): { lat: number; lon: number } {
+  const utm = wgs84ToUtm(p.lat, p.lon, desde.zone);
+  return utmToWgs84({
+    easting: utm.easting,
+    northing: utm.northing,
+    zone: hacia.zone,
+    hemisphere: hacia.hemisphere,
+  });
+}
+
+/**
+ * Una PRIMERA APUESTA de con que zona y hemisferio se proyecto un punto.
+ *
+ * Ojo con esto, porque yo me equivoque: la primera version decia "no es
+ * adivinanza, convertir con la zona Z deja el punto adentro de la banda de Z".
+ * Es falso. La banda mide 6 grados, pero un este lejos del meridiano central
+ * empuja el punto MAS ALLA del borde.
+ *
+ * El caso real: Wellington North proyectado con la zona 33 —este 682360, o sea
+ * 182 km al este del meridiano central— cae en longitud 18.064, y la banda de
+ * la 33 termina en 18. Da 34. Usar esa zona para deshacer la conversion corre
+ * el parque unos 470 metros.
+ *
+ * Sirve como valor inicial de un campo que la persona puede corregir mirando el
+ * mapa, y para nada mas. El hemisferio si es seguro: sale del signo de la
+ * latitud.
+ */
+export function crsAparente(p: { lat: number; lon: number }): {
+  zone: number;
+  hemisphere: "N" | "S";
+} {
+  return {
+    zone: Math.min(60, Math.max(1, Math.floor((p.lon + 180) / 6) + 1)),
+    hemisphere: p.lat < 0 ? "S" : "N",
+  };
+}

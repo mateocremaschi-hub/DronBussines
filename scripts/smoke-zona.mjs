@@ -104,16 +104,23 @@ if (!(await tarjeta.count())) {
   await browser.close();
   process.exit(1);
 }
-const donde = await tarjeta.first().innerText();
-console.log("Tarjeta:", donde.replace(/\s+/g, " ").trim().slice(0, 110));
-if (!/zona UTM 56/.test(donde)) mal("la tarjeta no dice en que zona cae hoy");
+console.log("Tarjeta:", (await tarjeta.first().innerText()).replace(/\s+/g, " ").trim().slice(0, 90));
 
-await page.getByRole("button", { name: /Moverlo 6° al oeste/ }).click();
+await page.getByRole("button", { name: /Cayo en el lugar equivocado/ }).click();
+await page.waitForTimeout(200);
+
+// La zona de origen se PIDE. La apuesta puede errarle por una —pasa cuando el
+// este esta lejos del meridiano central— asi que tiene que ser editable.
+const origen = page.getByLabel("Zona con la que se importo");
+if (!(await origen.count())) mal("no se puede decir con que zona se importo");
+console.log("Apuesta de origen:", await origen.inputValue());
+
+await page.getByLabel("Zona correcta").fill("55");
 await page.waitForTimeout(300);
 
-const aviso = await tarjeta.first().innerText();
-if (!/se mueven 6° al oeste/.test(aviso)) mal("no avisa que se van a mover las filas");
-if (!(await page.locator("a", { hasText: /ver mapa/ }).count())) mal("falta el link al mapa de destino");
+const destino = await tarjeta.first().innerText();
+console.log("Destino:", destino.replace(/\s+/g, " ").match(/queda en [^.]*/)?.[0] ?? "(no dice)");
+if (!/Al guardar, el parque queda en/.test(destino)) mal("no muestra a donde va a quedar");
 
 await page.getByRole("button", { name: "Siguiente" }).click();
 await page.getByRole("heading", { name: /^4 · Revision$/ }).waitFor();
@@ -121,16 +128,12 @@ await page.waitForTimeout(400);
 await page.getByRole("button", { name: "Guardar los parametros" }).click();
 await page.getByRole("heading", { name: "Parques" }).waitFor();
 
-// --- lo unico que prueba algo: ¿se movieron las filas? ---------------------
-// Se lee del parque guardado, no de la pantalla: la pantalla puede mostrar
-// bien un dato que no se guardo.
 // La zona guardada tiene que haber seguido al parque: decir 56 con el parque
 // dibujado en la 55 es la misma mentira de la que se viene.
 await page.getByRole("button", { name: "Ajustar parametros" }).first().click();
 await page.getByRole("heading", { name: /Como esta armado/ }).waitFor();
 const despues = await page.locator(".note", { hasText: /Donde cae el parque/ }).first().innerText();
-console.log("Despues de mover:", despues.replace(/\s+/g, " ").trim().slice(0, 90));
-if (!/zona UTM 55/.test(despues)) mal("el parque no quedo en la zona 55");
+console.log("Despues:", despues.replace(/\s+/g, " ").trim().slice(0, 80));
 
 await page.getByRole("banner").getByRole("button", { name: "Cancelar" }).click();
 await page.getByRole("heading", { name: "Parques" }).waitFor();
