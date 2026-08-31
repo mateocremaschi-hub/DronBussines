@@ -29,6 +29,7 @@
  */
 
 import type { PlanoDeParque } from "./plans";
+import { bancosDelBloque } from "./bancos";
 
 /**
  * Como nombra este parque a sus trackers, cajas y strings.
@@ -370,6 +371,36 @@ export function huecoInterior(vals: number[]): { hueco: number; pos: number } {
  * ninguna, en vez de devolver el plano a medias en silencio.
  */
 /** Reparte las etiquetas en trackers, cajas y strings. */
+/**
+ * El rotulo de la lamina, repetido en cada hoja, se cuenta una sola vez.
+ *
+ * `descartarSueltas` saca los textos que estan solos en el dibujo, lejos de
+ * cualquier grilla — asi se caia el numero de proyecto "P22-0009-ING", que si
+ * no entra como el tracker 9 del bloque 22. Pero esa regla mide la distancia
+ * al vecino mas cercano, y el rotulo esta en el mismo lugar de TODAS las
+ * hojas: cargando los 37 PDF de una vez, las 37 copias caen una encima de la
+ * otra, se hacen vecinas entre ellas y ninguna parece sola. El rotulo entra, y
+ * como el bloque 22 existe de verdad, no aparece como un bloque de mas: se
+ * mezcla con el tracker 22-009 real y le corre el centro.
+ *
+ * Un plano no imprime dos veces la misma etiqueta en el mismo punto. Si el
+ * mismo texto aparece en la misma coordenada, es la misma cosa dibujada en
+ * varias hojas, y vale una.
+ */
+function sinRepetidas(etiquetas: Etiqueta[]): { etiquetas: Etiqueta[]; repetidas: number } {
+  const vistas = new Set<string>();
+  const out: Etiqueta[] = [];
+  for (const e of etiquetas) {
+    // Media unidad de tolerancia: dos hojas del mismo juego no caen al bit,
+    // pero tampoco se corren mas que eso.
+    const k = `${e.t}@${Math.round(e.x * 2)},${Math.round(e.y * 2)}`;
+    if (vistas.has(k)) continue;
+    vistas.add(k);
+    out.push(e);
+  }
+  return { etiquetas: out, repetidas: etiquetas.length - out.length };
+}
+
 function repartir(etiquetas: Etiqueta[], soloComo?: string) {
   const trackers = new Map<string, Etiqueta[]>();
   const cajas = new Map<string, Etiqueta[]>();
@@ -401,6 +432,60 @@ export interface OpcionesDePlano {
   ejemploDeTracker?: string;
 }
 
+/**
+ * Saca las etiquetas de tracker que estan SOLAS en la lamina.
+ *
+ * El rotulo del plano trae textos con forma de etiqueta. En la lamina de los
+ * bloques 15 y 16, el numero de proyecto `P22-0009-ING` entraba como el tracker
+ * 9 del bloque 22 — un bloque que no existe, con un tracker, en la esquina de
+ * la hoja. Sobre 52 laminas eso son decenas de bloques fantasma; y si el codigo
+ * de proyecto coincidiera con un bloque REAL, le inyecta un tracker en la
+ * posicion del rotulo y le arruina la deteccion de la calle.
+ *
+ * La regla no es una lista de prefijos prohibidos —el proximo proyecto usa
+ * otro— sino geometria: un tracker de verdad vive en una grilla y tiene
+ * vecinos. El rotulo esta solo. En esta lamina el falso tiene su vecino mas
+ * cercano a 929 puntos y la etiqueta REAL mas aislada lo tiene a 65: la
+ * separacion es de catorce veces, no de un pelo.
+ *
+ * Se compara contra la MEDIANA de la propia lamina y no contra un numero fijo,
+ * porque la escala cambia de plano en plano. Diez veces la mediana deja pasar
+ * cualquier grilla real y no deja pasar un rotulo.
+ */
+const AISLAMIENTO = 10;
+
+function descartarSueltas(trackers: Map<string, Etiqueta[]>): string[] {
+  const todas = [...trackers.values()].flat();
+  if (todas.length < 8) return [];   // sin grilla no hay mediana que valga
+
+  const cercano = (p: Etiqueta) => {
+    let d = Infinity;
+    for (const q of todas) {
+      if (q === p) continue;
+      const e = Math.hypot(q.x - p.x, q.y - p.y);
+      if (e < d) d = e;
+    }
+    return d;
+  };
+  const dist = new Map(todas.map((e) => [e, cercano(e)]));
+  const orden = [...dist.values()].sort((a, b) => a - b);
+  const mediana = orden[orden.length >> 1] ?? 0;
+  if (!mediana || !Number.isFinite(mediana)) return [];
+
+  const fuera: string[] = [];
+  for (const [bloque, lista] of trackers) {
+    const quedan = lista.filter((e) => {
+      const d = dist.get(e)!;
+      if (d <= mediana * AISLAMIENTO) return true;
+      fuera.push(e.t);
+      return false;
+    });
+    if (quedan.length) trackers.set(bloque, quedan);
+    else trackers.delete(bloque);
+  }
+  return fuera;
+}
+
 export function planoDeEtiquetas(
   etiquetas: Etiqueta[],
   opts: OpcionesDePlano = {},
@@ -428,7 +513,9 @@ export function planoDeEtiquetas(
     }
   }
 
-  const { trackers, cajas, strings } = repartir(etiquetas, forma);
+  const unicas = sinRepetidas(etiquetas);
+  const { trackers, cajas, strings } = repartir(unicas.etiquetas, forma);
+  const sueltas = descartarSueltas(trackers);
 
   const cuenta = (m: Map<string, Etiqueta[]>) =>
     [...m.values()].reduce((s, v) => s + v.length, 0);
@@ -438,6 +525,16 @@ export function planoDeEtiquetas(
     strings: cuenta(strings),
     total: etiquetas.length,
   };
+
+  if (sueltas.length) {
+    avisos.push(
+      `Descarte ${sueltas.length} texto${sueltas.length === 1 ? "" : "s"} que parecian etiquetas de ` +
+      `tracker pero estaban solos en la lamina, lejos de cualquier grilla: ` +
+      `${sueltas.slice(0, 4).map((t) => `"${t}"`).join(", ")}. ` +
+      "Casi siempre es el rotulo del plano — un numero de proyecto como P22-0009-ING entra como " +
+      "el tracker 9 del bloque 22, un bloque que no existe.",
+    );
+  }
 
   const formas = formasDeEtiqueta(etiquetas);
 
@@ -618,6 +715,8 @@ function armarBloque(
    * bajo. Anclarlo al tracker 1 en vez de a un eje del dibujo hace que la
    * asignacion no dependa de como quedo orientada la lamina, que es lo unico
    * que cambia de un plano a otro.
+   *
+   * PERO se prefiere la marca de perimetro, cuando el plano la trae. Ver abajo.
    */
   const nums = [...tmap.entries()]
     .map(([k, v]) => [+k.split("-")[1]!, perp(v) >= road] as const)
@@ -627,29 +726,62 @@ function armarBloque(
     t.side = (perp(t) >= road) === ladoDelPrimero ? "North" : "South";
   }
 
+  /*
+    Si el plano marca el perimetro, ese dato manda sobre el hueco mas grande.
+
+    Wellington North lo destapo: el bloque 06 salia como "una tira sola sin
+    calle en el medio" y tiene calle. El heurístico de abajo busca el hueco
+    mas grande del dibujo y decide si eso es una calle; con un bloque de
+    varios bancos, el hueco mas grande puede ser cualquiera de las calles
+    internas o un vacio del trazado, y la respuesta sale de centimetros de
+    diferencia entre huecos parecidos.
+
+    La marca de perimetro no se adivina: dice PERIMETER 1 NORTH / SOUTH,
+    tracker por tracker, y el borde donde un tramo sur toca uno norte ES la
+    calle. Teniendo eso, medir huecos es volver a adivinar lo que esta escrito
+    — el mismo error que costo los 52 bloques del sentido de conteo.
+  */
+  const conPerimetro = [...tmap.entries()].filter(([, t]) => t.perimetro);
+  let porMarca = false;
   /**
-   * Bloques que NO tienen dos alas.
+   * El plano marca varias calles internas: no hay UNA calle del medio, pero
+   * tampoco es una tira sola.
    *
-   * En Edenvale el bloque 06 es una tira diagonal unica: no hay calle en el
-   * medio, asi que el "hueco mas grande" que encuentra el algoritmo es un vacio
-   * cualquiera del dibujo, y partir por ahi inventa dos alas donde hay una.
-   *
-   * Esto estaba escrito como `bnum === "06"`. Nombrar un bloque de UN parque
-   * dentro del lector de planos es exactamente el tipo de cosa que hace que la
-   * app funcione en Edenvale y falle en el parque siguiente por dos motivos a
-   * la vez: alla el bloque 06 puede tener dos alas de verdad (y se lo aplasta
-   * en una), y la tira unica puede ser el 11 (y se la parte al medio).
-   *
-   * La tira unica se reconoce por su forma, no por su nombre:
-   *
-   *  - el corte deja un ala casi vacia — no es una calle, es un tracker suelto
-   *    del otro lado de un vacio del dibujo; o
-   *  - el hueco no es mucho mas grande que la separacion tipica entre filas
-   *    vecinas, o sea no hay nada parecido a una calle.
-   *
-   * Una calle de verdad separa dos grupos parecidos y mide varias veces lo que
-   * mide la separacion entre dos filas.
+   * Son dos cosas distintas y la app las venia confundiendo. Que no se pueda
+   * elegir cual de las calles lleva las cajas no vuelve al bloque una hilera
+   * de 130 trackers pegados: las marcas de perimetro prueban lo contrario, hay
+   * un perimetro norte y uno sur con bordes en el medio. Declararlo "tira
+   * sola" ademas rompia dos cosas de verdad — mandaba todas las filas al mismo
+   * lado y tiraba la asignacion hibrida de caja de continua para reemplazarla
+   * por "la caja mas cercana en Y", que es peor.
    */
+  let variasCalles = false;
+  if (conPerimetro.length >= tmap.size * 0.5) {
+    const tramos = bancosDelBloque(
+      [...tmap.entries()].map(([k, t]) => ({
+        block: bnum,
+        tracker: k,
+        ...(t.perimetro ? { perimetro: t.perimetro } : {}),
+      })),
+    );
+    if (tramos?.calleDespuesDelTramo != null) {
+      const cortado = tramos.tramos[tramos.calleDespuesDelTramo - 1]!;
+      const primerGrupoEsNorte = cortado.borde === "sur";
+      const norte = new Set<string>();
+      for (const tr of tramos.tramos) {
+        const primero = tr.tramo <= tramos.calleDespuesDelTramo;
+        if (primero === primerGrupoEsNorte) for (const n of tr.trackers) norte.add(n);
+      }
+      for (const [k, t] of tmap) {
+        const n = k.match(/\d+/g)?.pop();
+        t.side = n && norte.has(String(Number(n))) ? "North" : "South";
+      }
+      porMarca = true;
+    } else if (tramos?.motivo === "varias-calles") {
+      variasCalles = true;
+    }
+  }
+
   const centros = [...tmap.values()].map(perp).sort((a, b) => a - b);
   const deUnLado = centros.filter((c) => c >= road).length;
   const minoria = Math.min(deUnLado, centros.length - deUnLado) / centros.length;
@@ -657,11 +789,22 @@ function armarBloque(
   const tipica = separaciones[Math.floor(separaciones.length / 2)] ?? 0;
   const huecoElegido = axis === "x" ? gx.hueco : gy.hueco;
 
-  const tiraUnica = minoria < 0.15 || (tipica > 0 && huecoElegido < tipica * 3);
+  // Si el lado salio de la marca del plano, el heuristico del hueco no opina:
+  // no hay ninguna tira unica que descubrir cuando la calle esta escrita. Y si
+  // la marca dice que hay VARIAS calles, tampoco: no saber cual de ellas lleva
+  // las cajas no convierte al bloque en una hilera.
+  const tiraUnica = !porMarca && !variasCalles &&
+    (minoria < 0.15 || (tipica > 0 && huecoElegido < tipica * 3));
   if (tiraUnica) {
     avisos.push(
       `El bloque ${bnum} no tiene calle en el medio: es una tira sola de ${tmap.size} trackers. ` +
       "Todas sus filas quedan del mismo lado y la caja de continua se asigna por cercania.",
+    );
+  } else if (variasCalles) {
+    avisos.push(
+      `El bloque ${bnum} marca mas de una calle interna, asi que no hay una sola calle del medio. ` +
+      "El lado sale del hueco mas grande del dibujo, y de que punta se entra lo dice la posicion de " +
+      "la caja de continua, que no necesita saber cual calle es cual.",
     );
   }
   if (tiraUnica) {

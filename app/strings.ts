@@ -643,6 +643,18 @@ export function applyStrings(rows: TrackerRow[], opts: ApplyOptions): TrackerRow
       out.stringNumbers = pares.map((p) => p.n);
       out.stringLabels = pares.map((p) => p.label);
     }
+    /*
+      La caja de continua que dice la LISTA DEL CLIENTE.
+
+      Estaba leida y se tiraba: `byRow` la traia, `applyStrings` no la
+      escribia, y la fila terminaba con la caja que adivinaba el plano por
+      geometria. En Wellington esas dos no coinciden — en el bloque 29 difieren
+      en 113 de 132 trackers, y no siempre por una caja vecina: hay trackers a
+      los que el dibujo les asigna una caja de otra columna, o sea de otra
+      calle. La lista del cliente es la documentacion electrica del parque; el
+      dibujo es una asignacion por cercania. Manda la lista.
+    */
+    if (hit?.dcBox) out.dcBoxLabel = hit.dcBox;
     if (chain) { out.pos = chain.pos; out.posTotal = chain.posTotal; }
     return out;
   });
