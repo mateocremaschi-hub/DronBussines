@@ -77,6 +77,10 @@ async function etiquetasDe(file: File): Promise<Etiqueta[]> {
           x: tr[4]! + (item.width ?? 0) / 2,
           y: alto - tr[5]! - (item.height ?? 0) / 2,
           t,
+          // De que lamina salio. Cada PDF tiene su propio sistema de
+          // coordenadas, y un bloque que aparece en dos no se puede armar
+          // promediando las dos. Ver `armarBloque`.
+          hoja: `${file.name}#${p}`,
         });
       }
       page.cleanup();

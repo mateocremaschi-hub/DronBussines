@@ -470,25 +470,27 @@ export function acordar(
   difieren: number;
   bloquesAlReves: string[];
   bloquesMezclados: string[];
+  /** Filas donde la caja cambio lo que habia deducido el heuristico de huecos. */
+  corregidas: number;
 } {
   const bloqueDe = new Map<string, string>();
   for (const r of rows) bloqueDe.set(r.id, r.block);
 
   /*
-    Contra que se compara la caja.
+    El cruce que vale es contra la MARCA DE PERIMETRO, no contra lo que la fila
+    ya traia.
 
-    La marca de perimetro de esta lectura si la hay; si no, lo que la fila ya
-    traia. Los planos se cargan de a tandas —primero los de fundacion, que
-    traen la marca, despues los de interconexion, que traen la caja— asi que si
-    esto solo mirara la lectura en curso, en la segunda tanda no habria con que
-    comparar y se perderia justo el control cruzado.
+    Son dos comparaciones distintas y mezclarlas ensucia el numero. La marca es
+    otra lectura del plano, independiente: si coincide con la caja, el dato es
+    bueno. Lo que la fila traia de antes, en cambio, suele venir del heuristico
+    que mide huecos entre picas — el que en Wellington erraba en los 52 bloques
+    de 52. Que la caja lo contradiga es lo ESPERADO, no una alarma; contarlo
+    junto con lo otro bajaba el porcentaje y llenaba la lista de bloques "para
+    mirar" con bloques donde no hay nada que mirar.
   */
-  const contra = new Map(previo);
-  for (const [id, v] of porPerimetro) contra.set(id, v);
-
   const acuerdo = new Map<string, { si: number; no: number }>();
   let coinciden = 0, difieren = 0;
-  for (const [id, a] of contra) {
+  for (const [id, a] of porPerimetro) {
     const b = porCajas.get(id);
     if (!b) continue;
     const bl = bloqueDe.get(id) ?? "?";
@@ -508,7 +510,11 @@ export function acordar(
 
   const origins = new Map(previo);
   // La caja le gana a la deduccion por coordenadas siempre: una esta dibujada.
-  for (const [id, v] of porCajas) origins.set(id, v);
+  let corregidas = 0;
+  for (const [id, v] of porCajas) {
+    if (previo.has(id) && previo.get(id) !== v) corregidas++;
+    origins.set(id, v);
+  }
   // Y la marca de perimetro le gana a la caja, salvo en los bloques donde las
   // cajas la desmienten entera: ahi el que esta mal es el bit, no la caja.
   const invertidos = new Set(alReves);
@@ -517,5 +523,8 @@ export function acordar(
     origins.set(id, v);
   }
 
-  return { origins, coinciden, difieren, bloquesAlReves: alReves.sort(), bloquesMezclados: mezclados.sort() };
+  return {
+    origins, coinciden, difieren, corregidas,
+    bloquesAlReves: alReves.sort(), bloquesMezclados: mezclados.sort(),
+  };
 }

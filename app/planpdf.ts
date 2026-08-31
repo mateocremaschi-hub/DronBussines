@@ -264,6 +264,18 @@ export interface Etiqueta {
   x: number;
   y: number;
   t: string;
+  /**
+   * De que lamina salio, si se sabe. Ej: "BL29.pdf#1".
+   *
+   * Cada PDF tiene su propio sistema de coordenadas. Mientras cada bloque
+   * viva en una sola lamina eso da igual, pero un bloque que aparece en dos
+   * —la de fundaciones y la de interconexion— llega con sus etiquetas en dos
+   * marcos distintos, y promediarlas da un centro que no existe. En
+   * Wellington eso le paso al bloque 06: con su lamina sola el dibujo calza
+   * sobre las coordenadas con 1,2 m de error, y mezclado con la otra queda en
+   * 69,8 m — el bloque entero descartado, sin sintoma visible.
+   */
+  hoja?: string;
 }
 
 export interface FormaDeEtiqueta {
@@ -613,13 +625,70 @@ interface Tk {
   perimetro?: "norte" | "sur" | "centro" | "perimetro-2";
 }
 
+/**
+ * Con que lamina se arma el bloque, cuando aparece en varias.
+ *
+ * Gana la que tiene mas cajas de continua dibujadas; si ninguna tiene, la que
+ * trae mas trackers. `undefined` si todas las etiquetas vienen de la misma
+ * lamina (o si el que llama no dijo de cual viene cada una), y entonces no se
+ * filtra nada.
+ */
+function elegirHoja(T: Etiqueta[], D: Etiqueta[]): string | null {
+  const hojas = new Set(T.map((e) => e.hoja ?? ""));
+  if (hojas.size < 2) return null;
+  const contar = (es: Etiqueta[]) => {
+    const m = new Map<string, number>();
+    for (const e of es) { const k = e.hoja ?? ""; m.set(k, (m.get(k) ?? 0) + 1); }
+    return m;
+  };
+  const cajas = contar(D);
+  const trackers = contar(T);
+  let mejor: string | null = null;
+  let puntaje = -1;
+  for (const h of hojas) {
+    // Las cajas pesan: de ahi sale la punta por la que se entra, y son lo unico
+    // que no se puede traer de otra lamina.
+    const p = (cajas.get(h) ?? 0) * 100000 + (trackers.get(h) ?? 0);
+    if (p > puntaje) { puntaje = p; mejor = h; }
+  }
+  return mejor;
+}
+
 function armarBloque(
   bnum: string, T: Etiqueta[], D: Etiqueta[], S: Etiqueta[],
 ): { bloque: PlanoDeParque[string]; avisos: string[] } | { aviso: string } {
   const avisos: string[] = [];
   const tmap = new Map<string, Tk>();
 
-  for (const e of T) {
+  /*
+    Un bloque se arma en UN marco de coordenadas.
+
+    Cada PDF tiene el suyo. Mientras cada bloque este en una sola lamina eso da
+    igual, pero varios aparecen en dos —la de fundaciones y la de
+    interconexion— y entonces sus etiquetas llegan en dos marcos. Promediarlas
+    da un centro que no existe: al bloque 06 de Wellington lo dejaba con 69,8 m
+    de error contra las coordenadas de verdad, cuando con su lamina sola calza
+    con 1,2. El bloque se descartaba entero y no habia forma de verlo.
+
+    Se elige la lamina con MAS CAJAS DE CONTINUA dibujadas, y si ninguna tiene,
+    la que traiga mas trackers. Las cajas son el dato caro: de ahi sale la punta
+    por la que se entra, y son las que no se pueden traer de otra lamina porque
+    lo unico que valen es su posicion.
+  */
+  const principal = elegirHoja(T, D);
+  const enHoja = (e: Etiqueta) => principal == null || (e.hoja ?? "") === principal;
+  const Tp = T.filter(enHoja);
+  const Dp = D.filter(enHoja);
+  const Sp = S.filter(enHoja);
+  if (principal != null && Tp.length < T.length) {
+    avisos.push(
+      `aparece en mas de una lamina. Se arma con la de ${Tp.length} etiquetas ` +
+      `(${principal}) y de las otras ${T.length - Tp.length} se toma solo la marca de perimetro y ` +
+      "las filas R: las posiciones de dos laminas distintas no se pueden promediar.",
+    );
+  }
+
+  for (const e of Tp) {
     const a = analizarEtiqueta(e.t) ?? analizarEtiqueta(e.t, formaEstructural(e.t))!;
     const k = `${a.bloque}-${a.tracker!.padStart(3, "0")}`;
     // Un plano sin filas R —hay parques donde el tracker es una sola fila— se
@@ -635,6 +704,21 @@ function armarBloque(
     // aparezca, y no pisarla con una etiqueta recortada que no la traiga.
     if (a.perimetro && !t.perimetro) t.perimetro = a.perimetro;
   }
+  /*
+    De las otras laminas se toma lo que NO depende del marco: la marca de
+    perimetro y los nombres de fila. Nada de posiciones.
+  */
+  if (principal != null) {
+    for (const e of T) {
+      if (enHoja(e)) continue;
+      const a = analizarEtiqueta(e.t) ?? analizarEtiqueta(e.t, formaEstructural(e.t))!;
+      const t = tmap.get(`${a.bloque}-${a.tracker!.padStart(3, "0")}`);
+      if (!t) continue;
+      if (a.fila && !t.rows.includes(a.fila)) t.rows.push(a.fila);
+      if (a.perimetro && !t.perimetro) t.perimetro = a.perimetro;
+    }
+  }
+
   for (const t of tmap.values()) {
     t.cx = t.pts.reduce((s, p) => s + p[0], 0) / t.pts.length;
     t.cy = t.pts.reduce((s, p) => s + p[1], 0) / t.pts.length;
@@ -654,7 +738,7 @@ function armarBloque(
    */
   const rot = huecoInterior([...tmap.values()].map((v) => v.cy)).hueco >
               huecoInterior([...tmap.values()].map((v) => v.cx)).hueco;
-  const alto = [...T, ...D, ...S].reduce((m, e) => (e.y > m ? e.y : m), 0);
+  const alto = [...Tp, ...Dp, ...Sp].reduce((m, e) => (e.y > m ? e.y : m), 0);
   const girar = (p: [number, number]): [number, number] => (rot ? [alto - p[1], p[0]] : p);
   if (rot) {
     for (const t of tmap.values()) {
@@ -662,8 +746,8 @@ function armarBloque(
       for (const r of Object.keys(t.rowy)) t.rowy[r] = girar(t.rowy[r]!);
     }
   }
-  const dl = D.map((e) => { const [x, y] = girar([e.x, e.y]); return { name: e.t, x, y }; });
-  const sl = S.map((e) => { const [x, y] = girar([e.x, e.y]); return { n: e.t, x, y }; });
+  const dl = Dp.map((e) => { const [x, y] = girar([e.x, e.y]); return { name: e.t, x, y }; });
+  const sl = Sp.map((e) => { const [x, y] = girar([e.x, e.y]); return { n: e.t, x, y }; });
 
   const gx = huecoInterior([...tmap.values()].map((v) => v.cx));
   const gy = huecoInterior([...tmap.values()].map((v) => v.cy));

@@ -401,7 +401,7 @@ function notasDelSentido(
  */
 function notasDeLasCajas(
   porCajas: { origins: Map<string, "start" | "end">; bloques: Array<{ block: string; filas: number; motivo: string; detail: string }> },
-  acuerdo: { coinciden: number; difieren: number; bloquesAlReves: string[]; bloquesMezclados: string[] },
+  acuerdo: { coinciden: number; difieren: number; corregidas: number; bloquesAlReves: string[]; bloquesMezclados: string[] },
   bloquesSinSentido: string[],
   conSentido: number,
   totalFilas: number,
@@ -422,9 +422,16 @@ function notasDeLasCajas(
   if (total) {
     const pct = Math.round((acuerdo.coinciden / total) * 100);
     notas.push(
-      `Donde los dos caminos opinan —la marca de perimetro y la posicion de la caja— coinciden en ` +
-      `${pct}% de ${total} filas. Son dos lecturas que no comparten ningun supuesto, asi que ese ` +
-      `numero es la mejor medida que hay de si el sentido de conteo esta bien.`,
+      `Donde los dos caminos del PLANO opinan —la marca de perimetro y la posicion de la caja— ` +
+      `coinciden en ${pct}% de ${total} filas. Son dos lecturas que no comparten ningun supuesto, ` +
+      `asi que ese numero es la mejor medida que hay de si el sentido de conteo esta bien.`,
+    );
+  }
+  if (acuerdo.corregidas) {
+    notas.push(
+      `Y en ${acuerdo.corregidas} filas la caja dibujada corrigio lo que habia deducido el ` +
+      `heuristico de medir huecos entre picas. Eso es lo esperado, no un problema: esa deduccion ` +
+      `es justamente la que no acertaba, y por eso ahora se lee el plano en vez de medir.`,
     );
   }
   if (acuerdo.bloquesAlReves.length) {
