@@ -290,3 +290,38 @@ describe("el plano trae la calle del medio escrita", () => {
     expect(a.notas.join(" ")).not.toMatch(/PERIMETER/);
   });
 })
+
+/**
+ * El plano no pisa la caja de continua que trae la lista del cliente.
+ *
+ * El plano la asigna por geometria —el string mas cercano nombra el inversor y
+ * la columna, despues gana la caja alineada con la fila—, y eso falla en las
+ * esquinas y con las calles torcidas. La lista del cliente es la documentacion
+ * electrica. En el bloque 29 de Wellington las dos difieren en 113 de 132
+ * trackers, y varias de esas son cajas de otra columna: otra calle, o sea la
+ * punta contraria. Pisar el dato con la estimacion era perder el dato.
+ */
+describe("la caja del cliente le gana a la del plano", () => {
+  const PLANO_CAJA: PlanoDeParque = {
+    "29": {
+      trackers: { "29-022": { rows: ["R1"], side: "North", dcbox: "DCB-29.1.3" } },
+      dcbox: [{ name: "DCB-29.1.3", x: 10, y: 20 }],
+      strings: [], road: 500, axis: "x",
+    },
+  };
+
+  it("la deja como estaba y anota el desacuerdo", () => {
+    const rows = [fila("29-022-R1", { dcBoxLabel: "DCB-29.2.1" })];
+    const a = aplicarPlano(rows, PLANO_CAJA);
+    expect(a.rows[0]!.dcBoxLabel).toBe("DCB-29.2.1");
+    const c = a.conflictos.find((x) => x.campo === "caja de continua");
+    expect(c?.cargado).toBe("DCB-29.2.1");
+    expect(c?.plano).toBe("DCB-29.1.3");
+  });
+
+  it("si la fila no trae ninguna, la del plano sirve igual", () => {
+    const a = aplicarPlano([fila("29-022-R1")], PLANO_CAJA);
+    expect(a.rows[0]!.dcBoxLabel).toBe("DCB-29.1.3");
+    expect(a.conCajaDc).toBe(1);
+  });
+});

@@ -624,3 +624,43 @@ describe("columnas combinadas en la lista de strings", () => {
     expect(e.every((x) => x.dcBox === "DCB-1.1.1")).toBe(true);
   });
 });
+
+/**
+ * La caja de continua de la lista del cliente llega a la fila.
+ *
+ * Estaba leida y se tiraba: `matchEntries` la ponia en `byRow`, `applyStrings`
+ * no la escribia, y la fila terminaba con la caja que adivinaba el plano por
+ * cercania geometrica. En Wellington esas dos no coinciden — en el bloque 29
+ * difieren en 113 de 132 trackers, y varias de esas son cajas de otra columna,
+ * o sea del otro lado de una calle. De ahi sale la punta por la que se entra,
+ * asi que tirar el dato del cliente y quedarse con la estimacion mandaba a
+ * contar desde el extremo contrario.
+ */
+describe("la caja de continua del cliente", () => {
+  it("queda escrita en la fila, no solo contada", () => {
+    const rows: TrackerRow[] = [
+      { id: "r1", block: "29", tracker: "29-022", row: "R1",
+        start: { lat: -32.5, lon: 148.9 }, end: { lat: -32.4995, lon: 148.9 } },
+    ];
+    const out = applyStrings(rows, {
+      fieldIndex: 3,
+      byRow: new Map([["r1", { labels: ["S-29.2.1.1"], dcBox: "DCB-29.2.1" }]]),
+      chains: new Map(),
+    });
+    expect(out[0]!.dcBoxLabel).toBe("DCB-29.2.1");
+    expect(out[0]!.stringLabels).toEqual(["S-29.2.1.1"]);
+  });
+
+  it("una fila sin caja en la lista queda como estaba", () => {
+    const rows: TrackerRow[] = [
+      { id: "r1", block: "29", tracker: "29-022", row: "R1", dcBoxLabel: "DCB-VIEJA",
+        start: { lat: -32.5, lon: 148.9 }, end: { lat: -32.4995, lon: 148.9 } },
+    ];
+    const out = applyStrings(rows, {
+      fieldIndex: 3,
+      byRow: new Map([["r1", { labels: ["S-29.2.1.1"] }]]),
+      chains: new Map(),
+    });
+    expect(out[0]!.dcBoxLabel).toBe("DCB-VIEJA");
+  });
+});
