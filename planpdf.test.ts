@@ -607,3 +607,59 @@ describe("los textos del rotulo de la lamina", () => {
     expect(r.avisos.join(" ")).not.toMatch(/solos en la lamina/);
   });
 });
+
+/**
+ * La marca del plano manda sobre el hueco mas grande.
+ *
+ * El bloque 06 de Wellington salia como "una tira sola de 130 trackers sin
+ * calle en el medio" — y tiene calle. El heuristico busca el hueco mas grande
+ * del dibujo y decide si eso es una calle; en un bloque de varios bancos, el
+ * hueco mas grande puede ser cualquiera de las calles internas o un vacio del
+ * trazado, y la respuesta sale de centimetros entre huecos parecidos.
+ *
+ * La marca de perimetro no se adivina: PERIMETER 1 NORTH / SOUTH, tracker por
+ * tracker, y el borde donde un tramo sur toca uno norte ES la calle. Teniendo
+ * eso, medir huecos es volver a adivinar lo que esta escrito — el mismo error
+ * que costo los 52 bloques del sentido de conteo.
+ */
+describe("el lado sale de la marca, no del hueco", () => {
+  /**
+   * Un bloque de dos bancos casi pegados: el hueco entre ellos es apenas mas
+   * grande que la separacion entre filas vecinas, asi que el heuristico lo lee
+   * como una tira sola. La marca dice otra cosa.
+   */
+  const bloqueApretado = () => {
+    const et: Array<{ x: number; y: number; t: string }> = [];
+    const marca = (i: number) => (i < 20 ? "P1N" : i < 40 ? "C" : i < 60 ? "P1S" : i < 80 ? "P1N" : "C");
+    for (let i = 0; i < 100; i++) {
+      et.push({ x: 100 + i * 6, y: 200, t: `06-${String(i + 1).padStart(3, "0")}-INT-R1-${marca(i)}-L-S2` });
+      et.push({ x: 100 + i * 6, y: 212, t: `06-${String(i + 1).padStart(3, "0")}-INT-R2-${marca(i)}-L-S2` });
+    }
+    return et;
+  };
+
+  it("parte el bloque por donde el plano dice, y no avisa de tira sola", () => {
+    const r = planoDeEtiquetas(bloqueApretado());
+    const t = Object.values(r.plano["06"]!.trackers!);
+    const norte = t.filter((x) => x.side === "North").length;
+    const sur = t.filter((x) => x.side === "South").length;
+    expect(norte).toBe(60);   // tramos N + C + S, o sea los trackers 1..60
+    expect(sur).toBe(40);
+    expect(r.avisos.join(" ")).not.toMatch(/no tiene calle en el medio/);
+  });
+
+  /*
+    Y un plano SIN la marca sigue funcionando como antes: Edenvale no la trae y
+    no puede depender de ella.
+  */
+  it("sin marca de perimetro usa el heuristico de siempre", () => {
+    const et: Array<{ x: number; y: number; t: string }> = [];
+    for (let i = 0; i < 40; i++) {
+      const y = i < 20 ? 100 : 600;          // dos alas separadas por una calle
+      et.push({ x: 100 + (i % 20) * 20, y, t: `04-${String(i + 1).padStart(3, "0")}-R1` });
+    }
+    const r = planoDeEtiquetas(et);
+    const t = Object.values(r.plano["04"]!.trackers!);
+    expect(new Set(t.map((x) => x.side)).size).toBe(2);
+  });
+});

@@ -29,6 +29,7 @@
  */
 
 import type { PlanoDeParque } from "./plans";
+import { bancosDelBloque } from "./bancos";
 
 /**
  * Como nombra este parque a sus trackers, cajas y strings.
@@ -683,6 +684,8 @@ function armarBloque(
    * bajo. Anclarlo al tracker 1 en vez de a un eje del dibujo hace que la
    * asignacion no dependa de como quedo orientada la lamina, que es lo unico
    * que cambia de un plano a otro.
+   *
+   * PERO se prefiere la marca de perimetro, cuando el plano la trae. Ver abajo.
    */
   const nums = [...tmap.entries()]
     .map(([k, v]) => [+k.split("-")[1]!, perp(v) >= road] as const)
@@ -692,29 +695,47 @@ function armarBloque(
     t.side = (perp(t) >= road) === ladoDelPrimero ? "North" : "South";
   }
 
-  /**
-   * Bloques que NO tienen dos alas.
-   *
-   * En Edenvale el bloque 06 es una tira diagonal unica: no hay calle en el
-   * medio, asi que el "hueco mas grande" que encuentra el algoritmo es un vacio
-   * cualquiera del dibujo, y partir por ahi inventa dos alas donde hay una.
-   *
-   * Esto estaba escrito como `bnum === "06"`. Nombrar un bloque de UN parque
-   * dentro del lector de planos es exactamente el tipo de cosa que hace que la
-   * app funcione en Edenvale y falle en el parque siguiente por dos motivos a
-   * la vez: alla el bloque 06 puede tener dos alas de verdad (y se lo aplasta
-   * en una), y la tira unica puede ser el 11 (y se la parte al medio).
-   *
-   * La tira unica se reconoce por su forma, no por su nombre:
-   *
-   *  - el corte deja un ala casi vacia — no es una calle, es un tracker suelto
-   *    del otro lado de un vacio del dibujo; o
-   *  - el hueco no es mucho mas grande que la separacion tipica entre filas
-   *    vecinas, o sea no hay nada parecido a una calle.
-   *
-   * Una calle de verdad separa dos grupos parecidos y mide varias veces lo que
-   * mide la separacion entre dos filas.
-   */
+  /*
+    Si el plano marca el perimetro, ese dato manda sobre el hueco mas grande.
+
+    Wellington North lo destapo: el bloque 06 salia como "una tira sola sin
+    calle en el medio" y tiene calle. El heurístico de abajo busca el hueco
+    mas grande del dibujo y decide si eso es una calle; con un bloque de
+    varios bancos, el hueco mas grande puede ser cualquiera de las calles
+    internas o un vacio del trazado, y la respuesta sale de centimetros de
+    diferencia entre huecos parecidos.
+
+    La marca de perimetro no se adivina: dice PERIMETER 1 NORTH / SOUTH,
+    tracker por tracker, y el borde donde un tramo sur toca uno norte ES la
+    calle. Teniendo eso, medir huecos es volver a adivinar lo que esta escrito
+    — el mismo error que costo los 52 bloques del sentido de conteo.
+  */
+  const conPerimetro = [...tmap.entries()].filter(([, t]) => t.perimetro);
+  let porMarca = false;
+  if (conPerimetro.length >= tmap.size * 0.5) {
+    const tramos = bancosDelBloque(
+      [...tmap.entries()].map(([k, t]) => ({
+        block: bnum,
+        tracker: k,
+        ...(t.perimetro ? { perimetro: t.perimetro } : {}),
+      })),
+    );
+    if (tramos?.calleDespuesDelTramo != null) {
+      const cortado = tramos.tramos[tramos.calleDespuesDelTramo - 1]!;
+      const primerGrupoEsNorte = cortado.borde === "sur";
+      const norte = new Set<string>();
+      for (const tr of tramos.tramos) {
+        const primero = tr.tramo <= tramos.calleDespuesDelTramo;
+        if (primero === primerGrupoEsNorte) for (const n of tr.trackers) norte.add(n);
+      }
+      for (const [k, t] of tmap) {
+        const n = k.match(/\d+/g)?.pop();
+        t.side = n && norte.has(String(Number(n))) ? "North" : "South";
+      }
+      porMarca = true;
+    }
+  }
+
   const centros = [...tmap.values()].map(perp).sort((a, b) => a - b);
   const deUnLado = centros.filter((c) => c >= road).length;
   const minoria = Math.min(deUnLado, centros.length - deUnLado) / centros.length;
@@ -722,7 +743,9 @@ function armarBloque(
   const tipica = separaciones[Math.floor(separaciones.length / 2)] ?? 0;
   const huecoElegido = axis === "x" ? gx.hueco : gy.hueco;
 
-  const tiraUnica = minoria < 0.15 || (tipica > 0 && huecoElegido < tipica * 3);
+  // Si el lado salio de la marca del plano, el heuristico del hueco no opina:
+  // no hay ninguna tira unica que descubrir cuando la calle esta escrita.
+  const tiraUnica = !porMarca && (minoria < 0.15 || (tipica > 0 && huecoElegido < tipica * 3));
   if (tiraUnica) {
     avisos.push(
       `El bloque ${bnum} no tiene calle en el medio: es una tira sola de ${tmap.size} trackers. ` +
