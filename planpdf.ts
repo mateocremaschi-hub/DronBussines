@@ -264,6 +264,18 @@ export interface Etiqueta {
   x: number;
   y: number;
   t: string;
+  /**
+   * De que lamina salio, si se sabe. Ej: "BL29.pdf#1".
+   *
+   * Cada PDF tiene su propio sistema de coordenadas. Mientras cada bloque
+   * viva en una sola lamina eso da igual, pero un bloque que aparece en dos
+   * —la de fundaciones y la de interconexion— llega con sus etiquetas en dos
+   * marcos distintos, y promediarlas da un centro que no existe. En
+   * Wellington eso le paso al bloque 06: con su lamina sola el dibujo calza
+   * sobre las coordenadas con 1,2 m de error, y mezclado con la otra queda en
+   * 69,8 m — el bloque entero descartado, sin sintoma visible.
+   */
+  hoja?: string;
 }
 
 export interface FormaDeEtiqueta {
@@ -371,6 +383,36 @@ export function huecoInterior(vals: number[]): { hueco: number; pos: number } {
  * ninguna, en vez de devolver el plano a medias en silencio.
  */
 /** Reparte las etiquetas en trackers, cajas y strings. */
+/**
+ * El rotulo de la lamina, repetido en cada hoja, se cuenta una sola vez.
+ *
+ * `descartarSueltas` saca los textos que estan solos en el dibujo, lejos de
+ * cualquier grilla — asi se caia el numero de proyecto "P22-0009-ING", que si
+ * no entra como el tracker 9 del bloque 22. Pero esa regla mide la distancia
+ * al vecino mas cercano, y el rotulo esta en el mismo lugar de TODAS las
+ * hojas: cargando los 37 PDF de una vez, las 37 copias caen una encima de la
+ * otra, se hacen vecinas entre ellas y ninguna parece sola. El rotulo entra, y
+ * como el bloque 22 existe de verdad, no aparece como un bloque de mas: se
+ * mezcla con el tracker 22-009 real y le corre el centro.
+ *
+ * Un plano no imprime dos veces la misma etiqueta en el mismo punto. Si el
+ * mismo texto aparece en la misma coordenada, es la misma cosa dibujada en
+ * varias hojas, y vale una.
+ */
+function sinRepetidas(etiquetas: Etiqueta[]): { etiquetas: Etiqueta[]; repetidas: number } {
+  const vistas = new Set<string>();
+  const out: Etiqueta[] = [];
+  for (const e of etiquetas) {
+    // Media unidad de tolerancia: dos hojas del mismo juego no caen al bit,
+    // pero tampoco se corren mas que eso.
+    const k = `${e.t}@${Math.round(e.x * 2)},${Math.round(e.y * 2)}`;
+    if (vistas.has(k)) continue;
+    vistas.add(k);
+    out.push(e);
+  }
+  return { etiquetas: out, repetidas: etiquetas.length - out.length };
+}
+
 function repartir(etiquetas: Etiqueta[], soloComo?: string) {
   const trackers = new Map<string, Etiqueta[]>();
   const cajas = new Map<string, Etiqueta[]>();
@@ -483,7 +525,8 @@ export function planoDeEtiquetas(
     }
   }
 
-  const { trackers, cajas, strings } = repartir(etiquetas, forma);
+  const unicas = sinRepetidas(etiquetas);
+  const { trackers, cajas, strings } = repartir(unicas.etiquetas, forma);
   const sueltas = descartarSueltas(trackers);
 
   const cuenta = (m: Map<string, Etiqueta[]>) =>
@@ -582,13 +625,70 @@ interface Tk {
   perimetro?: "norte" | "sur" | "centro" | "perimetro-2";
 }
 
+/**
+ * Con que lamina se arma el bloque, cuando aparece en varias.
+ *
+ * Gana la que tiene mas cajas de continua dibujadas; si ninguna tiene, la que
+ * trae mas trackers. `undefined` si todas las etiquetas vienen de la misma
+ * lamina (o si el que llama no dijo de cual viene cada una), y entonces no se
+ * filtra nada.
+ */
+function elegirHoja(T: Etiqueta[], D: Etiqueta[]): string | null {
+  const hojas = new Set(T.map((e) => e.hoja ?? ""));
+  if (hojas.size < 2) return null;
+  const contar = (es: Etiqueta[]) => {
+    const m = new Map<string, number>();
+    for (const e of es) { const k = e.hoja ?? ""; m.set(k, (m.get(k) ?? 0) + 1); }
+    return m;
+  };
+  const cajas = contar(D);
+  const trackers = contar(T);
+  let mejor: string | null = null;
+  let puntaje = -1;
+  for (const h of hojas) {
+    // Las cajas pesan: de ahi sale la punta por la que se entra, y son lo unico
+    // que no se puede traer de otra lamina.
+    const p = (cajas.get(h) ?? 0) * 100000 + (trackers.get(h) ?? 0);
+    if (p > puntaje) { puntaje = p; mejor = h; }
+  }
+  return mejor;
+}
+
 function armarBloque(
   bnum: string, T: Etiqueta[], D: Etiqueta[], S: Etiqueta[],
 ): { bloque: PlanoDeParque[string]; avisos: string[] } | { aviso: string } {
   const avisos: string[] = [];
   const tmap = new Map<string, Tk>();
 
-  for (const e of T) {
+  /*
+    Un bloque se arma en UN marco de coordenadas.
+
+    Cada PDF tiene el suyo. Mientras cada bloque este en una sola lamina eso da
+    igual, pero varios aparecen en dos —la de fundaciones y la de
+    interconexion— y entonces sus etiquetas llegan en dos marcos. Promediarlas
+    da un centro que no existe: al bloque 06 de Wellington lo dejaba con 69,8 m
+    de error contra las coordenadas de verdad, cuando con su lamina sola calza
+    con 1,2. El bloque se descartaba entero y no habia forma de verlo.
+
+    Se elige la lamina con MAS CAJAS DE CONTINUA dibujadas, y si ninguna tiene,
+    la que traiga mas trackers. Las cajas son el dato caro: de ahi sale la punta
+    por la que se entra, y son las que no se pueden traer de otra lamina porque
+    lo unico que valen es su posicion.
+  */
+  const principal = elegirHoja(T, D);
+  const enHoja = (e: Etiqueta) => principal == null || (e.hoja ?? "") === principal;
+  const Tp = T.filter(enHoja);
+  const Dp = D.filter(enHoja);
+  const Sp = S.filter(enHoja);
+  if (principal != null && Tp.length < T.length) {
+    avisos.push(
+      `aparece en mas de una lamina. Se arma con la de ${Tp.length} etiquetas ` +
+      `(${principal}) y de las otras ${T.length - Tp.length} se toma solo la marca de perimetro y ` +
+      "las filas R: las posiciones de dos laminas distintas no se pueden promediar.",
+    );
+  }
+
+  for (const e of Tp) {
     const a = analizarEtiqueta(e.t) ?? analizarEtiqueta(e.t, formaEstructural(e.t))!;
     const k = `${a.bloque}-${a.tracker!.padStart(3, "0")}`;
     // Un plano sin filas R —hay parques donde el tracker es una sola fila— se
@@ -604,6 +704,21 @@ function armarBloque(
     // aparezca, y no pisarla con una etiqueta recortada que no la traiga.
     if (a.perimetro && !t.perimetro) t.perimetro = a.perimetro;
   }
+  /*
+    De las otras laminas se toma lo que NO depende del marco: la marca de
+    perimetro y los nombres de fila. Nada de posiciones.
+  */
+  if (principal != null) {
+    for (const e of T) {
+      if (enHoja(e)) continue;
+      const a = analizarEtiqueta(e.t) ?? analizarEtiqueta(e.t, formaEstructural(e.t))!;
+      const t = tmap.get(`${a.bloque}-${a.tracker!.padStart(3, "0")}`);
+      if (!t) continue;
+      if (a.fila && !t.rows.includes(a.fila)) t.rows.push(a.fila);
+      if (a.perimetro && !t.perimetro) t.perimetro = a.perimetro;
+    }
+  }
+
   for (const t of tmap.values()) {
     t.cx = t.pts.reduce((s, p) => s + p[0], 0) / t.pts.length;
     t.cy = t.pts.reduce((s, p) => s + p[1], 0) / t.pts.length;
@@ -623,7 +738,7 @@ function armarBloque(
    */
   const rot = huecoInterior([...tmap.values()].map((v) => v.cy)).hueco >
               huecoInterior([...tmap.values()].map((v) => v.cx)).hueco;
-  const alto = [...T, ...D, ...S].reduce((m, e) => (e.y > m ? e.y : m), 0);
+  const alto = [...Tp, ...Dp, ...Sp].reduce((m, e) => (e.y > m ? e.y : m), 0);
   const girar = (p: [number, number]): [number, number] => (rot ? [alto - p[1], p[0]] : p);
   if (rot) {
     for (const t of tmap.values()) {
@@ -631,8 +746,8 @@ function armarBloque(
       for (const r of Object.keys(t.rowy)) t.rowy[r] = girar(t.rowy[r]!);
     }
   }
-  const dl = D.map((e) => { const [x, y] = girar([e.x, e.y]); return { name: e.t, x, y }; });
-  const sl = S.map((e) => { const [x, y] = girar([e.x, e.y]); return { n: e.t, x, y }; });
+  const dl = Dp.map((e) => { const [x, y] = girar([e.x, e.y]); return { name: e.t, x, y }; });
+  const sl = Sp.map((e) => { const [x, y] = girar([e.x, e.y]); return { n: e.t, x, y }; });
 
   const gx = huecoInterior([...tmap.values()].map((v) => v.cx));
   const gy = huecoInterior([...tmap.values()].map((v) => v.cy));
@@ -712,6 +827,19 @@ function armarBloque(
   */
   const conPerimetro = [...tmap.entries()].filter(([, t]) => t.perimetro);
   let porMarca = false;
+  /**
+   * El plano marca varias calles internas: no hay UNA calle del medio, pero
+   * tampoco es una tira sola.
+   *
+   * Son dos cosas distintas y la app las venia confundiendo. Que no se pueda
+   * elegir cual de las calles lleva las cajas no vuelve al bloque una hilera
+   * de 130 trackers pegados: las marcas de perimetro prueban lo contrario, hay
+   * un perimetro norte y uno sur con bordes en el medio. Declararlo "tira
+   * sola" ademas rompia dos cosas de verdad — mandaba todas las filas al mismo
+   * lado y tiraba la asignacion hibrida de caja de continua para reemplazarla
+   * por "la caja mas cercana en Y", que es peor.
+   */
+  let variasCalles = false;
   if (conPerimetro.length >= tmap.size * 0.5) {
     const tramos = bancosDelBloque(
       [...tmap.entries()].map(([k, t]) => ({
@@ -733,6 +861,8 @@ function armarBloque(
         t.side = n && norte.has(String(Number(n))) ? "North" : "South";
       }
       porMarca = true;
+    } else if (tramos?.motivo === "varias-calles") {
+      variasCalles = true;
     }
   }
 
@@ -744,12 +874,21 @@ function armarBloque(
   const huecoElegido = axis === "x" ? gx.hueco : gy.hueco;
 
   // Si el lado salio de la marca del plano, el heuristico del hueco no opina:
-  // no hay ninguna tira unica que descubrir cuando la calle esta escrita.
-  const tiraUnica = !porMarca && (minoria < 0.15 || (tipica > 0 && huecoElegido < tipica * 3));
+  // no hay ninguna tira unica que descubrir cuando la calle esta escrita. Y si
+  // la marca dice que hay VARIAS calles, tampoco: no saber cual de ellas lleva
+  // las cajas no convierte al bloque en una hilera.
+  const tiraUnica = !porMarca && !variasCalles &&
+    (minoria < 0.15 || (tipica > 0 && huecoElegido < tipica * 3));
   if (tiraUnica) {
     avisos.push(
       `El bloque ${bnum} no tiene calle en el medio: es una tira sola de ${tmap.size} trackers. ` +
       "Todas sus filas quedan del mismo lado y la caja de continua se asigna por cercania.",
+    );
+  } else if (variasCalles) {
+    avisos.push(
+      `El bloque ${bnum} marca mas de una calle interna, asi que no hay una sola calle del medio. ` +
+      "El lado sale del hueco mas grande del dibujo, y de que punta se entra lo dice la posicion de " +
+      "la caja de continua, que no necesita saber cual calle es cual.",
     );
   }
   if (tiraUnica) {

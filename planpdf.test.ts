@@ -648,6 +648,35 @@ describe("el lado sale de la marca, no del hueco", () => {
     expect(r.avisos.join(" ")).not.toMatch(/no tiene calle en el medio/);
   });
 
+  /**
+   * Varias calles internas NO es una tira sola.
+   *
+   * Son dos cosas distintas que la app confundia. Que no se pueda elegir cual
+   * de las calles lleva las cajas no vuelve al bloque una hilera de 130
+   * trackers pegados: la marca prueba lo contrario. Y declararlo tira sola
+   * rompia dos cosas de verdad — mandaba todas las filas al mismo lado y
+   * tiraba la asignacion hibrida de caja para poner "la mas cercana en Y".
+   *
+   * De que punta se entra en estos bloques lo contesta la posicion de la caja
+   * (ver app/cajas.ts), que no necesita saber cual calle es cual.
+   */
+  it("varias calles internas no es una tira sola", () => {
+    const et: Array<{ x: number; y: number; t: string }> = [];
+    //  N N | S S | N N | S S  -> dos bordes S|N: el plano marca dos calles
+    const marca = (i: number) => ["P1N", "P1S", "P1N", "P1S"][Math.floor(i / 25)]!;
+    for (let i = 0; i < 100; i++) {
+      et.push({ x: 100 + i * 6, y: 200, t: `29-${String(i + 1).padStart(3, "0")}-INT-R1-${marca(i)}-L-S2` });
+      et.push({ x: 100 + i * 6, y: 212, t: `29-${String(i + 1).padStart(3, "0")}-INT-R2-${marca(i)}-L-S2` });
+    }
+    const r = planoDeEtiquetas(et);
+    const texto = r.avisos.join(" ");
+    expect(texto).not.toMatch(/es una tira sola/);
+    expect(texto).toMatch(/marca mas de una calle interna/);
+    // Y las filas no quedan todas del mismo lado.
+    const t = Object.values(r.plano["29"]!.trackers!);
+    expect(new Set(t.map((x) => x.side)).size).toBe(2);
+  });
+
   /*
     Y un plano SIN la marca sigue funcionando como antes: Edenvale no la trae y
     no puede depender de ella.
@@ -661,5 +690,78 @@ describe("el lado sale de la marca, no del hueco", () => {
     const r = planoDeEtiquetas(et);
     const t = Object.values(r.plano["04"]!.trackers!);
     expect(new Set(t.map((x) => x.side)).size).toBe(2);
+  });
+});
+
+/**
+ * Un bloque se arma en UN marco de coordenadas.
+ *
+ * Cada PDF tiene el suyo. Mientras cada bloque este en una sola lamina eso da
+ * igual, pero varios aparecen en dos —la de fundaciones y la de
+ * interconexion— y entonces sus etiquetas llegan en dos marcos distintos.
+ * Promediarlas da un centro que no existe.
+ *
+ * Lo destapo el bloque 06 de Wellington: con su lamina sola el dibujo calza
+ * sobre las coordenadas del relevamiento con 1,2 m de error; mezclado con la
+ * otra queda en 69,8 m y el bloque se descarta entero. Y no habia forma de
+ * verlo — el numero de trackers seguia dando bien.
+ */
+describe("un bloque se arma en un solo marco", () => {
+  /** El mismo bloque en dos laminas: la segunda corrida y a otra escala. */
+  const enDosLaminas = (soloEnLaPrimera = 0) => {
+    const et: Array<{ x: number; y: number; t: string; hoja: string }> = [];
+    for (let i = 0; i < 30; i++) {
+      const nombre = `08-${String(i + 1).padStart(3, "0")}-INT-R1-C-L-S2`;
+      const x = 100 + (i % 15) * 20;
+      const y = i < 15 ? 100 : 400;
+      et.push({ x, y, t: nombre, hoja: "fundaciones.pdf#1" });
+      // La segunda lamina no trae los primeros, que es lo que rompe: unos
+      // trackers quedan promediados entre dos marcos y otros no.
+      if (i >= soloEnLaPrimera) {
+        et.push({ x: x * 1.4 + 900, y: y * 1.4 + 250, t: nombre, hoja: "interconexion.pdf#1" });
+      }
+    }
+    // Las cajas estan solo en la de interconexion, y por eso esa manda.
+    for (let i = 0; i < 4; i++) {
+      et.push({ x: 1000 + i * 60, y: 600, t: `DCB-8.1.${i + 1}`, hoja: "interconexion.pdf#1" });
+    }
+    return et;
+  };
+
+  it("se queda con la lamina que trae las cajas y lo dice", () => {
+    const r = planoDeEtiquetas(enDosLaminas(5));
+    const t = Object.values(r.plano["08"]!.trackers!);
+    expect(t.length).toBe(25);          // los que estan en la lamina elegida
+    expect(r.avisos.join(" ")).toMatch(/aparece en mas de una lamina/);
+    /*
+      Y las posiciones son EXACTAMENTE las de esa lamina, no un promedio de las
+      dos. Se compara contra armar el bloque con esa lamina sola: si algun
+      punto de la otra se cuela, este numero cambia.
+    */
+    const sola = planoDeEtiquetas(
+      enDosLaminas(5).filter((e) => e.hoja === "interconexion.pdf#1"),
+    ).plano["08"]!.trackers!;
+    for (const [k, v] of Object.entries(r.plano["08"]!.trackers!)) {
+      expect(v.cx).toBe(sola[k]!.cx);
+      expect(v.cy).toBe(sola[k]!.cy);
+    }
+  });
+
+  it("de las otras laminas se queda con la marca de perimetro, que no depende del marco", () => {
+    const et = enDosLaminas(0).map((e) =>
+      e.hoja === "fundaciones.pdf#1" && e.t.includes("-INT-")
+        ? { ...e, t: e.t.replace("-C-L-S2", "-P1N-L-S2") }
+        : e);
+    const r = planoDeEtiquetas(et);
+    const t = Object.values(r.plano["08"]!.trackers!);
+    // La marca vino de la lamina que NO se uso para las coordenadas.
+    expect(t.every((x) => x.perimetro === "centro")).toBe(true);
+  });
+
+  it("una sola lamina se comporta igual que siempre", () => {
+    const et = enDosLaminas(0).filter((e) => e.hoja === "interconexion.pdf#1");
+    const r = planoDeEtiquetas(et);
+    expect(r.avisos.join(" ")).not.toMatch(/aparece en mas de una lamina/);
+    expect(Object.keys(r.plano["08"]!.trackers!).length).toBe(30);
   });
 });

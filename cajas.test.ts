@@ -182,6 +182,37 @@ describe("la punta de entrada medida contra la caja", () => {
   });
 });
 
+describe("la caja que manda es la de la lista del cliente", () => {
+  /*
+    El plano asigna la caja por geometria: el string mas cercano nombra el
+    inversor y la columna, y despues gana la caja alineada con la fila. Eso
+    falla en las esquinas y con las calles torcidas. La lista de strings del
+    cliente no adivina — es la documentacion electrica del parque.
+
+    En Wellington las dos difieren en 113 de 132 trackers del bloque 29, y
+    varias de esas diferencias son cajas de OTRA COLUMNA, o sea del otro lado
+    de una calle: la punta contraria. Del dibujo se usa lo que el dibujo sabe
+    de verdad, que es donde esta cada caja.
+  */
+  it("con la caja del cliente da la otra punta que con la del plano", () => {
+    const b = bloque();
+    // Al tracker 3 el plano le adjudico la caja de la calle 1 (al norte).
+    // La lista del cliente dice que cuelga de la caja del borde sur.
+    const rows = filas().map((r) =>
+      r.tracker === "07-003" ? { ...r, dcBoxLabel: "DCB-SUR" } : r);
+    const p = puntas(rows, sentidoDesdeLasCajas(rows, [b]).origins);
+    expect(p.get(3)).toBe("start");                 // manda el cliente
+    expect(p.get(4)).toBe("end");                   // su hermano sigue con la del plano
+  });
+
+  it("si la fila trae una caja que el plano no dibuja, usa la del plano", () => {
+    const rows = filas().map((r) =>
+      r.tracker === "07-003" ? { ...r, dcBoxLabel: "DCB-QUE-NO-ESTA" } : r);
+    const p = puntas(rows, sentidoDesdeLasCajas(rows, [bloque()]).origins);
+    expect(p.get(3)).toBe("end");
+  });
+});
+
 describe("cruzar las dos lecturas", () => {
   const rows = filas();
   const ids = rows.map((r) => r.id);
@@ -217,17 +248,24 @@ describe("cruzar las dos lecturas", () => {
     expect(r.origins.size).toBe(ids.length);
   });
 
-  it("compara contra lo que la fila ya traia, porque los planos entran de a tandas", () => {
-    // Segunda tanda: entran los de interconexion, que traen la caja y NO la
-    // marca de perimetro. Si el cruce solo mirara la lectura en curso, aca no
-    // habria contra que comparar y el control cruzado se perderia entero.
+  it("lo que la fila ya traia no ensucia el cruce: la caja lo corrige y se cuenta aparte", () => {
+    /*
+      Son dos comparaciones distintas. La marca de perimetro es otra lectura
+      del plano, independiente: si coincide con la caja, el dato es bueno. Lo
+      que la fila traia de antes suele venir del heuristico que mide huecos
+      entre picas — el que en Wellington erraba en los 52 bloques de 52. Que la
+      caja lo contradiga es lo ESPERADO. Contarlo junto con lo otro bajaba el
+      porcentaje de acuerdo y llenaba la lista de "bloques para mirar" con
+      bloques donde no hay nada que mirar.
+    */
     const previo = new Map(ids.map((id) => [id, "start" as const]));
     const cajas = new Map(ids.map((id) => [id, "end" as const]));
     const r = acordar(rows, new Map(), cajas, previo);
-    expect(r.difieren).toBe(ids.length);
-    expect(r.bloquesAlReves).toEqual(["07"]);
-    // Y la caja le gana a la deduccion vieja: una esta dibujada, la otra salio
-    // de medir huecos entre picas.
+    expect(r.difieren).toBe(0);          // el perimetro no opino: no hay cruce
+    expect(r.bloquesMezclados).toEqual([]);
+    expect(r.bloquesAlReves).toEqual([]);
+    expect(r.corregidas).toBe(ids.length);
+    // Y la caja le gana igual: una esta dibujada, la otra salio de medir huecos.
     expect([...r.origins.values()].every((v) => v === "end")).toBe(true);
   });
 });

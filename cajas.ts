@@ -301,19 +301,36 @@ export function sentidoDesdeLasCajas(
     });
 
     const posCaja = new Map(b.cajas.map((c) => [c.name, c]));
-    const desp = new Map<number, { dx: number; dy: number }>();
+    const cajaDelPlano = new Map<number, string>();
     const centro = new Map<number, { cx: number; cy: number }>();
     for (const t of b.trackers) {
       const n = numeroDeTracker(t.tracker);
       if (n == null) continue;
       centro.set(n, { cx: t.cx, cy: t.cy });
-      if (!t.caja) continue;
-      const c = posCaja.get(t.caja);
-      if (!c) continue;
-      desp.set(n, { dx: c.x - t.cx, dy: c.y - t.cy });
+      if (t.caja) cajaDelPlano.set(n, t.caja);
     }
 
-    if (!desp.size) {
+    /*
+      Que caja es la de cada fila.
+
+      Primero la que trae la fila —que sale de la lista de strings del cliente,
+      o sea de la documentacion electrica del parque— y solo si no la tiene, la
+      que adivino el plano por cercania. En Wellington las dos difieren en 113
+      de 132 trackers del bloque 29, y varias de esas diferencias son cajas de
+      otra columna: otra calle, o sea la punta contraria. Del dibujo se usa lo
+      que el dibujo sabe de verdad, que es DONDE esta cada caja.
+    */
+    const cajaDeLaFila = (r: TrackerRow): { dx: number; dy: number } | null => {
+      const n = numeroDeTracker(r.tracker);
+      if (n == null) return null;
+      const c = centro.get(n);
+      if (!c) return null;
+      const nombre = (r.dcBoxLabel && posCaja.has(r.dcBoxLabel)) ? r.dcBoxLabel : cajaDelPlano.get(n);
+      const p = nombre ? posCaja.get(nombre) : undefined;
+      return p ? { dx: p.x - c.cx, dy: p.y - c.cy } : null;
+    };
+
+    if (!filas.some((r) => cajaDeLaFila(r))) {
       detalles.push({ block: b.block, filas: 0, motivo: "sin-cajas",
         detail:
           `Los ${b.trackers.length} trackers de este bloque no tienen caja de continua dibujada. ` +
@@ -364,16 +381,18 @@ export function sentidoDesdeLasCajas(
       X: A[0][0] * d.dx + A[0][1] * d.dy,
       Y: A[1][0] * d.dx + A[1][1] * d.dy,
     });
-    const largos = [...desp.values()].map((d) => { const v = enTerreno(d); return Math.hypot(v.X, v.Y); });
+    const largos: number[] = [];
+    for (const r of filas) {
+      const d = cajaDeLaFila(r);
+      if (d) { const v = enTerreno(d); largos.push(Math.hypot(v.X, v.Y)); }
+    }
     const umbral = mediana(largos) * MINIMO_RELATIVO;
 
     let escritas = 0;
     let flojas = 0;
     let cruzadas = 0;
     for (const fila of filas) {
-      const n = numeroDeTracker(fila.tracker);
-      if (n == null) continue;
-      const d = desp.get(n);
+      const d = cajaDeLaFila(fila);
       if (!d) continue;
       const v = enTerreno(d);
       const largo = Math.hypot(v.X, v.Y);
@@ -451,25 +470,27 @@ export function acordar(
   difieren: number;
   bloquesAlReves: string[];
   bloquesMezclados: string[];
+  /** Filas donde la caja cambio lo que habia deducido el heuristico de huecos. */
+  corregidas: number;
 } {
   const bloqueDe = new Map<string, string>();
   for (const r of rows) bloqueDe.set(r.id, r.block);
 
   /*
-    Contra que se compara la caja.
+    El cruce que vale es contra la MARCA DE PERIMETRO, no contra lo que la fila
+    ya traia.
 
-    La marca de perimetro de esta lectura si la hay; si no, lo que la fila ya
-    traia. Los planos se cargan de a tandas —primero los de fundacion, que
-    traen la marca, despues los de interconexion, que traen la caja— asi que si
-    esto solo mirara la lectura en curso, en la segunda tanda no habria con que
-    comparar y se perderia justo el control cruzado.
+    Son dos comparaciones distintas y mezclarlas ensucia el numero. La marca es
+    otra lectura del plano, independiente: si coincide con la caja, el dato es
+    bueno. Lo que la fila traia de antes, en cambio, suele venir del heuristico
+    que mide huecos entre picas — el que en Wellington erraba en los 52 bloques
+    de 52. Que la caja lo contradiga es lo ESPERADO, no una alarma; contarlo
+    junto con lo otro bajaba el porcentaje y llenaba la lista de bloques "para
+    mirar" con bloques donde no hay nada que mirar.
   */
-  const contra = new Map(previo);
-  for (const [id, v] of porPerimetro) contra.set(id, v);
-
   const acuerdo = new Map<string, { si: number; no: number }>();
   let coinciden = 0, difieren = 0;
-  for (const [id, a] of contra) {
+  for (const [id, a] of porPerimetro) {
     const b = porCajas.get(id);
     if (!b) continue;
     const bl = bloqueDe.get(id) ?? "?";
@@ -489,7 +510,11 @@ export function acordar(
 
   const origins = new Map(previo);
   // La caja le gana a la deduccion por coordenadas siempre: una esta dibujada.
-  for (const [id, v] of porCajas) origins.set(id, v);
+  let corregidas = 0;
+  for (const [id, v] of porCajas) {
+    if (previo.has(id) && previo.get(id) !== v) corregidas++;
+    origins.set(id, v);
+  }
   // Y la marca de perimetro le gana a la caja, salvo en los bloques donde las
   // cajas la desmienten entera: ahi el que esta mal es el bit, no la caja.
   const invertidos = new Set(alReves);
@@ -498,5 +523,8 @@ export function acordar(
     origins.set(id, v);
   }
 
-  return { origins, coinciden, difieren, bloquesAlReves: alReves.sort(), bloquesMezclados: mezclados.sort() };
+  return {
+    origins, coinciden, difieren, corregidas,
+    bloquesAlReves: alReves.sort(), bloquesMezclados: mezclados.sort(),
+  };
 }

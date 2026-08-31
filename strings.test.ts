@@ -1,0 +1,666 @@
+/**
+ * La lista de strings: lo que cierra la numeracion.
+ *
+ * El caso que mas importa esta al final: los trackers que cuelgan de una misma
+ * caja DC pueden estar en cadena (uno atras del otro, con piercing connectors
+ * entre ellos) o en paralelo (uno al lado del otro, cada uno su propia linea).
+ * Significan cosas opuestas para el conteo, y la diferencia se MIDE en las
+ * coordenadas en vez de suponerse.
+ */
+
+import { describe, expect, it } from "vitest";
+import edenvaleJson from "../farms/edenvale.json" with { type: "json" };
+import {
+  applyStrings,
+  canonRow,
+  describeFields,
+  deriveChains,
+  forwardFill,
+  matchEntries,
+  numericFields,
+  parseTrackerRef,
+  readEntries,
+  suggestStringMapping,
+  type StringEntry,
+} from "../app/strings";
+import { compileFarm, locate } from "../src/index.js";
+import type { FarmProfile, TrackerRow } from "../src/types.js";
+import { makeRow, nominalLengthM, pointAtSlot } from "./helpers/synthetic.js";
+
+const profile = edenvaleJson as unknown as FarmProfile;
+const LEN = nominalLengthM(profile);
+const M_LAT = 110946;
+
+/** Fila de modulos en (lat, lon), apuntando de norte a sur. */
+const fila = (id: string, lat: number, lon: number, block = "05") =>
+  makeRow(
+    { id, block, tracker: id, anchor: { lat, lon }, azimuthDeg: 180, side: "north" },
+    profile,
+  );
+
+// ---------------------------------------------------------------------------
+
+describe("lectura del archivo", () => {
+  it("reconoce los encabezados tipicos", () => {
+    const m = suggestStringMapping(["STRING", "TRACKER", "ARRAY BUS", "DC BOX No.", "TYPE"]);
+    expect(m.label).toBe("STRING");
+    expect(m.tracker).toBe("TRACKER");
+    expect(m.dcBox).toBe("DC BOX No.");
+  });
+
+  // Sin esto, la caja DC aparece solo en la primera fila de cada bloque
+  // combinado y el 90 % de los strings queda sin caja.
+  it("rellena hacia abajo las celdas combinadas", () => {
+    const sheet = {
+      name: "s", headers: ["STRING", "DCB"],
+      rows: [
+        { STRING: "S-1", DCB: "DCB-1" },
+        { STRING: "S-2", DCB: null },
+        { STRING: "S-3", DCB: "" },
+        { STRING: "S-4", DCB: "DCB-2" },
+        { STRING: "S-5", DCB: null },
+      ],
+    };
+    const lleno = forwardFill(sheet, ["DCB"]);
+    expect(lleno.rows.map((r) => r.DCB)).toEqual(["DCB-1", "DCB-1", "DCB-1", "DCB-2", "DCB-2"]);
+  });
+
+  it("saltea filas sin etiqueta o sin tracker", () => {
+    const sheet = {
+      name: "s", headers: ["STRING", "TRACKER"],
+      rows: [
+        { STRING: "S-1.2.15.1", TRACKER: "05-001" },
+        { STRING: "", TRACKER: "05-002" },
+        { STRING: "S-1.2.15.2", TRACKER: "" },
+      ],
+    };
+    expect(readEntries(sheet, { label: "STRING", tracker: "TRACKER" })).toHaveLength(1);
+  });
+});
+
+describe("el numero de string dentro de la etiqueta", () => {
+  it("saca los campos numericos en orden", () => {
+    expect(numericFields("S-1.2.15.2.4")).toEqual([1, 2, 15, 2, 4]);
+    expect(numericFields("STR-07-B-3")).toEqual([7, 3]);
+  });
+
+  // No se adivina cual campo es el numero de string: se describen todos para
+  // que la persona lo elija viendo los valores que toma cada uno.
+  it("describe cada campo para poder elegir", () => {
+    const d = describeFields(["S-1.2.15.1", "S-1.2.15.2", "S-1.2.16.1", "S-1.2.16.2"]);
+    expect(d).toHaveLength(4);
+    expect(d[0]!.distintos).toBe(1);        // el bloque, siempre 1
+    expect(d[2]!.ejemplos).toEqual([15, 16]); // la caja
+    expect(d[3]!.ejemplos).toEqual([1, 2]);   // el string
+  });
+});
+
+// ---------------------------------------------------------------------------
+// El caso que rompio el import real de Edenvale: la lista de strings escribe
+// bloque, tracker y fila todo junto ("01-034-R2") mientras la geometria los
+// tiene en columnas separadas, y ademas la fila como motorizada/esclava porque
+// su columna era una bandera si/no. Sin partir las dos referencias igual, de
+// 13496 strings cruzaban 429.
+// ---------------------------------------------------------------------------
+
+describe("como se lee una referencia a un tracker", () => {
+  it("parte la forma compuesta de la lista de strings", () => {
+    expect(parseTrackerRef("01-034-R2")).toEqual({ block: "1", tracker: "34", row: "R2" });
+    expect(parseTrackerRef("01-035-R4")).toEqual({ block: "1", tracker: "35", row: "R4" });
+  });
+
+  it("no confunde el numero de la fila con el del tracker", () => {
+    // El bug: el ultimo grupo de digitos de "01-034-R2" es el 2 de R2.
+    expect(parseTrackerRef("01-034-R2").tracker).toBe("34");
+  });
+
+  it("acepta las otras formas de escribir la fila", () => {
+    expect(parseTrackerRef("01-034 ROW 3").row).toBe("R3");
+    expect(parseTrackerRef("01-034_r3").row).toBe("R3");
+  });
+
+  it("toma el bloque de su columna cuando viene aparte", () => {
+    expect(parseTrackerRef("34", "24")).toEqual({ block: "24", tracker: "34" });
+    expect(parseTrackerRef("034")).toEqual({ tracker: "34" });
+  });
+});
+
+describe("nombres de fila", () => {
+  // Sigue sirviendo para un parque donde las etiquetas SI se repiten en cada
+  // tracker y una lista fija las une. En Edenvale no es el caso: la numeracion
+  // corre de corrido por bloque, y por eso ese perfil no lleva estas listas.
+  const listas = { motorized: ["R1", "R2", "R4"], slave: ["R3", "R5"] };
+
+  it("traduce R2/R3 a motorizada/esclava cuando el perfil declara las listas", () => {
+    expect(canonRow("R2", listas)).toBe("motorizada");
+    expect(canonRow("R1", listas)).toBe("motorizada");
+    expect(canonRow("R3", listas)).toBe("esclava");
+    expect(canonRow("R5", listas)).toBe("esclava");
+  });
+
+  it("deja pasar lo que ya viene en el vocabulario de la geometria", () => {
+    expect(canonRow("motorizada", listas)).toBe("motorizada");
+    expect(canonRow("Esclava")).toBe("esclava");
+  });
+
+  // Edenvale no puede usar listas: R2 es del tracker 34 y R4 del 35.
+  it("el perfil de Edenvale declara el orden, no listas de R", () => {
+    expect(profile.topology.rowNaming?.motorized).toBeUndefined();
+    expect(profile.topology.rowNaming?.orderWithinTracker).toBe("lowest-first");
+  });
+
+  it("sin perfil que lo declare, no inventa la equivalencia", () => {
+    expect(canonRow("R2")).toBe("r2");
+  });
+});
+
+describe("matcheo contra la geometria", () => {
+  const rows = [fila("05-001", -27.4, 152.7), fila("05-002", -27.4, 152.7001)];
+
+  it("matchea aunque el archivo escriba el tracker distinto", () => {
+    const entries: StringEntry[] = [
+      { label: "S-1.2.15.1", tracker: "05-001", dcBox: "DCB-1.2.15" },
+      { label: "S-1.2.15.2", tracker: "05-001", dcBox: "DCB-1.2.15" },
+      { label: "S-1.2.16.1", tracker: "05-002", dcBox: "DCB-1.2.16" },
+    ];
+    const { byRow, report } = matchEntries(entries, rows);
+    expect(report.matched).toBe(3);
+    expect(byRow.get("05-001")!.labels).toHaveLength(2);
+    expect(byRow.get("05-001")!.dcBox).toBe("DCB-1.2.15");
+  });
+
+  // Lo que hace usable el import: decir sobre cuanto trabajo y con que falla.
+  it("informa lo que no matcheo, con ejemplos", () => {
+    const { report } = matchEntries(
+      [
+        { label: "S-1", tracker: "05-001" },
+        { label: "S-2", tracker: "99-999" },
+        { label: "S-3", tracker: "88-888" },
+      ],
+      rows,
+    );
+    expect(report.matched).toBe(1);
+    expect(report.total).toBe(3);
+    expect(report.unmatchedExamples.length).toBeGreaterThan(0);
+    expect(report.unmatchedExamples[0]).toContain("99-999");
+  });
+
+  // El caso real de Edenvale, de punta a punta.
+  it("cruza la lista compuesta contra la geometria de bandera si/no", () => {
+    const listas = { motorized: ["R1", "R2", "R4"], slave: ["R3", "R5"] };
+    const edenvale: TrackerRow[] = [
+      { block: "1", tracker: "34", row: "motorizada" },
+      { block: "1", tracker: "34", row: "esclava" },
+      { block: "1", tracker: "35", row: "motorizada" },
+    ].map((r, i) =>
+      makeRow(
+        {
+          id: `${r.block}-${r.tracker}-${r.row}`,
+          block: r.block, tracker: r.tracker, row: r.row,
+          anchor: { lat: -27.4, lon: 152.7 + i * 0.00006 },
+          azimuthDeg: 180, side: "north",
+        },
+        profile,
+      ),
+    );
+
+    const entries: StringEntry[] = [
+      { label: "S-1.1.1.2.1", tracker: "01-034-R2", dcBox: "DCB-1.1.1" },
+      { label: "S-1.1.1.2.2", tracker: "01-034-R2", dcBox: "DCB-1.1.1" },
+      { label: "S-1.1.1.3.1", tracker: "01-034-R3", dcBox: "DCB-1.1.1" },
+      { label: "S-1.1.2.1.1", tracker: "01-035-R4", dcBox: "DCB-1.1.2" },
+    ];
+
+    const { byRow, report } = matchEntries(entries, edenvale, { naming: listas });
+
+    expect(report.matched).toBe(4);
+    expect(report.strategy).toBe("bloque + tracker + fila");
+    expect(byRow.get("1-34-motorizada")!.labels).toEqual(["S-1.1.1.2.1", "S-1.1.1.2.2"]);
+    expect(byRow.get("1-34-esclava")!.labels).toEqual(["S-1.1.1.3.1"]);
+    expect(byRow.get("1-35-motorizada")!.dcBox).toBe("DCB-1.1.2");
+  });
+
+  // El caso de verdad: los numeros de fila corren de corrido por el bloque
+  // (tracker 33 → R1, tracker 34 → R2 y R3, tracker 35 → R4 y R5), asi que
+  // ninguna lista de R fijas puede unirlos con motorizada/esclava. Lo que se
+  // conserva es el ORDEN adentro del tracker, y con eso alcanza.
+  it("empareja por orden cuando los dos lados no comparten vocabulario", () => {
+    const edenvale = [
+      { block: "1", tracker: "33", row: "motorizada" },
+      { block: "1", tracker: "34", row: "motorizada" },
+      { block: "1", tracker: "34", row: "esclava" },
+      { block: "1", tracker: "35", row: "motorizada" },
+      { block: "1", tracker: "35", row: "esclava" },
+    ].map((r, i) =>
+      makeRow(
+        {
+          id: `${r.block}-${r.tracker}-${r.row}`,
+          block: r.block, tracker: r.tracker, row: r.row,
+          anchor: { lat: -27.4, lon: 152.7 + i * 0.00006 }, azimuthDeg: 180,
+        },
+        profile,
+      ),
+    );
+
+    const entries: StringEntry[] = [
+      { label: "S-1.1.1.1.1", tracker: "01-033-R1" },
+      { label: "S-1.1.1.2.1", tracker: "01-034-R2" },
+      { label: "S-1.1.1.3.1", tracker: "01-034-R3" },
+      { label: "S-1.1.2.1.1", tracker: "01-035-R4" },
+      { label: "S-1.1.2.2.1", tracker: "01-035-R5" },
+    ];
+
+    // Sin ninguna lista de nombres: solo el orden.
+    const { byRow, report } = matchEntries(entries, edenvale);
+
+    expect(report.matched).toBe(5);
+    expect(report.strategy).toMatch(/orden de fila/);
+    expect(byRow.get("1-33-motorizada")!.labels).toEqual(["S-1.1.1.1.1"]);
+    expect(byRow.get("1-34-motorizada")!.labels).toEqual(["S-1.1.1.2.1"]); // R2, la mas baja
+    expect(byRow.get("1-34-esclava")!.labels).toEqual(["S-1.1.1.3.1"]);    // R3, la mas alta
+    expect(byRow.get("1-35-motorizada")!.labels).toEqual(["S-1.1.2.1.1"]); // R4
+    expect(byRow.get("1-35-esclava")!.labels).toEqual(["S-1.1.2.2.1"]);    // R5
+  });
+
+  it("se puede dar vuelta si en el parque la motorizada es la de arriba", () => {
+    const rows2 = ["motorizada", "esclava"].map((row, i) =>
+      makeRow(
+        { id: `1-34-${row}`, block: "1", tracker: "34", row,
+          anchor: { lat: -27.4, lon: 152.7 + i * 0.00006 }, azimuthDeg: 180 },
+        profile,
+      ),
+    );
+    const entries: StringEntry[] = [
+      { label: "S-a", tracker: "01-034-R2" },
+      { label: "S-b", tracker: "01-034-R3" },
+    ];
+
+    const { byRow } = matchEntries(entries, rows2, {
+      naming: { orderWithinTracker: "highest-first" },
+    });
+    expect(byRow.get("1-34-motorizada")!.labels).toEqual(["S-b"]); // R3
+    expect(byRow.get("1-34-esclava")!.labels).toEqual(["S-a"]);    // R2
+  });
+
+  // No inventa correspondencias: si las cantidades no cierran, no empareja.
+  it("no empareja un tracker donde las cantidades no coinciden", () => {
+    const rows2 = ["motorizada", "esclava"].map((row, i) =>
+      makeRow(
+        { id: `1-34-${row}`, block: "1", tracker: "34", row,
+          anchor: { lat: -27.4, lon: 152.7 + i * 0.00006 }, azimuthDeg: 180 },
+        profile,
+      ),
+    );
+    const { report } = matchEntries(
+      [
+        { label: "S-a", tracker: "01-034-R2" },
+        { label: "S-b", tracker: "01-034-R3" },
+        { label: "S-c", tracker: "01-034-R7" }, // una fila de mas
+      ],
+      rows2,
+    );
+    expect(report.matched).toBe(0);
+    expect(report.unmatchedExamples.length).toBeGreaterThan(0);
+  });
+
+  // El diagnostico que hubiera hecho obvio el problema en un minuto en vez de
+  // en una tarde: mostrar como quedo entendida cada referencia de los dos lados.
+  it("muestra como entendio cada lado", () => {
+    const rows2 = [
+      makeRow(
+        { id: "1-34-motorizada", block: "1", tracker: "34", row: "motorizada",
+          anchor: { lat: -27.4, lon: 152.7 }, azimuthDeg: 180 },
+        profile,
+      ),
+    ];
+    const { report } = matchEntries(
+      [{ label: "S-1.1.1.2.1", tracker: "01-034-R2" }],
+      rows2,
+      { naming: { motorized: ["R2"], slave: ["R3"] } },
+    );
+    expect(report.preview[0]!.entendido).toContain("tracker 34");
+    expect(report.preview[0]!.entendido).toContain("motorizada");
+    expect(report.preview[0]!.geometria).toContain("motorizada");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("lineas electricas: cadena contra paralelas", () => {
+  const byRowDe = (ids: string[], dcBox: string) =>
+    new Map(ids.map((id) => [id, { labels: [`S-${id}`], dcBox }]));
+
+  it("detecta trackers en cadena, uno atras del otro", () => {
+    // Tres filas sobre el mismo meridiano, corridas una tras otra hacia el sur.
+    const rows = [0, 1, 2].map((i) =>
+      fila(`t${i}`, -27.4 - (i * (LEN + 2)) / M_LAT, 152.7),
+    );
+    const { chains, reports } = deriveChains(rows, byRowDe(["t0", "t1", "t2"], "DCB-1"));
+
+    expect(reports[0]!.forma).toBe("cadena");
+    expect(chains.get("t0")).toEqual({ pos: 3, posTotal: 3 });
+    expect(chains.get("t2")).toEqual({ pos: 1, posTotal: 3 });
+    expect(reports[0]!.detail).toMatch(/cuenta invertido/);
+  });
+
+  it("detecta trackers en paralelo, uno al lado del otro", () => {
+    // Cuatro filas a la misma latitud, separadas al este: cada una su linea.
+    const rows = [0, 1, 2, 3].map((i) => fila(`p${i}`, -27.4, 152.7 + i * 0.00006));
+    const { chains, reports } = deriveChains(rows, byRowDe(["p0", "p1", "p2", "p3"], "DCB-2"));
+
+    expect(reports[0]!.forma).toBe("paralelas");
+    expect(reports[0]!.detail).toMatch(/ninguno invierte/);
+    for (const id of ["p0", "p1", "p2", "p3"]) {
+      expect(chains.get(id)).toEqual({ pos: 1, posTotal: 1 });
+    }
+  });
+
+  it("un tracker solo en su caja no invierte", () => {
+    const rows = [fila("solo", -27.4, 152.7)];
+    const { chains, reports } = deriveChains(rows, byRowDe(["solo"], "DCB-3"));
+    expect(chains.get("solo")).toEqual({ pos: 1, posTotal: 1 });
+    expect(reports[0]!.forma).toBe("cadena");
+  });
+
+  it("resuelve cada caja por separado", () => {
+    const rows = [
+      ...[0, 1].map((i) => fila(`a${i}`, -27.4 - (i * (LEN + 2)) / M_LAT, 152.7)),
+      ...[0, 1, 2].map((i) => fila(`b${i}`, -27.41, 152.7 + i * 0.00006)),
+    ];
+    const byRow = new Map([
+      ...byRowDe(["a0", "a1"], "DCB-A"),
+      ...byRowDe(["b0", "b1", "b2"], "DCB-B"),
+    ]);
+    const { reports } = deriveChains(rows, byRow);
+    expect(reports.map((r) => `${r.dcBox}:${r.forma}`)).toEqual(["DCB-A:cadena", "DCB-B:paralelas"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("aplicacion sobre la geometria", () => {
+  it("deja numeros, etiquetas y posicion en la linea", () => {
+    const rows = [fila("05-001", -27.4, 152.7)];
+    const byRow = new Map([
+      ["05-001", { labels: ["S-1.2.15.2", "S-1.2.15.1"], dcBox: "DCB-1.2.15" }],
+    ]);
+    const chains = new Map([["05-001", { pos: 1, posTotal: 3 }]]);
+    const out = applyStrings(rows, { fieldIndex: 3, byRow, chains });
+
+    // Ordenados por el campo elegido: el menor es el mas cercano a la caja DC.
+    expect(out[0]!.stringNumbers).toEqual([1, 2]);
+    expect(out[0]!.stringLabels).toEqual(["S-1.2.15.1", "S-1.2.15.2"]);
+    expect(out[0]!.pos).toBe(1);
+    expect(out[0]!.posTotal).toBe(3);
+  });
+
+  // La prueba de que sirve: con la lista aplicada, el motor devuelve la
+  // etiqueta real del cliente y deja de asumir que no invierte.
+  it("el motor devuelve la etiqueta real y resuelve la inversion", () => {
+    const row = makeRow(
+      {
+        id: "05-042-R1", block: "05", tracker: "05-042", row: "R1",
+        anchor: { lat: -27.4, lon: 152.7 }, azimuthDeg: 180, side: "north",
+      },
+      profile,
+    );
+    const conStrings = applyStrings([row], {
+      fieldIndex: 3,
+      byRow: new Map([["05-042-R1", { labels: ["S-1.2.15.6", "S-1.2.15.5"], dcBox: "DCB-1.2.15" }]]),
+      chains: new Map([["05-042-R1", { pos: 1, posTotal: 3 }]]),
+    });
+
+    const farm = compileFarm(profile, conStrings);
+    expect(farm.rows[0]!.strategyWarnings).toEqual([]); // ya no falta ningun dato
+
+    // La punta mas lejana: string alto, invertido, modulo 1.
+    const best = locate({ ...pointAtSlot(row, 1, profile), accuracyM: 0.5 }, farm).best!;
+    expect(best.stringNumber).toBe(6);
+    expect(best.stringLabel).toBe("S-1.2.15.6");
+    expect(best.module).toBe(1);
+    expect(best.countedFrom).toBe("far-end");
+
+    // Y pegado a la caja: string bajo, sin invertir.
+    const cerca = locate({ ...pointAtSlot(row, 56, profile), accuracyM: 0.5 }, farm).best!;
+    expect(cerca.stringLabel).toBe("S-1.2.15.5");
+    expect(cerca.module).toBe(1);
+    expect(cerca.countedFrom).toBe("near-dc");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("nombres de tracker que son un numero de fila", () => {
+  /**
+   * Hay parques que llaman a sus trackers "R12": el numero de fila ES el
+   * nombre. La regla que saca la fila del final se comia el nombre entero — el
+   * tracker quedaba vacio y la fila en R12 — y despues no cruzaba con nada, sin
+   * un solo mensaje de error.
+   */
+  it("no se come el nombre entero cuando el tracker se llama R12", () => {
+    const r = parseTrackerRef("R12");
+    expect(r.tracker).toBe("12");
+    expect(r.row).toBeUndefined();
+  });
+
+  it("pero si queda algo adelante, la fila si se separa", () => {
+    expect(parseTrackerRef("05-042-R1")).toMatchObject({ tracker: "42", block: "5", row: "R1" });
+    expect(parseTrackerRef("TRACKER 18 ROW 2")).toMatchObject({ tracker: "18", row: "R2" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * La lista de strings de Wellington North.
+ *
+ * Sus trackers se escriben con cuatro codigos detras de la fila:
+ *
+ *     01-005-EXT-R1-L-S2
+ *
+ * La regla vieja —"el ultimo grupo de digitos es el tracker"— tomaba el "2" de
+ * "S2". El tracker 5 entraba como el tracker 2 y la fila quedaba sin resolver:
+ * 13606 strings leidos, CERO cruzados, y ni un error. La lista entraba entera y
+ * no servia para nada.
+ *
+ * Y el lector de planos ya se habia arreglado con esta misma regla el dia
+ * anterior: quedo una segunda copia de la logica vieja aca.
+ */
+describe("etiquetas de tracker con codigos detras de la fila", () => {
+  it("el tracker es el segundo numero, no el ultimo", () => {
+    expect(parseTrackerRef("01-005-EXT-R1-L-S2")).toEqual({
+      block: "1", tracker: "5", row: "R1",
+    });
+    expect(parseTrackerRef("01-006-MED-R2-P1N-L-S2")).toEqual({
+      block: "1", tracker: "6", row: "R2",
+    });
+    expect(parseTrackerRef("19-120-INT-R1-P1S-S-S2")).toEqual({
+      block: "19", tracker: "120", row: "R1",
+    });
+  });
+
+  /**
+   * La fila es la PRIMERA R+numero. Atras vienen P1S y P1N, que son codigos de
+   * pila: tomarlos partiria cada tracker en filas que no existen.
+   */
+  it("no confunde los codigos de pila con la fila", () => {
+    expect(parseTrackerRef("17-050-INT-R1-P1S-L-S1").row).toBe("R1");
+    expect(parseTrackerRef("17-072-INT-R2-P1N-L-S1").row).toBe("R2");
+  });
+
+  it("el bloque de una columna aparte sigue mandando", () => {
+    expect(parseTrackerRef("01-005-EXT-R1-L-S2", "07")).toEqual({
+      block: "7", tracker: "5", row: "R1",
+    });
+  });
+
+  it("Edenvale se lee exactamente igual que antes", () => {
+    expect(parseTrackerRef("01-034-R2")).toEqual({ block: "1", tracker: "34", row: "R2" });
+    expect(parseTrackerRef("05-042-R1")).toEqual({ block: "5", tracker: "42", row: "R1" });
+    expect(parseTrackerRef("34")).toEqual({ tracker: "34" });
+  });
+
+  /**
+   * El cruce completo, que es lo que el usuario vio fallar: una lista de
+   * strings con estas etiquetas contra una geometria escrita como la trae el
+   * Excel de picas.
+   */
+  it("cruza contra la geometria en vez de dar 0 %", () => {
+    const geo = parseTrackerRef("01-005-EXT-R1-L-S2");
+    const excel = parseTrackerRef("005", "01");
+    expect(geo.block).toBe(excel.block);
+    expect(geo.tracker).toBe(excel.tracker);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * El cruce entero, como lo vio fallar el usuario: 0 de 13606.
+ *
+ * Geometria escrita como la trae el Excel de picas de ese parque —bloque y
+ * tracker en columnas, dos filas por tracker— contra una lista de strings con
+ * las etiquetas largas. Antes daba CERO, porque el tracker se leia del ultimo
+ * grupo de digitos.
+ */
+describe("cruce completo con las etiquetas de Wellington", () => {
+  const geo: TrackerRow[] = [];
+  for (let t = 5; t <= 12; t++) {
+    for (const r of ["R1", "R2"]) {
+      geo.push({
+        id: `01-${String(t).padStart(3, "0")}-${r}`,
+        block: "01",
+        tracker: String(t).padStart(3, "0"),
+        row: r,
+        start: { lat: -26.92 + t * 0.001, lon: 150.58 },
+        end: { lat: -26.92 + t * 0.001, lon: 150.5806 },
+      });
+    }
+  }
+
+  /** Dos strings por fila, como en el archivo real. */
+  const entries: StringEntry[] = [];
+  for (let t = 5; t <= 12; t++) {
+    for (const r of ["R1", "R2"]) {
+      for (const s of [1, 2]) {
+        entries.push({
+          label: `S-1.1.${t}.${s}`,
+          tracker: `01-${String(t).padStart(3, "0")}-INT-${r}-L-S2`,
+        });
+      }
+    }
+  }
+
+  it("cruza todo, en vez de dar 0 %", () => {
+    const m = matchEntries(entries, geo);
+    expect(m.report.matched).toBe(entries.length);
+    expect(m.report.rowsWithStrings).toBe(geo.length);
+  });
+
+  it("cada string cae en SU fila, no todos en la misma", () => {
+    const m = matchEntries(entries, geo);
+    expect(m.byRow.get("01-005-R1")!.labels).toEqual(["S-1.1.5.1", "S-1.1.5.2"]);
+    expect(m.byRow.get("01-005-R2")!.labels).toEqual(["S-1.1.5.1", "S-1.1.5.2"]);
+    expect(m.byRow.get("01-012-R2")!.labels).toEqual(["S-1.1.12.1", "S-1.1.12.2"]);
+  });
+
+  it("y el tracker 5 es el 5, no el 2", () => {
+    const m = matchEntries(entries, geo);
+    expect(m.byRow.has("01-002-R1")).toBe(false);
+    expect(m.byRow.has("01-005-R1")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * La celda del tracker viene COMBINADA sobre varias filas.
+ *
+ * En la lista de strings de Wellington cada fila de modulos lleva DOS strings,
+ * y el tracker esta escrito una sola vez, en la primera de las dos. Se rellenaba
+ * hacia abajo solo la caja DC, asi que `readEntries` descartaba la segunda fila
+ * de cada par: de 26792 strings entraban 13606 — exactamente la mitad — y la
+ * pantalla decia "13606 strings leidos" como si ese fuera el archivo entero.
+ */
+describe("columnas combinadas en la lista de strings", () => {
+  /** Como sale del Excel: el tracker solo en la primera de cada dos filas. */
+  const hoja = {
+    name: "s",
+    headers: ["STRING", "TRACKER", "DC BOX"],
+    rows: [
+      { STRING: "S-1.1.1.1", TRACKER: "01-005-EXT-R1-L-S2", "DC BOX": "DCB-1.1.1" },
+      { STRING: "S-1.1.1.2", TRACKER: null, "DC BOX": null },
+      { STRING: "S-1.1.1.3", TRACKER: "01-005-EXT-R2-L-S2", "DC BOX": null },
+      { STRING: "S-1.1.1.4", TRACKER: null, "DC BOX": null },
+      { STRING: "S-1.1.1.5", TRACKER: "01-006-MED-R1-P1N-L-S2", "DC BOX": null },
+      { STRING: "S-1.1.1.6", TRACKER: null, "DC BOX": null },
+    ],
+  };
+  const mapa = { label: "STRING", tracker: "TRACKER", dcBox: "DC BOX" };
+
+  it("sin rellenar se pierde la mitad del archivo", () => {
+    expect(readEntries(hoja, mapa)).toHaveLength(3);
+  });
+
+  it("rellenando el tracker entran los seis", () => {
+    const lleno = forwardFill(hoja, ["TRACKER", "DC BOX"]);
+    const e = readEntries(lleno, mapa);
+    expect(e).toHaveLength(6);
+    expect(e.map((x) => x.label)).toEqual([
+      "S-1.1.1.1", "S-1.1.1.2", "S-1.1.1.3", "S-1.1.1.4", "S-1.1.1.5", "S-1.1.1.6",
+    ]);
+  });
+
+  it("y los dos strings de cada fila quedan en SU fila", () => {
+    const e = readEntries(forwardFill(hoja, ["TRACKER", "DC BOX"]), mapa);
+    const porTracker = new Map<string, string[]>();
+    for (const x of e) porTracker.set(x.tracker, [...(porTracker.get(x.tracker) ?? []), x.label]);
+    expect(porTracker.get("01-005-EXT-R1-L-S2")).toEqual(["S-1.1.1.1", "S-1.1.1.2"]);
+    expect(porTracker.get("01-005-EXT-R2-L-S2")).toEqual(["S-1.1.1.3", "S-1.1.1.4"]);
+  });
+
+  it("la caja DC combinada se sigue rellenando como antes", () => {
+    const e = readEntries(forwardFill(hoja, ["TRACKER", "DC BOX"]), mapa);
+    expect(e.every((x) => x.dcBox === "DCB-1.1.1")).toBe(true);
+  });
+});
+
+/**
+ * La caja de continua de la lista del cliente llega a la fila.
+ *
+ * Estaba leida y se tiraba: `matchEntries` la ponia en `byRow`, `applyStrings`
+ * no la escribia, y la fila terminaba con la caja que adivinaba el plano por
+ * cercania geometrica. En Wellington esas dos no coinciden — en el bloque 29
+ * difieren en 113 de 132 trackers, y varias de esas son cajas de otra columna,
+ * o sea del otro lado de una calle. De ahi sale la punta por la que se entra,
+ * asi que tirar el dato del cliente y quedarse con la estimacion mandaba a
+ * contar desde el extremo contrario.
+ */
+describe("la caja de continua del cliente", () => {
+  it("queda escrita en la fila, no solo contada", () => {
+    const rows: TrackerRow[] = [
+      { id: "r1", block: "29", tracker: "29-022", row: "R1",
+        start: { lat: -32.5, lon: 148.9 }, end: { lat: -32.4995, lon: 148.9 } },
+    ];
+    const out = applyStrings(rows, {
+      fieldIndex: 3,
+      byRow: new Map([["r1", { labels: ["S-29.2.1.1"], dcBox: "DCB-29.2.1" }]]),
+      chains: new Map(),
+    });
+    expect(out[0]!.dcBoxLabel).toBe("DCB-29.2.1");
+    expect(out[0]!.stringLabels).toEqual(["S-29.2.1.1"]);
+  });
+
+  it("una fila sin caja en la lista queda como estaba", () => {
+    const rows: TrackerRow[] = [
+      { id: "r1", block: "29", tracker: "29-022", row: "R1", dcBoxLabel: "DCB-VIEJA",
+        start: { lat: -32.5, lon: 148.9 }, end: { lat: -32.4995, lon: 148.9 } },
+    ];
+    const out = applyStrings(rows, {
+      fieldIndex: 3,
+      byRow: new Map([["r1", { labels: ["S-29.2.1.1"] }]]),
+      chains: new Map(),
+    });
+    expect(out[0]!.dcBoxLabel).toBe("DCB-VIEJA");
+  });
+});

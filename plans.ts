@@ -214,10 +214,25 @@ export function aplicarPlano(
     // con caja de continua" y despues la caja no aparecia en ningun lado: ni en
     // la fila, ni en la direccion que se da en el campo, ni en el CSV. La caja
     // es por donde se entra caminando, o sea la mitad de la utilidad del plano.
+    /*
+      La caja del plano NO pisa la de la lista de strings.
+
+      El plano asigna la caja por geometria —el string mas cercano nombra el
+      inversor y la columna, y despues gana la caja alineada con la fila—, y eso
+      falla en las esquinas y con las calles torcidas. La lista del cliente no
+      adivina: es la documentacion electrica. En el bloque 29 de Wellington las
+      dos difieren en 113 de 132 trackers, y varios de esos son cajas de otra
+      columna, o sea del otro lado de una calle. Pisar la lista con el dibujo
+      era cambiar un dato por una estimacion.
+    */
     if (p.dcbox) {
-      next.dcBoxLabel = p.dcbox;
-      conCajaDc++;
+      if (r.dcBoxLabel && r.dcBoxLabel !== p.dcbox) {
+        conflictos.push({ rowId: r.id, campo: "caja de continua", cargado: r.dcBoxLabel, plano: p.dcbox });
+      } else {
+        next.dcBoxLabel = p.dcbox;
+      }
     }
+    if (next.dcBoxLabel) conCajaDc++;
     return next;
   });
 
@@ -386,7 +401,7 @@ function notasDelSentido(
  */
 function notasDeLasCajas(
   porCajas: { origins: Map<string, "start" | "end">; bloques: Array<{ block: string; filas: number; motivo: string; detail: string }> },
-  acuerdo: { coinciden: number; difieren: number; bloquesAlReves: string[]; bloquesMezclados: string[] },
+  acuerdo: { coinciden: number; difieren: number; corregidas: number; bloquesAlReves: string[]; bloquesMezclados: string[] },
   bloquesSinSentido: string[],
   conSentido: number,
   totalFilas: number,
@@ -407,9 +422,16 @@ function notasDeLasCajas(
   if (total) {
     const pct = Math.round((acuerdo.coinciden / total) * 100);
     notas.push(
-      `Donde los dos caminos opinan —la marca de perimetro y la posicion de la caja— coinciden en ` +
-      `${pct}% de ${total} filas. Son dos lecturas que no comparten ningun supuesto, asi que ese ` +
-      `numero es la mejor medida que hay de si el sentido de conteo esta bien.`,
+      `Donde los dos caminos del PLANO opinan —la marca de perimetro y la posicion de la caja— ` +
+      `coinciden en ${pct}% de ${total} filas. Son dos lecturas que no comparten ningun supuesto, ` +
+      `asi que ese numero es la mejor medida que hay de si el sentido de conteo esta bien.`,
+    );
+  }
+  if (acuerdo.corregidas) {
+    notas.push(
+      `Y en ${acuerdo.corregidas} filas la caja dibujada corrigio lo que habia deducido el ` +
+      `heuristico de medir huecos entre picas. Eso es lo esperado, no un problema: esa deduccion ` +
+      `es justamente la que no acertaba, y por eso ahora se lee el plano en vez de medir.`,
     );
   }
   if (acuerdo.bloquesAlReves.length) {
