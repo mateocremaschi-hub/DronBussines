@@ -442,11 +442,27 @@ function notasDeLasCajas(
     );
   }
   if (acuerdo.bloquesMezclados.length) {
+    /*
+      Los unicos que quedan de verdad abiertos, y hay que decirlo asi.
+
+      No es un bit al reves —eso se detecta y se corrige solo— y tampoco es que
+      el dibujo no calce: en estos bloques calza con menos de dos metros. Es que
+      las dos lecturas dicen cosas distintas en el mismo bloque.
+
+      La sospecha es que ahi falla la marca, no la caja: son bloques con varios
+      tramos marcados, donde el unico borde norte-sur que se encuentra es una de
+      varias calles fisicas, y entonces "la calle del medio" deja de ser una
+      sola cosa. Pero es una sospecha, y sobre una sospecha no se dan vuelta
+      cientos de filas. Queda la marca, que es lo que estaba, y se dice cual es
+      la medicion que lo cierra.
+    */
     notas.push(
-      `${acuerdo.bloquesMezclados.length} bloques (${lista(acuerdo.bloquesMezclados)}) tienen las dos ` +
-      `lecturas mezcladas dentro del mismo bloque. Eso no es un bit al reves: es que ahi la caja de ` +
-      `algunos trackers quedo asignada cruzando una calle. Queda la marca de perimetro y conviene ` +
-      `mirar esos bloques.`,
+      `${acuerdo.bloquesMezclados.length} bloques (${lista(acuerdo.bloquesMezclados)}) son los unicos ` +
+      `donde las dos lecturas del plano no se ponen de acuerdo. Por ahora manda la marca de ` +
+      `perimetro, que es lo que ya estaba. Lo que lo cierra es contar los modulos de UN tracker de ` +
+      `cada uno de esos bloques en el campo, desde la punta que da a la caja: si el modulo 1 queda ` +
+      `de ese lado, manda la caja; si queda del otro, manda la marca. Un tracker por bloque, y esos ` +
+      `bloques quedan tan cerrados como el resto.`,
     );
   }
 

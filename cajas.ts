@@ -92,152 +92,147 @@ function resolver3(M: number[][], b: number[]): [number, number, number] | null 
 }
 
 /**
- * Apoyar el dibujo sobre el terreno: geo ~= A * plano + t.
+ * Apoyar el dibujo sobre el terreno: geo ~= A * plano + t, por PEDAZOS.
  *
  * Nada garantiza que una lamina tenga el norte para arriba, ni la misma escala
  * en las dos direcciones, ni que dos laminas del mismo parque esten giradas
- * igual. En vez de asumirlo, se ajusta por minimos cuadrados el mapa que lleva
- * el centro de cada tracker del plano al centro de sus filas de verdad. Con
- * decenas de trackers por bloque eso queda sobredeterminado y el residuo dice
- * si el ajuste sirve o si el cruce esta emparejando trackers equivocados.
+ * igual. En vez de asumirlo se ajusta el mapa que lleva el centro de cada
+ * tracker del plano al centro de sus filas de verdad, y el residuo dice si el
+ * ajuste sirve.
  *
- * Despues, cualquier desplazamiento del dibujo —el que va del tracker a su
- * caja— se convierte en una direccion sobre el terreno multiplicandolo por la
- * parte lineal. Eso es todo lo que hace falta: no importa donde este el norte,
- * importa si la caja cae del lado de una punta de la fila o de la otra.
+ * Lo que obligo a rehacer esto: un bloque no siempre se dibuja de una pieza. El
+ * 06 de Wellington tiene 130 trackers y una sola lamina, pero esta partido en
+ * mas de un pedazo para que entre en la hoja — como un texto que sigue en la
+ * columna de al lado. Cada pedazo esta en su lugar de la hoja, asi que un solo
+ * mapa no puede describirlos a los dos: el ajuste de compromiso quedaba en
+ * 69,8 m y el bloque entero se descartaba.
  *
- * El ajuste se hace dos veces y la calidad se mide con la MEDIANA del residuo.
- * Un punado de trackers mal emparejados —pasa: una etiqueta recortada, un
- * numero repetido en la lamina— arruina una media cuadratica y no mueve una
- * mediana. Con la media, cinco puntos de 130 alcanzaban para descartar el
- * bloque entero.
+ * Asi que en vez de un mapa se buscan VARIOS, cada uno con los trackers que
+ * explica. La busqueda es por consenso (RANSAC): se prueban tercetos de
+ * trackers al azar, cada terceto define un mapa exacto, y gana el que deja mas
+ * trackers cerca. Despues se saca ese grupo y se repite con lo que queda. Un
+ * bloque de una pieza da un solo pedazo y se comporta igual que antes.
+ *
+ * Es al azar pero no es impredecible: el generador tiene semilla fija, asi que
+ * el mismo plano da siempre el mismo resultado. Un parque que se lee dos veces
+ * y contesta distinto no sirve para nada.
  */
-function apoyar(
-  puntos: Array<{ cx: number; cy: number; X: number; Y: number }>,
-): { A: [[number, number], [number, number]]; error: number; escala: number; descartados: number } | null {
-  if (puntos.length < 3) return null;
 
-  const ajustar = (ps: typeof puntos) => {
-    const M = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-    const bx = [0, 0, 0];
-    const by = [0, 0, 0];
-    for (const p of ps) {
-      const v = [p.cx, p.cy, 1];
-      for (let i = 0; i < 3; i++) {
-        for (let j = 0; j < 3; j++) M[i]![j]! += v[i]! * v[j]!;
-        bx[i]! += v[i]! * p.X;
-        by[i]! += v[i]! * p.Y;
-      }
+export interface PuntoDelBloque { n: number; cx: number; cy: number; X: number; Y: number }
+
+interface Pedazo {
+  A: [[number, number], [number, number]];
+  /** Numeros de tracker que este pedazo explica. */
+  miembros: Set<number>;
+  /** Mediana del residuo, en metros. */
+  error: number;
+}
+
+/** Congruencial simple, con semilla: el mismo plano da siempre lo mismo. */
+function dado(semilla: number): () => number {
+  let x = semilla >>> 0;
+  return () => { x = (x * 1664525 + 1013904223) >>> 0; return x / 4294967296; };
+}
+
+function afinExacta(
+  p: PuntoDelBloque[],
+): { sx: [number, number, number]; sy: [number, number, number] } | null {
+  const M = p.map((q) => [q.cx, q.cy, 1]);
+  const sx = resolver3(M.map((f) => [...f]), p.map((q) => q.X));
+  const sy = resolver3(M.map((f) => [...f]), p.map((q) => q.Y));
+  return sx && sy ? { sx, sy } : null;
+}
+
+function afinMinimos(
+  p: PuntoDelBloque[],
+): { sx: [number, number, number]; sy: [number, number, number] } | null {
+  if (p.length < 3) return null;
+  const M = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  const bx = [0, 0, 0];
+  const by = [0, 0, 0];
+  for (const q of p) {
+    const v = [q.cx, q.cy, 1];
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) M[i]![j]! += v[i]! * v[j]!;
+      bx[i]! += v[i]! * q.X;
+      by[i]! += v[i]! * q.Y;
     }
-    const sx = resolver3(M.map((f) => [...f]), bx);
-    const sy = resolver3(M.map((f) => [...f]), by);
-    return sx && sy ? { sx, sy } : null;
-  };
-  const residuos = (ps: typeof puntos, f: NonNullable<ReturnType<typeof ajustar>>) =>
-    ps.map((p) => Math.hypot(
-      f.sx[0]! * p.cx + f.sx[1]! * p.cy + f.sx[2]! - p.X,
-      f.sy[0]! * p.cx + f.sy[1]! * p.cy + f.sy[2]! - p.Y,
-    ));
+  }
+  const sx = resolver3(M.map((f) => [...f]), bx);
+  const sy = resolver3(M.map((f) => [...f]), by);
+  return sx && sy ? { sx, sy } : null;
+}
 
-  let fit = ajustar(puntos);
-  if (!fit) return null;
+const residuo = (
+  q: PuntoDelBloque,
+  f: { sx: [number, number, number]; sy: [number, number, number] },
+) => Math.hypot(
+  f.sx[0] * q.cx + f.sx[1] * q.cy + f.sx[2] - q.X,
+  f.sy[0] * q.cx + f.sy[1] * q.cy + f.sy[2] - q.Y,
+);
 
-  const cX0 = puntos.reduce((s, p) => s + p.X, 0) / puntos.length;
-  const cY0 = puntos.reduce((s, p) => s + p.Y, 0) / puntos.length;
-  const tamano = Math.sqrt(
-    puntos.reduce((s, p) => s + (p.X - cX0) ** 2 + (p.Y - cY0) ** 2, 0) / puntos.length);
+/**
+ * Cuantos trackers tiene que explicar un pedazo para que cuente como pedazo.
+ *
+ * Ocho en un bloque de verdad —son de 130— para que un grupito de trackers mal
+ * emparejados no invente un pedazo propio. Pero nunca mas de un cuarto del
+ * bloque, porque si no un bloque chico no puede formar ninguno. Y nunca menos
+ * de cuatro: con tres puntos una afin pasa exacta por cualquier terna, asi que
+ * tres no es un consenso, es una coincidencia.
+ */
+const minimoPedazo = (n: number) => Math.max(4, Math.min(8, Math.floor(n / 4)));
+const INTENTOS = 400;
 
-  /*
-    Sacar de a uno los trackers que no se corresponden, y volver a ajustar.
+function apoyarPorPartes(puntos: PuntoDelBloque[], tolerancia: number): Pedazo[] {
+  const out: Pedazo[] = [];
+  const MINIMO_PEDAZO = minimoPedazo(puntos.length);
+  let quedan = puntos;
+  const azar = dado(20260831);
 
-    Esto no es prolijidad: es lo que decide si el bloque se resuelve o no. En
-    los bloques 15 y 16 de Wellington el dibujo cae sobre el terreno con
-    centimetros de error en casi todos los trackers, y un punado quedo
-    emparejado con el equivocado —una etiqueta recortada, un numero repetido en
-    la lamina—. Esos pocos, dejados adentro, daban 58 m de error sobre 148 m de
-    bloque y descartaban las 520 filas de los dos bloques.
+  while (quedan.length >= MINIMO_PEDAZO) {
+    let mejor: PuntoDelBloque[] = [];
+    for (let intento = 0; intento < INTENTOS; intento++) {
+      const i = Math.floor(azar() * quedan.length);
+      const j = Math.floor(azar() * quedan.length);
+      const k = Math.floor(azar() * quedan.length);
+      if (i === j || j === k || i === k) continue;
+      const tres = [quedan[i]!, quedan[j]!, quedan[k]!];
+      // Un terceto casi alineado define un mapa inestable: no sirve de semilla.
+      const area = Math.abs(
+        (tres[1]!.cx - tres[0]!.cx) * (tres[2]!.cy - tres[0]!.cy) -
+        (tres[2]!.cx - tres[0]!.cx) * (tres[1]!.cy - tres[0]!.cy));
+      if (area < 1) continue;
+      const f = afinExacta(tres);
+      if (!f) continue;
+      const dentro = quedan.filter((q) => residuo(q, f) <= tolerancia);
+      if (dentro.length > mejor.length) mejor = dentro;
+    }
+    if (mejor.length < MINIMO_PEDAZO) break;
 
-    Se saca el peor mientras siga siendo un caso aparte —varias veces el resto—
-    y mientras quede la mayoria de los trackers. Un bloque donde hay que tirar
-    la mitad no es un bloque con un par de etiquetas rotas: es un cruce que no
-    corresponde, y ese tiene que fallar.
-  */
-  let base = puntos;
-  let descartados = 0;
-  const minimo = Math.max(3, Math.ceil(puntos.length * 0.6));
-  const CALZA = tamano * 0.01;
+    // Refinar sobre el consenso y volver a contar: el terceto que lo encontro
+    // no tiene por que ser el mejor ajuste de todo el grupo.
+    let grupo = mejor;
+    for (let vuelta = 0; vuelta < 3; vuelta++) {
+      const f = afinMinimos(grupo);
+      if (!f) break;
+      const dentro = quedan.filter((q) => residuo(q, f) <= tolerancia);
+      if (dentro.length <= grupo.length) { grupo = dentro.length ? dentro : grupo; break; }
+      grupo = dentro;
+    }
+    const f = afinMinimos(grupo);
+    if (!f) break;
 
-  /*
-    Sacar los trackers que no se corresponden, en dos pasadas distintas.
-
-    Esto no es prolijidad: decide si el bloque se resuelve o no. En los bloques
-    15 y 16 de Wellington el dibujo cae sobre el terreno con centimetros de
-    error en casi todos los trackers, y un punado quedo emparejado con el
-    equivocado —una etiqueta recortada, un numero repetido en la lamina—. Esos
-    pocos, dejados adentro, daban decenas de metros de error y descartaban las
-    520 filas de los dos bloques.
-
-    Primero se van en tanda los que quedan lejos de la mediana. Eso limpia el
-    caso normal —un bloque grande con varios intrusos— en dos o tres vueltas.
-  */
-  for (let vuelta = 0; vuelta < 6 && base.length > minimo; vuelta++) {
-    const res = residuos(base, fit);
-    const med = mediana(res);
-    if (med <= CALZA) break;
-    const corte = Math.max(med * 3, CALZA);
-    const podado = base.filter((_, i) => res[i]! <= corte);
-    if (podado.length === base.length || podado.length < minimo) break;
-    const otro = ajustar(podado);
-    if (!otro) break;
-    descartados += base.length - podado.length;
-    base = podado;
-    fit = otro;
+    const res = grupo.map((q) => residuo(q, f)).sort((a, b) => a - b);
+    out.push({
+      A: [[f.sx[0], f.sx[1]], [f.sy[0], f.sy[1]]],
+      miembros: new Set(grupo.map((q) => q.n)),
+      error: res[res.length >> 1] ?? 0,
+    });
+    const fuera = new Set(grupo.map((q) => q.n));
+    quedan = quedan.filter((q) => !fuera.has(q.n));
   }
 
-  /*
-    Y despues, de a uno, el que mas mejore el ajuste.
-
-    Con pocos puntos un minimo cuadrado reparte el error del intruso entre
-    todos y el intruso deja de destacarse: la tanda de arriba no lo ve, porque
-    su residuo termina pareciendose al de los demas. Probar de a uno cuesta un
-    ajuste por punto —con 130 trackers son milisegundos— y lo encuentra igual.
-  */
-  while (base.length > minimo) {
-    const med = mediana(residuos(base, fit));
-    if (med <= CALZA) break;
-    let mejor = -1;
-    let mejorMed = med;
-    for (let i = 0; i < base.length; i++) {
-      const podado = base.filter((_, j) => j !== i);
-      const otro = ajustar(podado);
-      if (!otro) continue;
-      const m = mediana(residuos(podado, otro));
-      if (m < mejorMed) { mejorMed = m; mejor = i; }
-    }
-    // Se saca solo si la mejora es de otra escala. Bajar un 10% es el ajuste
-    // acomodandose, no un tracker que sobra.
-    if (mejor < 0 || mejorMed > med * 0.5) break;
-    const podado = base.filter((_, j) => j !== mejor);
-    const otro = ajustar(podado);
-    if (!otro) break;
-    base = podado;
-    fit = otro;
-    descartados++;
-  }
-
-  const res = residuos(base, fit);
-  const cX = base.reduce((s, p) => s + p.X, 0) / base.length;
-  const cY = base.reduce((s, p) => s + p.Y, 0) / base.length;
-  const disp = base.reduce((s, p) => s + (p.X - cX) ** 2 + (p.Y - cY) ** 2, 0) / base.length;
-
-  return {
-    A: [[fit.sx[0]!, fit.sx[1]!], [fit.sy[0]!, fit.sy[1]!]],
-    // La MEDIANA del residuo, no la media cuadratica: un tracker mal
-    // emparejado no puede condenar un bloque que por lo demas calza exacto.
-    error: mediana(res),
-    escala: Math.sqrt(disp),
-    descartados,
-  };
+  return out;
 }
 
 /**
@@ -261,8 +256,8 @@ const MINIMO_RELATIVO = 0.25;
  */
 const MINIMO_COSENO = 0.2;
 
-/** El error de ajuste que se tolera, como fraccion del tamano del bloque. */
-const ERROR_TOLERADO = 0.15;
+/** Que fraccion del bloque tienen que explicar los pedazos encontrados. */
+const COBERTURA_MINIMA = 0.6;
 
 /**
  * Escribir el sentido de conteo de cada fila usando la posicion de su caja.
@@ -349,7 +344,8 @@ export function sentidoDesdeLasCajas(
       g.Y.push((a.Y + z.Y) / 2);
       porTracker.set(n, g);
     }
-    const puntos = [...porTracker.entries()].map(([n, g]) => ({
+    const puntos: PuntoDelBloque[] = [...porTracker.entries()].map(([n, g]) => ({
+      n,
       ...centro.get(n)!,
       X: g.X.reduce((s, v) => s + v, 0) / g.X.length,
       Y: g.Y.reduce((s, v) => s + v, 0) / g.Y.length,
@@ -363,38 +359,76 @@ export function sentidoDesdeLasCajas(
       continue;
     }
 
-    const ajuste = apoyar(puntos);
-    if (!ajuste || ajuste.escala <= 0 || ajuste.error > ajuste.escala * ERROR_TOLERADO) {
+    /*
+      La tolerancia sale del propio parque, no de un numero de laboratorio: la
+      mitad de lo que separa un tracker de su vecino. Mas que eso y el ajuste
+      empieza a "explicar" trackers que no le corresponden.
+    */
+    const separaciones = puntos.map((p, i) => {
+      let d = Infinity;
+      for (let j = 0; j < puntos.length; j++) {
+        if (i === j) continue;
+        d = Math.min(d, Math.hypot(puntos[j]!.X - p.X, puntos[j]!.Y - p.Y));
+      }
+      return d;
+    }).filter(Number.isFinite);
+    const tolerancia = Math.min(15, Math.max(1.5, mediana(separaciones) * 0.5));
+
+    const pedazos = apoyarPorPartes(puntos, tolerancia);
+    const explicados = pedazos.reduce((s, p) => s + p.miembros.size, 0);
+    /*
+      Cuanto del bloque tiene que quedar explicado.
+
+      Con menos de esto, lo que se encontro no es "el dibujo con un par de
+      etiquetas rotas": es un cruce que no corresponde —el plano y el
+      relevamiento numerando distinto— y de ahi no sale ninguna punta, sale una
+      moneda al aire con cara de dato. Un pedazo cualquiera siempre se puede
+      encontrar; lo que tiene que cerrar es el bloque.
+    */
+    if (!pedazos.length || explicados < puntos.length * COBERTURA_MINIMA) {
       detalles.push({ block: b.block, filas: 0, motivo: "lamina-sin-orientar",
-        detail: ajuste
-          ? `El dibujo no se apoya sobre las coordenadas de este bloque: quedan ${ajuste.error.toFixed(1)} m ` +
-            `de error sobre ${ajuste.escala.toFixed(0)} m de bloque. Puede ser que el plano y el ` +
-            `relevamiento numeren los trackers distinto. No se toca nada.`
-          : `Los trackers de este bloque estan todos sobre una misma linea en el dibujo, asi que no ` +
-            `alcanza para orientarlo. No se toca nada.`,
+        detail:
+          `El dibujo no se apoya sobre las coordenadas de este bloque: de ${puntos.length} trackers ` +
+          `solo ${explicados} caen donde el dibujo dice. Puede ser que el plano y el relevamiento los ` +
+          `numeren distinto. No se toca nada.`,
       });
       continue;
     }
 
-    const { A } = ajuste;
-    const enTerreno = (d: { dx: number; dy: number }) => ({
-      X: A[0][0] * d.dx + A[0][1] * d.dy,
-      Y: A[1][0] * d.dx + A[1][1] * d.dy,
-    });
+    // Que pedazo del dibujo explica a cada tracker.
+    const dePedazo = new Map<number, Pedazo>();
+    for (const p of pedazos) for (const n of p.miembros) dePedazo.set(n, p);
+
+    const enTerreno = (n: number, d: { dx: number; dy: number }) => {
+      const p = dePedazo.get(n);
+      if (!p) return null;
+      return {
+        X: p.A[0][0] * d.dx + p.A[0][1] * d.dy,
+        Y: p.A[1][0] * d.dx + p.A[1][1] * d.dy,
+      };
+    };
+    const errorTipico = mediana(pedazos.map((p) => p.error));
+
     const largos: number[] = [];
     for (const r of filas) {
+      const n = numeroDeTracker(r.tracker);
       const d = cajaDeLaFila(r);
-      if (d) { const v = enTerreno(d); largos.push(Math.hypot(v.X, v.Y)); }
+      if (n == null || !d) continue;
+      const v = enTerreno(n, d);
+      if (v) largos.push(Math.hypot(v.X, v.Y));
     }
     const umbral = mediana(largos) * MINIMO_RELATIVO;
 
     let escritas = 0;
     let flojas = 0;
     let cruzadas = 0;
+    let sinPedazo = 0;
     for (const fila of filas) {
-      const d = cajaDeLaFila(fila);
-      if (!d) continue;
-      const v = enTerreno(d);
+      const n = numeroDeTracker(fila.tracker);
+      const d = n == null ? null : cajaDeLaFila(fila);
+      if (n == null || !d) continue;
+      const v = enTerreno(n, d);
+      if (!v) { sinPedazo++; continue; }
       const largo = Math.hypot(v.X, v.Y);
       if (largo < umbral || largo === 0) { flojas++; continue; }
 
@@ -412,6 +446,7 @@ export function sentidoDesdeLasCajas(
     const salteadas = [
       flojas ? `${flojas} porque su caja cae casi sobre el centro del tracker` : "",
       cruzadas ? `${cruzadas} porque su caja cae al costado y no en una punta` : "",
+      sinPedazo ? `${sinPedazo} porque su tracker no cae donde el dibujo lo pone` : "",
     ].filter(Boolean).join(", ");
 
     detalles.push({
@@ -420,10 +455,10 @@ export function sentidoDesdeLasCajas(
       motivo: escritas ? "resuelto" : "sin-cajas",
       detail: escritas
         ? `${escritas} filas quedaron con la punta de entrada medida contra la caja dibujada` +
-          (ajuste.descartados
-            ? `; el dibujo calzo sobre las coordenadas con ${ajuste.error.toFixed(1)} m de error, dejando ` +
-              `afuera ${ajuste.descartados} trackers que no se corresponden`
-            : `; el dibujo calzo sobre las coordenadas con ${ajuste.error.toFixed(1)} m de error`) +
+          `; el dibujo calzo sobre las coordenadas con ${errorTipico.toFixed(1)} m de error` +
+          (pedazos.length > 1
+            ? `, y esta dibujado en ${pedazos.length} pedazos, cada uno en su lugar de la hoja`
+            : "") +
           (salteadas ? `; se saltearon ${salteadas}` : "") + "."
         : `Ninguna caja de este bloque cae lo bastante lejos del centro de su tracker, y a lo largo ` +
           `de la fila, como para decir de que punta es.`,
