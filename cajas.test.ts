@@ -174,6 +174,66 @@ describe("la punta de entrada medida contra la caja", () => {
     expect(p.get(7)).toBe("end");
   });
 
+  it("un bloque dibujado en dos pedazos de la hoja se resuelve igual", () => {
+    /*
+      Un bloque no siempre se dibuja de una pieza. El 06 de Wellington tiene 130
+      trackers y una sola lamina, pero esta partido para que entre en la hoja
+      —como un texto que sigue en la columna de al lado—, y cada pedazo esta en
+      su lugar con su propia escala. Un solo mapa no puede describir a los dos:
+      el ajuste de compromiso quedaba en 69,8 m y el bloque entero se
+      descartaba. Con un mapa por pedazo: 1,4 m y 246 de 260 filas.
+
+      Aca se arma un bloque de cuatro bancos de a diez, y los dos bancos del
+      norte se dibujan corridos y a otra escala, como la segunda columna de la
+      hoja.
+    */
+    const bancos = [200, 600, 1000, 1400];
+    const mover = (x: number, y: number): [number, number] => [x * 0.8 + 4000, (y - 1000) * 0.8 + 100];
+    const cajas = [
+      { name: "SUR", x: 600, y: 20 },
+      { name: "C1-abajo", x: 600, y: 800 },
+      { name: "C1-arriba", x: 600, y: 800 },
+      { name: "NORTE", x: 600, y: 1580 },
+    ].map((c) => (c.name === "C1-arriba" || c.name === "NORTE"
+      ? { ...c, x: mover(c.x, c.y)[0], y: mover(c.x, c.y)[1] }
+      : c));
+
+    const trackers: BloqueConCajas["trackers"] = [];
+    const rows: TrackerRow[] = [];
+    const esperado = new Map<number, "start" | "end">();
+    let n = 0;
+    for (let b = 0; b < bancos.length; b++) {
+      for (let i = 0; i < 10; i++) {
+        n++;
+        const cx = 500 + i * 30;
+        const cy = bancos[b]!;
+        const segundo = cy >= 1000;
+        const [px, py] = segundo ? mover(cx, cy) : [cx, cy];
+        trackers.push({
+          tracker: `07-${String(n).padStart(3, "0")}`,
+          cx: px, cy: py,
+          caja: ["SUR", "C1-abajo", "C1-arriba", "NORTE"][b]!,
+        });
+        const norte = cy * 0.2, este = cx * 0.2;
+        rows.push({
+          id: `07-07-${String(n).padStart(3, "0")}-R1`,
+          block: "07", tracker: `07-${String(n).padStart(3, "0")}`, row: "R1",
+          start: { lat: LAT0 + (norte - 32.5) / M_LAT, lon: LON0 + este / M_LON },
+          end: { lat: LAT0 + (norte + 32.5) / M_LAT, lon: LON0 + este / M_LON },
+        });
+        // La caja del banco 0 y del 2 les queda al sur; la del 1 y el 3, al norte.
+        esperado.set(n, b === 0 || b === 2 ? "start" : "end");
+      }
+    }
+
+    const { origins, bloques } = sentidoDesdeLasCajas(rows, [{ block: "07", trackers, cajas }]);
+    expect(bloques[0]!.motivo).toBe("resuelto");
+    expect(bloques[0]!.detail).toMatch(/dibujado en 2 pedazos/);
+    const p = puntas(rows, origins);
+    expect(p.size).toBe(40);
+    for (const [k, v] of esperado) expect(p.get(k)).toBe(v);
+  });
+
   it("dice que le falta el plano de interconexion en vez de quedarse callado", () => {
     const { origins, bloques } = sentidoDesdeLasCajas(filas(), [bloque({ cajas: [] })]);
     expect(origins.size).toBe(0);
