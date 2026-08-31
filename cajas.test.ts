@@ -1,0 +1,303 @@
+/**
+ * El sentido de conteo medido contra la caja dibujada.
+ *
+ * Lo que se prueba aca es la diferencia entre "el plano dice donde estan las
+ * calles" y "el plano dice donde esta la caja". Con lo primero, un bloque que
+ * marca dos calles internas queda sin resolver: la app no sabe cual de las dos
+ * lleva las cajas. Con lo segundo la pregunta desaparece, porque la caja tiene
+ * coordenada propia.
+ *
+ * En Wellington North esos eran 18 bloques de 52, 5340 filas de 13606.
+ */
+
+import { describe, expect, it } from "vitest";
+import type { TrackerRow } from "../src/types.js";
+import { acordar, sentidoDesdeLasCajas, type BloqueConCajas } from "../app/cajas";
+import { aplicarPlano, type PlanoDeParque } from "../app/plans";
+
+/*
+  Un bloque de cuatro bancos con DOS calles internas — la forma que no se podia
+  resolver. Medidas realistas: tracker de 65 m, bancos cada 80 m, trackers cada
+  6 m. La lamina esta a 0,2 m por unidad.
+
+      banco A   cy  200   caja afuera, al sur      (y   20)
+      ---- calle 1 (cy 800) ----
+      banco B   cy  600   caja en la calle 1       (y  800)
+      banco C   cy 1000   caja en la calle 1       (y  800)
+      ---- calle 2 ----
+      banco D   cy 1400   caja afuera, al norte    (y 1580)
+
+  Con las marcas de perimetro hay dos bordes N|S y no se puede elegir. Con las
+  cajas cada tracker tiene la suya y no hay nada que elegir.
+*/
+const ESCALA = 0.2; // metros por unidad de lamina
+const CY: Record<number, number> = { 1: 200, 2: 200, 3: 600, 4: 600, 5: 1000, 6: 1000, 7: 1400, 8: 1400 };
+const CX = (k: number) => 500 + k * 30;
+const CAJA: Record<number, string> = {
+  1: "DCB-SUR", 2: "DCB-SUR", 3: "DCB-C1", 4: "DCB-C1",
+  5: "DCB-C1", 6: "DCB-C1", 7: "DCB-NORTE", 8: "DCB-NORTE",
+};
+const CAJAS = [
+  { name: "DCB-SUR", x: 600, y: 20 },
+  { name: "DCB-C1", x: 600, y: 800 },
+  { name: "DCB-NORTE", x: 600, y: 1580 },
+];
+
+const bloque = (over: Partial<BloqueConCajas> = {}): BloqueConCajas => ({
+  block: "07",
+  trackers: Object.keys(CY).map((k) => ({
+    tracker: `07-${k.padStart(3, "0")}`,
+    cx: CX(Number(k)),
+    cy: CY[Number(k)]!,
+    caja: CAJA[Number(k)]!,
+  })),
+  cajas: CAJAS,
+  ...over,
+});
+
+const LAT0 = -32.5, LON0 = 148.94;
+const M_LAT = 110_540;
+const M_LON = 111_320 * Math.cos((LAT0 * Math.PI) / 180);
+
+/**
+ * La geometria de verdad. `norteArriba` decide si la lamina esta con el norte
+ * hacia arriba o al reves — que es justo lo que no se puede asumir y por eso se
+ * mide apoyando el dibujo sobre las coordenadas.
+ */
+function filas(norteArriba = true): TrackerRow[] {
+  const s = norteArriba ? 1 : -1;
+  const medio = 65 / 2;
+  return Object.keys(CY).map(Number).map((k) => {
+    const norte = s * CY[k]! * ESCALA;
+    const este = s * CX(k) * ESCALA;
+    return {
+      id: `07-07-${String(k).padStart(3, "0")}-R1`,
+      block: "07",
+      tracker: `07-${String(k).padStart(3, "0")}`,
+      row: "R1",
+      start: { lat: LAT0 + (norte - medio) / M_LAT, lon: LON0 + este / M_LON },
+      end: { lat: LAT0 + (norte + medio) / M_LAT, lon: LON0 + este / M_LON },
+    };
+  });
+}
+
+/** Que punta quedo como origen, por numero de tracker. */
+function puntas(rows: TrackerRow[], origins: Map<string, "start" | "end">) {
+  const m = new Map<number, "start" | "end">();
+  for (const r of rows) {
+    const o = origins.get(r.id);
+    if (o) m.set(Number(r.tracker.split("-").pop()), o);
+  }
+  return m;
+}
+
+describe("la punta de entrada medida contra la caja", () => {
+  it("resuelve un bloque con dos calles internas, que la marca de perimetro no puede", () => {
+    const rows = filas();
+    const { origins, bloques } = sentidoDesdeLasCajas(rows, [bloque()]);
+    expect(bloques[0]!.motivo).toBe("resuelto");
+    expect(origins.size).toBe(8);
+
+    const p = puntas(rows, origins);
+    // En estas filas `end` es la punta de mayor latitud, o sea la del norte.
+    // Banco A (1-2): la caja les queda al sur -> "start".
+    expect(p.get(1)).toBe("start");
+    expect(p.get(2)).toBe("start");
+    // Banco B (3-4): la calle 1 les queda al norte -> "end".
+    expect(p.get(3)).toBe("end");
+    expect(p.get(4)).toBe("end");
+    // Banco C (5-6): la MISMA calle, pero les queda al sur -> "start".
+    expect(p.get(5)).toBe("start");
+    expect(p.get(6)).toBe("start");
+    // Banco D (7-8): caja afuera, al norte -> "end".
+    expect(p.get(7)).toBe("end");
+    expect(p.get(8)).toBe("end");
+  });
+
+  it("no asume que la lamina tenga el norte para arriba: lo mide", () => {
+    const rows = filas(false); // el mismo parque, dibujado al reves
+    const { origins } = sentidoDesdeLasCajas(rows, [bloque()]);
+    const p = puntas(rows, origins);
+    // Todo espejado respecto del caso anterior. Si esto no cambiara seria que
+    // la orientacion esta clavada, y el proximo parque saldria invertido entero.
+    expect(p.get(1)).toBe("end");
+    expect(p.get(3)).toBe("start");
+    expect(p.get(5)).toBe("end");
+    expect(p.get(7)).toBe("start");
+  });
+
+  it("se planta si el dibujo no se apoya sobre las coordenadas", () => {
+    // Trackers barajados: el cruce esta emparejando el dibujo de uno con las
+    // coordenadas de otro. Ahi el signo que saldria seria una moneda al aire
+    // con cara de dato.
+    const orden = [5, 2, 8, 1, 7, 4, 3, 6];
+    const base = filas();
+    const rows = base.map((r, i) => ({ ...r, start: base[orden[i]! - 1]!.start, end: base[orden[i]! - 1]!.end }));
+    const { origins, bloques } = sentidoDesdeLasCajas(rows, [bloque()]);
+    expect(bloques[0]!.motivo).toBe("lamina-sin-orientar");
+    expect(origins.size).toBe(0);
+  });
+
+  it("saltea la caja que cae encima del centro de su tracker en vez de inventarle un lado", () => {
+    const b = bloque();
+    // La caja del tracker 3 queda a la altura de su propio centro: eso es lo que
+    // pasa cuando la asignacion se cruzo de calle, y de ahi no sale ninguna punta.
+    b.cajas = [...CAJAS, { name: "DCB-ENCIMA", x: 600, y: 600 }];
+    b.trackers.find((t) => t.tracker === "07-003")!.caja = "DCB-ENCIMA";
+    const rows = filas();
+    const { origins } = sentidoDesdeLasCajas(rows, [b]);
+    expect(puntas(rows, origins).has(3)).toBe(false);
+    expect(origins.size).toBe(7);
+  });
+
+  it("un punado de trackers mal emparejados no condena al bloque entero", () => {
+    /*
+      Esto salio de los bloques 15 y 16 de Wellington North, con el plano de
+      interconexion de verdad: 125 de 130 trackers calzan sobre las coordenadas
+      con centimetros de error, y un punado quedo emparejado con el tracker
+      equivocado. Midiendo la calidad con la media cuadratica, esos pocos daban
+      58 m de error sobre 148 m de bloque y el bloque se descartaba entero —o
+      sea, 520 filas sin resolver por cinco etiquetas. Con la mediana no.
+    */
+    const rows = filas();
+    const roto = rows.map((r, i) =>
+      i === 1
+        ? { ...r, start: { ...r.start, lat: r.start.lat + 0.004 }, end: { ...r.end, lat: r.end.lat + 0.004 } }
+        : r);
+    const { origins, bloques } = sentidoDesdeLasCajas(roto, [bloque()]);
+    expect(bloques[0]!.motivo).toBe("resuelto");
+    expect(origins.size).toBeGreaterThanOrEqual(7);
+    // Y los que si calzan siguen dando la misma punta que sin el intruso.
+    const p = puntas(roto, origins);
+    expect(p.get(1)).toBe("start");
+    expect(p.get(5)).toBe("start");
+    expect(p.get(7)).toBe("end");
+  });
+
+  it("dice que le falta el plano de interconexion en vez de quedarse callado", () => {
+    const { origins, bloques } = sentidoDesdeLasCajas(filas(), [bloque({ cajas: [] })]);
+    expect(origins.size).toBe(0);
+    expect(bloques[0]!.motivo).toBe("sin-cajas");
+    expect(bloques[0]!.detail).toMatch(/interconexion/i);
+  });
+});
+
+describe("cruzar las dos lecturas", () => {
+  const rows = filas();
+  const ids = rows.map((r) => r.id);
+
+  it("cuando coinciden, no cambia nada", () => {
+    const a = new Map(ids.map((id) => [id, "start" as const]));
+    const r = acordar(rows, a, new Map(a));
+    expect(r.difieren).toBe(0);
+    expect(r.bloquesAlReves).toEqual([]);
+    expect([...r.origins.values()].every((v) => v === "start")).toBe(true);
+  });
+
+  it("si un bloque entero se contradice, el que esta al reves es el ajuste y mandan las cajas", () => {
+    const perimetro = new Map(ids.map((id) => [id, "start" as const]));
+    const cajas = new Map(ids.map((id) => [id, "end" as const]));
+    const r = acordar(rows, perimetro, cajas);
+    expect(r.bloquesAlReves).toEqual(["07"]);
+    expect([...r.origins.values()].every((v) => v === "end")).toBe(true);
+  });
+
+  it("si se mezclan dentro del bloque es ruido de asignacion: queda el perimetro y se avisa", () => {
+    const perimetro = new Map(ids.map((id) => [id, "start" as const]));
+    const cajas = new Map(ids.map((id, i) => [id, (i < 4 ? "end" : "start") as "start" | "end"]));
+    const r = acordar(rows, perimetro, cajas);
+    expect(r.bloquesMezclados).toEqual(["07"]);
+    expect(r.bloquesAlReves).toEqual([]);
+    expect([...r.origins.values()].every((v) => v === "start")).toBe(true);
+  });
+
+  it("las cajas rellenan las filas que el perimetro no alcanzo", () => {
+    const cajas = new Map(ids.map((id) => [id, "end" as const]));
+    const r = acordar(rows, new Map(), cajas);
+    expect(r.origins.size).toBe(ids.length);
+  });
+
+  it("compara contra lo que la fila ya traia, porque los planos entran de a tandas", () => {
+    // Segunda tanda: entran los de interconexion, que traen la caja y NO la
+    // marca de perimetro. Si el cruce solo mirara la lectura en curso, aca no
+    // habria contra que comparar y el control cruzado se perderia entero.
+    const previo = new Map(ids.map((id) => [id, "start" as const]));
+    const cajas = new Map(ids.map((id) => [id, "end" as const]));
+    const r = acordar(rows, new Map(), cajas, previo);
+    expect(r.difieren).toBe(ids.length);
+    expect(r.bloquesAlReves).toEqual(["07"]);
+    // Y la caja le gana a la deduccion vieja: una esta dibujada, la otra salio
+    // de medir huecos entre picas.
+    expect([...r.origins.values()].every((v) => v === "end")).toBe(true);
+  });
+});
+
+describe("de punta a punta, con el plano entero", () => {
+  it("un bloque de dos calles internas queda resuelto al aplicar el plano", () => {
+    const rows = filas();
+    const plano: PlanoDeParque = {
+      "07": {
+        trackers: Object.fromEntries(
+          Object.keys(CY).map(Number).map((n) => {
+            // Marcas que dan DOS bordes N|S, a proposito: por perimetro este
+            // bloque no tiene salida.
+            const perimetro = (["norte", "sur", "norte", "sur", "norte", "sur", "norte", "sur"] as const)[n - 1]!;
+            return [
+              `07-${String(n).padStart(3, "0")}`,
+              { rows: ["R1"], cx: CX(n), cy: CY[n]!, side: "North", dcbox: CAJA[n]!, perimetro },
+            ];
+          }),
+        ),
+        dcbox: CAJAS,
+        strings: [],
+        road: 800,
+        axis: "y",
+      },
+    };
+
+    const a = aplicarPlano(rows, plano);
+    // La marca de perimetro sola no alcanza en este bloque.
+    expect(a.sinCalleEnElPlano).toContain("07");
+    // Las cajas lo cierran igual.
+    expect(a.conSentido).toBe(8);
+    expect(a.rows.every((r) => r.originEnd)).toBe(true);
+    expect(a.notas.join(" ")).toMatch(/se midio contra la caja/);
+  });
+
+  it("los planos de fundacion y los de interconexion se suman entre tandas", () => {
+    const rows = filas();
+    const marcas = (["norte", "sur", "norte", "sur", "norte", "sur", "norte", "sur"] as const);
+
+    // Tanda 1: fundaciones. Traen la marca de perimetro, ninguna caja.
+    const fundaciones: PlanoDeParque = {
+      "07": {
+        trackers: Object.fromEntries(Object.keys(CY).map(Number).map((n) => [
+          `07-${String(n).padStart(3, "0")}`,
+          { rows: ["R1"], cx: CX(n), cy: CY[n]!, side: "North", perimetro: marcas[n - 1]! },
+        ])),
+        dcbox: [], strings: [], road: 800, axis: "y",
+      },
+    };
+    const a1 = aplicarPlano(rows, fundaciones);
+    // Dos calles internas: por perimetro no sale, y lo dice.
+    expect(a1.sinCalleEnElPlano).toContain("07");
+    expect(a1.rows.some((r) => r.originEnd)).toBe(false);
+    expect(a1.notas.join(" ")).toMatch(/UN dato para todo el parque/);
+
+    // Tanda 2: interconexion. Trae las cajas, ninguna marca.
+    const interconexion: PlanoDeParque = {
+      "07": {
+        trackers: Object.fromEntries(Object.keys(CY).map(Number).map((n) => [
+          `07-${String(n).padStart(3, "0")}`,
+          { rows: ["R1"], cx: CX(n), cy: CY[n]!, side: "North", dcbox: CAJA[n]! },
+        ])),
+        dcbox: CAJAS, strings: [], road: 800, axis: "y",
+      },
+    };
+    const a2 = aplicarPlano(a1.rows, interconexion);
+    expect(a2.rows.every((r) => r.originEnd)).toBe(true);
+    // Y ya no pide ir al campo a confirmar de que lado van las cajas.
+    expect(a2.notas.join(" ")).not.toMatch(/UN dato para todo el parque/);
+    expect(a2.notas.join(" ")).toMatch(/no depende de si las cajas/);
+  });
+});
