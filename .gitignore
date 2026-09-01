@@ -8,3 +8,12 @@ public/termicas/
 
 # Los planos del cliente no van al repo: la prueba que los usa se saltea sola.
 fixtures/planos/
+
+# Lo que quedo esperando que lo borres a mano.
+#
+# Cuando el asistente trabaja sobre esta carpeta desde la app de Claude no puede
+# borrar archivos: el puente da permiso de leer y escribir, no de borrar. Asi que
+# lo que sale del proyecto se mueve aca en vez de desaparecer, y lo borras vos
+# desde el Finder cuando quieras. Ignorarlo evita el accidente de volver a
+# subirlo sin querer.
+_to_delete/
