@@ -80,17 +80,18 @@ await page.getByRole("heading", { name: "Resumen" }).scrollIntoViewIfNeeded();
 const resumen = (await page.locator(".stats").last().innerText()).replace(/\n/g, " ");
 console.log("Resumen del vuelo:", resumen);
 /*
-  Las direcciones de los hallazgos. Cada tarjeta escribe la suya con
-  `formatAddress` en el parrafo `.answer`: "Bloque 05, tracker 05-004 R1,
-  string 3, modulo 12 (contando desde la punta norte)". Antes esto miraba una
-  tabla y partia por tabuladores; la tabla ya no existe, asi que se saca el
-  tracker del propio texto.
+  Las direcciones de los hallazgos.
+
+  La lista de la revision es una columna angosta con un renglon por modulo
+  —`.revisor-lista`— y la direccion completa se lee en el panel de al lado. Se
+  chequean las dos cosas: que la lista tenga los doce, y que el elegido muestre
+  la direccion que escribe `formatAddress`.
 */
-const filas = await page.locator(".hallazgo .answer").allInnerTexts();
+const filas = await page.locator(".revisor-lista li .donde").allInnerTexts();
 console.log(`Hallazgos listados: ${filas.length}`);
 filas.slice(0, 5).forEach((f) => console.log("   " + f.replace(/\s+/g, " ").trim()));
 
-const trackerDe = (t) => t.match(/tracker\s+(\S+)/)?.[1] ?? null;
+const trackerDe = (t) => t.trim().split(/\s+/)[0] ?? null;
 
 if (!filas.length) { console.error("ERROR: no encontro ningun hallazgo"); process.exitCode = 1; }
 else {
@@ -101,6 +102,12 @@ else {
   }
   const otros = new Set(filas.map(trackerDe).filter(Boolean));
   console.log(`Trackers marcados: ${[...otros].join(", ")}`);
+}
+
+const direccion = await page.locator(".revisor-detalle .answer").innerText();
+console.log("El elegido:", direccion.replace(/\s+/g, " ").trim());
+if (!/Bloque .*tracker .*string .*modulo/.test(direccion)) {
+  console.error("ESPERABA la direccion completa del hallazgo elegido"); process.exitCode = 1;
 }
 
 // El mapa tiene que estar dibujado y responder al toque.

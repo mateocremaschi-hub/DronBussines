@@ -88,44 +88,87 @@ if (!antes.hallazgos) { console.error("ERROR: el lote se volteo, no hay hallazgo
 if (antes.pendientes !== antes.hallazgos) { console.error("ESPERABA todos pendientes al empezar"); process.exitCode = 1; }
 if (antes["sin ubicar"]) { console.error("ALGUN hallazgo quedo sin ubicar"); process.exitCode = 1; }
 
-const direcciones = await page.locator(".hallazgo .answer").allInnerTexts();
-console.log("Primeras ubicaciones:");
-for (const d of direcciones.slice(0, 3)) console.log("   " + d.replace(/\s+/g, " ").trim());
+const enLista = await page.locator(".revisor-lista li").count();
+console.log(`Renglones en la lista: ${enLista}`);
+if (enLista !== antes.hallazgos) { console.error("ESPERABA un renglon por hallazgo"); process.exitCode = 1; }
+
+const primera = await page.locator(".revisor-detalle .answer").innerText();
+console.log("El elegido:", primera.replace(/\s+/g, " ").trim());
 
 // Las condiciones no se pierden cuando entra la deteccion.
 const irr = await page.getByLabel("Irradiancia (W/m²)").inputValue();
 if (irr !== "820") { console.error(`ESPERABA que la irradiancia siguiera en 820, quedo en "${irr}"`); process.exitCode = 1; }
 else console.log("Las condiciones sobrevivieron a la deteccion  ✓");
 
-// Clasificar una y confirmarla: el gesto que se repite cientos de veces.
-const primera = page.locator(".hallazgo").first();
-await primera.getByLabel("Anomalia").selectOption("Punto caliente");
-await primera.getByLabel("Clase").selectOption("3");
-await primera.getByRole("button", { name: "Confirmar" }).click();
+/*
+  El teclado, que es el motivo de esta pantalla.
+
+  Sentado en la computadora, clasificar un hallazgo son tres teclas: la letra de
+  la anomalia, el numero de la clase, y Enter para confirmar y saltar al
+  siguiente. Que eso ande es lo unico que hace distinto revisar cuatrocientos
+  modulos de revisar cuarenta.
+*/
+await page.locator("body").click({ position: { x: 2, y: 2 } });
+await page.keyboard.press("q");   // anomalia: punto caliente
+await page.keyboard.press("3");   // clase 3
+await page.waitForTimeout(200);
+const anomalia = await page.getByLabel("Anomalia").inputValue();
+console.log(`Con Q y 3: anomalia "${anomalia}"`);
+if (anomalia !== "Punto caliente") { console.error("ESPERABA que Q pusiera 'Punto caliente'"); process.exitCode = 1; }
+
+await page.keyboard.press("Enter");   // confirmar y pasar al siguiente
 await page.waitForTimeout(400);
+const segunda = await page.locator(".revisor-detalle .answer").innerText();
+console.log("Tras Enter, el elegido:", segunda.replace(/\s+/g, " ").trim());
+if (segunda === primera) { console.error("ESPERABA que Enter pasara al siguiente"); process.exitCode = 1; }
 
 const despues = await leerStats();
-console.log("Tras clasificar:", JSON.stringify(despues));
+console.log("Tras clasificar con el teclado:", JSON.stringify(despues));
 if (despues.confirmados !== 1) { console.error("ESPERABA 1 confirmado"); process.exitCode = 1; }
 if (despues.pendientes !== antes.pendientes - 1) { console.error("ESPERABA un pendiente menos"); process.exitCode = 1; }
 if (despues["clase 3"] !== 1) { console.error("ESPERABA 1 de clase 3"); process.exitCode = 1; }
+
+// Con el foco en un campo de texto las letras se escriben, no clasifican.
+const nota = page.locator("#revisor-nota");
+await nota.click();
+await nota.type("xq3");
+await page.waitForTimeout(250);
+console.log(`Escribiendo en la nota quedo "${await nota.inputValue()}"`);
+if ((await nota.inputValue()) !== "xq3") { console.error("ESPERABA que las letras se escribieran en la nota"); process.exitCode = 1; }
+const trasEscribir = await leerStats();
+if (trasEscribir.confirmados !== despues.confirmados) {
+  console.error("ESCRIBIR en la nota clasifico hallazgos: los atajos no se apagaron"); process.exitCode = 1;
+} else console.log("Los atajos se apagan adentro del campo de texto  ✓");
+await page.keyboard.press("Escape");
+
+/*
+  El mapa como navegacion: del parque al bloque.
+*/
+const mapa = page.locator(".mapa canvas");
+const cajaMapa = await mapa.boundingBox();
+await mapa.click({ position: { x: cajaMapa.width / 2, y: cajaMapa.height / 2 } });
+await page.waitForTimeout(300);
+const barra = await page.locator(".mapa-barra").innerText();
+console.log("Al entrar a un bloque:", barra.replace(/\n/g, " · "));
+if (!/Bloque /.test(barra)) { console.error("ESPERABA entrar al bloque desde el mapa"); process.exitCode = 1; }
+await page.getByRole("button", { name: /Todo el parque/ }).click();
+await page.waitForTimeout(200);
 
 /*
   El filtro: revisar cientos de hallazgos sin poder esconder los hechos no se hace.
 
   Se lo agarra por la fila que tiene el boton "Sin ubicar", que es solo de los
-  filtros. Buscar "Confirmado" suelto agarra tambien el boton de la tarjeta que
-  se acaba de confirmar — dice exactamente lo mismo.
+  filtros: "Confirmado" suelto agarra tambien otros botones que dicen lo mismo.
 */
 const filtros = page.locator(".row").filter({ has: page.getByRole("button", { name: "Sin ubicar" }) });
 await filtros.getByRole("button", { name: "Confirmado", exact: true }).click();
 await page.waitForTimeout(300);
-const visibles = await page.locator(".hallazgo").count();
+const visibles = await page.locator(".revisor-lista li").count();
 console.log(`Filtrando por confirmados quedan ${visibles} tarjetas.`);
 if (visibles !== 1) { console.error("ESPERABA que el filtro dejara solo la confirmada"); process.exitCode = 1; }
 await filtros.getByRole("button", { name: "Todos", exact: true }).click();
 await page.waitForTimeout(300);
-if (await page.locator(".hallazgo").count() !== antes.hallazgos) {
+if (await page.locator(".revisor-lista li").count() !== antes.hallazgos) {
   console.error("ESPERABA que 'Todos' devolviera la lista entera"); process.exitCode = 1;
 }
 

@@ -17,12 +17,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { compileFarm, formatAddress } from "@locator";
+import { compileFarm } from "@locator";
 import type { CompiledFarm } from "@locator";
 import { offNadirDeg } from "../photos";
 import {
-  ANOMALIAS,
-  CLASES,
   deleteInspection,
   deltaTDe,
   download,
@@ -39,6 +37,9 @@ import { UMBRALES, type Severidad, type Umbrales } from "../detect";
 import { deleteAnalysis, loadAnalysis, type StoredFarm } from "../storage";
 import { aExcel, aInformeHtml, entregables, nombreDeFoto, toCsv } from "../informe";
 import { fusionarRevision, reclasificarFindings, vueloDesdeAnalisis } from "../vuelo";
+import { bloquesDelParque, puntosDeHallazgos } from "../mapa";
+import { MapaDelParque } from "../components/MapaDelParque";
+import { Revisor } from "../components/Revisor";
 import { zip } from "../zip";
 import { Analysis } from "./Analysis";
 
@@ -82,6 +83,17 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
   const pedido = useRef<((fs: File[]) => void) | null>(null);
   const [exportando, setExportando] = useState<string | null>(null);
   const [filtro, setFiltro] = useState<"todos" | "pendiente" | "confirmado" | "sin-ubicar">("todos");
+  /*
+    Las fotos del vuelo, mientras esten a mano.
+
+    No se guardan con el vuelo —son miles de archivos— asi que solo existen
+    mientras dure la sesion en que se cargaron. La revision las usa para mostrar
+    la foto grande; sin ellas sigue funcionando todo lo demas y lo dice.
+  */
+  const [fotosDelVuelo, setFotosDelVuelo] = useState<File[]>([]);
+  /** El bloque abierto en el mapa. `null` es la escala del parque entero. */
+  const [bloqueAbierto, setBloqueAbierto] = useState<string | null>(null);
+  const [elegido, setElegido] = useState<string | null>(null);
   /**
    * Los umbrales con los que se lee la lista de ESTE vuelo.
    *
@@ -205,7 +217,14 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
   /** Pide la carpeta de fotos y resuelve cuando el usuario elige. */
   function pedirFotos(): Promise<File[]> {
     return new Promise((resolve) => {
-      pedido.current = resolve;
+      /*
+        La carpeta que se elige para exportar sirve tambien para la revision.
+
+        Si no, abrir un vuelo guardado, exportar el informe y despues querer
+        mirar una foto pide la MISMA carpeta dos veces. Es el mismo disco y los
+        mismos archivos: quedarselos cuesta nada.
+      */
+      pedido.current = (fs) => { if (fs.length) setFotosDelVuelo(fs); resolve(fs); };
       inputFotos.current?.click();
     });
   }
@@ -395,12 +414,23 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
 
   // -------------------------------------------------------------------------
   const s = summarize(current.findings);
+  /*
+    Donde cae cada hallazgo, y los bloques del parque con lo que falta en cada
+    uno. Es lo que dibuja el mapa de navegacion; se arma una vez por lista y no
+    por cuadro.
+  */
+  const puntos = puntosDeHallazgos(farm, current.findings);
+  const bloques = bloquesDelParque(farm, current.findings, puntos);
+
   const visibles = current.findings
     .filter((f) =>
       filtro === "todos" ? true
         : filtro === "sin-ubicar" ? !f.address
         : f.status === filtro,
     )
+    // Entrar a un bloque en el mapa acota la lista a ese bloque: es lo que
+    // convierte al mapa en navegacion y no en un dibujo al costado.
+    .filter((f) => !bloqueAbierto || (puntos.get(f.id)?.block ?? f.address?.block) === bloqueAbierto)
     /*
       Lo peor arriba. La lista dejo de ser el orden en que salieron las fotos
       —que no significa nada— y pasa a ser una lista de modulos: el que tiene
@@ -492,6 +522,7 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
         farm={farm}
         umbrales={umbrales}
         onDeteccion={onDeteccion}
+        onFotos={setFotosDelVuelo}
       />
 
       {/* --- resumen --- */}
@@ -602,154 +633,28 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
         </section>
       )}
 
-      {/* --- hallazgos --- */}
-      {visibles.map((f) => (
-        <section className={`card hallazgo ${f.status}`} key={f.id}>
-          <div className="hallazgo-top">
-            {f.fix?.thumb && <img src={f.fix.thumb} alt={f.fileName} />}
-            <div className="hallazgo-id">
-              <p className="eyebrow">{f.fileName}</p>
-              <p className="answer">
-                {f.address ? formatAddress(f.address) : "Sin ubicar"}
-              </p>
-              {/*
-                Lo que midio el motor, al lado de la direccion.
-
-                Es la mitad que antes estaba en la otra pantalla. Sin el numero
-                y sin contra que se comparo, el que revisa esta clasificando a
-                ojo: "modulo 19" no dice si hay que ir hoy o el mes que viene.
-              */}
-              {f.medicion && (
-                <p className="mono small">
-                  {f.medicion.celsius.toFixed(1)} °C ·{" "}
-                  <strong>{f.medicion.deltaT >= 0 ? "+" : ""}{f.medicion.deltaT.toFixed(1)} °C</strong>{" "}
-                  contra {f.medicion.vecinos}{" "}
-                  {f.medicion.ambito === "string"
-                    ? "vecinos de su mismo string"
-                    : `vecinos (por ${f.medicion.ambito} — vecindario flojo)`}
-                  {" · "}{f.medicion.peor}
-                  {f.medicion.deltaInterno != null && (
-                    <>
-                      {" · punto caliente "}
-                      <strong>+{f.medicion.deltaInterno.toFixed(1)} °C</strong> sobre el propio modulo
-                      {f.medicion.origen === "celda" && " (es una celda, no el modulo entero)"}
-                    </>
-                  )}
-                </p>
-              )}
-              <p className="muted small">
-                {f.address
-                  ? `${(f.address.confidence * 100).toFixed(0)} % · ${f.address.offAxisM.toFixed(1)} m del eje`
-                  : "No hay filas de trackers cerca de esa coordenada"}
-                {f.fix?.accuracyM ? ` · precision ±${f.fix.accuracyM} m` : ""}
-                {f.fix?.takenAt ? ` · ${new Date(f.fix.takenAt).toLocaleString("es-AR")}` : ""}
-              </p>
-              {f.fix?.tiltOffsetM != null && f.fix.tiltOffsetM > 0.5 && (
-                <p className="note bad small">
-                  La camara no estaba a plomo: {offNadirDeg(f.fix.gimbalPitchDeg)!.toFixed(0)}° de
-                  desvio a {f.fix.relativeAltitudeM!.toFixed(0)} m de altura. Lo que quedo en el
-                  centro del cuadro esta a <strong>{f.fix.tiltOffsetM.toFixed(1)} m</strong> de donde
-                  estaba el dron — {(f.fix.tiltOffsetM / 1.15).toFixed(0)} modulos. Ya lo sume al
-                  margen, pero para que la coordenada sea la del panel hay que disparar con el gimbal
-                  en -90°.
-                </p>
-              )}
-            </div>
-          </div>
-
-          {f.warnings.length > 0 && (
-            <div className="warnbox">
-              {f.warnings.map((w, i) => (<p key={i}>{w.message}</p>))}
-            </div>
-          )}
-
-          {f.candidates.length > 1 && f.address && (
-            <>
-              <h4>Corregir el modulo mirando la foto</h4>
-              <div className="row chips">
-                {[
-                  ...new Set(
-                    f.candidates
-                      // Solo el string del mejor candidato: mezclar dos strings
-                      // hace que el mismo numero signifique dos modulos distintos.
-                      .filter((c) => c.rowId === f.address!.rowId && c.stringNumber === f.address!.stringNumber)
-                      .map((c) => c.module),
-                  ),
-                ]
-                  // En orden numerico, que es como los va a mirar el tecnico.
-                  .sort((a, b) => a - b)
-                  .map((m) => (
-                  <button
-                    key={m}
-                    className={f.moduleCorregido === m ? "" : "ghost"}
-                    onClick={() => patch(f.id, { moduleCorregido: f.moduleCorregido === m ? undefined : m })}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-
-          <div className="grid-2">
-            <div className="field">
-              <label htmlFor={`${f.id}-anomalia`}>Anomalia</label>
-              <select id={`${f.id}-anomalia`} value={f.anomaly ?? ""} onChange={(e) => patch(f.id, { anomaly: e.target.value || undefined })}>
-                <option value="">— sin clasificar —</option>
-                {ANOMALIAS.map((a) => (<option key={a} value={a}>{a}</option>))}
-              </select>
-            </div>
-            <div className="field">
-              <label htmlFor={`${f.id}-clase`}>Clase</label>
-              <select
-                id={`${f.id}-clase`}
-                value={f.klass ?? ""}
-                onChange={(e) => patch(f.id, { klass: (Number(e.target.value) || undefined) as 1 | 2 | 3 | undefined })}
-              >
-                <option value="">— sin clasificar —</option>
-                {CLASES.map((c) => (<option key={c.id} value={c.id}>{c.label}</option>))}
-              </select>
-              {f.klass && <span className="help">{CLASES.find((c) => c.id === f.klass)?.hint}</span>}
-            </div>
-            <div className="field">
-              <label htmlFor={`${f.id}-dt`}>ΔT (°C)</label>
-              <input
-                id={`${f.id}-dt`}
-                type="number" step="0.1" value={f.deltaT ?? ""}
-                // Un ΔT de 0,0 °C es un dato: el modulo esta igual que sus
-                // vecinos. Con `|| undefined` se guardaba como "no medido".
-                onChange={(e) => patch(f.id, { deltaT: numeroOVacio(e.target.value) })}
-              />
-              {f.medicion && (
-                <span className="help">
-                  Solo si corregis el medido. Vacio se entrega el del motor
-                  ({f.medicion.deltaT >= 0 ? "+" : ""}{f.medicion.deltaT.toFixed(1)} °C), y el
-                  medido queda igual en el informe: no se pisa.
-                </span>
-              )}
-            </div>
-            <div className="field">
-              <label htmlFor={`${f.id}-nota`}>Nota</label>
-              <input id={`${f.id}-nota`} value={f.note ?? ""} onChange={(e) => patch(f.id, { note: e.target.value || undefined })} />
-            </div>
-          </div>
-
-          <div className="actions">
-            <button
-              className={f.status === "confirmado" ? "" : "ghost"}
-              onClick={() => patch(f.id, { status: f.status === "confirmado" ? "pendiente" : "confirmado" })}
-            >
-              {f.status === "confirmado" ? "Confirmado" : "Confirmar"}
-            </button>
-            <button
-              className="ghost"
-              onClick={() => patch(f.id, { status: f.status === "descartado" ? "pendiente" : "descartado" })}
-            >
-              {f.status === "descartado" ? "Descartado" : "Descartar"}
-            </button>
-          </div>
+      {/* --- el mapa como navegacion y la revision al lado --- */}
+      {current.findings.length > 0 && (
+        <section className="card">
+          <h2>Revisar</h2>
+          <MapaDelParque
+            bloques={bloques}
+            puntos={puntos}
+            findings={current.findings}
+            abierto={bloqueAbierto}
+            onAbrir={setBloqueAbierto}
+            seleccion={elegido}
+            onElegir={setElegido}
+          />
+          <Revisor
+            findings={visibles}
+            archivos={fotosDelVuelo}
+            seleccion={elegido}
+            onSeleccion={setElegido}
+            onPatch={patch}
+          />
         </section>
-      ))}
+      )}
     </div>
   );
 }

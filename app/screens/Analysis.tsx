@@ -49,9 +49,18 @@ interface Props {
    * nueva. Quien la recibe es el duenio del vuelo: aca no se guarda nada.
    */
   onDeteccion: (d: { findings: Finding[]; cobertura: Cobertura }) => void;
+  /**
+   * Los archivos elegidos, para que la revision pueda mostrar la foto grande.
+   *
+   * Las fotos no se guardan con el vuelo —son miles de JPEG— asi que las de la
+   * carpeta que se acaba de elegir son las unicas que hay a mano. Se avisan
+   * hacia arriba en vez de quedarse aca adentro: la revision esta al lado y sin
+   * esto tendria que pedir la misma carpeta una segunda vez.
+   */
+  onFotos?: (archivos: File[]) => void;
 }
 
-export function Analysis({ stored, farm, umbrales, onDeteccion }: Props) {
+export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props) {
   const [archivos, setArchivos] = useState<File[]>([]);
   const [resultado, setResultado] = useState<ResultadoDeVuelo | null>(null);
   const [progreso, setProgreso] = useState<{ hecho: number; total: number } | null>(null);
@@ -171,6 +180,7 @@ export function Analysis({ stored, farm, umbrales, onDeteccion }: Props) {
             onChange={(e) => {
               const f = [...(e.target.files ?? [])];
               setArchivos(f);
+              onFotos?.(f);
               if (f.length) void analizar(f, ajuste);
             }}
           />
@@ -331,7 +341,7 @@ export function Analysis({ stored, farm, umbrales, onDeteccion }: Props) {
                   modulo desconectado— y eso es lo que se escribe abajo, en la
                   revision, que es lo que se entrega.
                 */}
-                <FotoDelHallazgo hallazgo={elegido} archivos={archivos} />
+                <FotoDelHallazgo fileName={elegido.fileName} caja={elegido.caja} archivos={archivos} />
               </div>
             )}
 

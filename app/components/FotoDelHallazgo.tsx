@@ -22,15 +22,36 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import type { Hallazgo } from "../detect";
+import type { Caja } from "../detect";
 
+/*
+  Toma el nombre del archivo y la caja sueltos, no un `Hallazgo`.
+
+  Los dos lugares que muestran la foto tienen la misma informacion guardada en
+  tipos distintos: el paso de deteccion tiene un `Hallazgo` y la revision tiene
+  un `Finding` con su `medicion`. Pidiendo las dos cosas que de verdad usa
+  —el nombre y el recuadro— sirve a los dos sin que ninguno tenga que fabricar
+  un objeto del otro tipo para poder llamarla.
+*/
 interface Props {
-  hallazgo: Hallazgo;
+  fileName: string;
+  /** El recuadro medido, en pixeles de la imagen termica. */
+  caja?: Caja;
   /** Los archivos del vuelo, para encontrar el JPEG por nombre. */
   archivos: File[];
+  /**
+   * Si va el parrafo que explica como se lee un patron termico.
+   *
+   * En el paso de deteccion se mira UNA foto y el parrafo ensena a leerla. En
+   * la revision se miran cuatrocientas seguidas: las mismas cuatro lineas
+   * debajo de cada una empujan los botones fuera de la pantalla y ya no ensenan
+   * nada. Ahi el mismo consejo vive en el `title` de cada boton de anomalia,
+   * que es donde se lo necesita.
+   */
+  explicar?: boolean;
 }
 
-export function FotoDelHallazgo({ hallazgo, archivos }: Props) {
+export function FotoDelHallazgo({ fileName, caja, archivos, explicar = true }: Props) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dim, setDim] = useState<{ w: number; h: number } | null>(null);
@@ -39,9 +60,9 @@ export function FotoDelHallazgo({ hallazgo, archivos }: Props) {
   useEffect(() => {
     setError(null);
     setDim(null);
-    const file = archivos.find((f) => f.name === hallazgo.fileName);
+    const file = archivos.find((f) => f.name === fileName);
     if (!file) {
-      setError(`No tengo el archivo ${hallazgo.fileName} a mano.`);
+      setError(`No tengo el archivo ${fileName} a mano.`);
       setUrl(null);
       return;
     }
@@ -53,9 +74,7 @@ export function FotoDelHallazgo({ hallazgo, archivos }: Props) {
     const u = URL.createObjectURL(file);
     setUrl(u);
     return () => URL.revokeObjectURL(u);
-  }, [hallazgo.fileName, archivos]);
-
-  const caja = hallazgo.caja;
+  }, [fileName, archivos]);
 
   return (
     <div className="foto-hallazgo">
@@ -65,7 +84,7 @@ export function FotoDelHallazgo({ hallazgo, archivos }: Props) {
           <img
             ref={imgRef}
             src={url}
-            alt={hallazgo.fileName}
+            alt={fileName}
             onLoad={(e) =>
               setDim({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })
             }
@@ -100,9 +119,13 @@ export function FotoDelHallazgo({ hallazgo, archivos }: Props) {
         {caja
           ? "El recuadro es la misma zona que se midio: el 60 % central del modulo, sin el marco de aluminio."
           : "Este hallazgo no guardo la posicion del modulo en la foto, asi que no se puede marcar."}
-        {" "}Mira el <strong>patron</strong>, no solo el color: una celda puntual es un punto
-        caliente; un tercio de la placa parejo es un diodo de bypass; el modulo entero tibio es
-        que esta desconectado.
+        {explicar && (
+          <>
+            {" "}Mira el <strong>patron</strong>, no solo el color: una celda puntual es un punto
+            caliente; un tercio de la placa parejo es un diodo de bypass; el modulo entero tibio es
+            que esta desconectado.
+          </>
+        )}
       </p>
     </div>
   );
