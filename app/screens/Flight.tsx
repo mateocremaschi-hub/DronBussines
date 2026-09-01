@@ -35,10 +35,22 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   const [o, setO] = useState(OPCIONES_POR_DEFECTO);
   /** Lo que se esta tipeando, mientras no sea todavia un numero valido. */
   const [crudos, setCrudos] = useState<Partial<Record<keyof typeof OPCIONES_POR_DEFECTO, string>>>({});
-  const [porBloque, setPorBloque] = useState(true);
   const [baterias, setBaterias] = useState(4);
-  const [bloqueAbierto, setBloqueAbierto] = useState<string | null>(null);
   const [agrupar, setAgrupar] = useState(true);
+  /**
+   * Los bloques marcados para este vuelo. Varios, los que uno quiera.
+   *
+   * Antes esto era UN bloque: `bloqueAbierto`, un string o nada, elegido con un
+   * radio. Y como el radio se ponia sobre la lista de salidas, lo unico que se
+   * podia elegir era un bloque suelto o el paquete entero de los que comparten
+   * pasada — un paquete que arma la app, no el que uno mira en el plano. El que
+   * planifica ya sabe que va a mandar tres bloques que estan pegados y quiere
+   * armar ESE vuelo; con un radio no tenia como decirlo.
+   *
+   * Arranca vacio a proposito: no hay un bloque "por defecto" que uno quiera
+   * volar, y con cero marcados no hay nada que exportar.
+   */
+  const [elegidos, setElegidos] = useState<ReadonlySet<string>>(new Set());
   /**
    * La aeronave sale de la camara elegida, no de una segunda lista.
    *
@@ -113,21 +125,74 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     [stored.rows, stored.profile, opts.camera, o],
   );
 
-  // Las salidas que se van a volar: agrupadas o bloque por bloque.
-  const salidas = porBloque
-    ? agrupar
-      ? agrupado.grupos.map((g) => ({ clave: g.bloques.join("+"), nombre: g.bloques.join(", "), filas: g.filas, mission: g.mission, baterias: g.baterias }))
-      : plan.bloques.map((b) => ({ clave: b.block, nombre: b.block, filas: b.filas, mission: b.mission, baterias: b.baterias }))
-    : [];
-  const total = porBloque ? (agrupar ? agrupado : plan) : null;
+  // Como quedaria organizado el parque entero, para las cuentas de arriba.
+  const organizacion = agrupar ? agrupado : plan;
+  const vuelos = agrupar ? agrupado.grupos.length : plan.bloques.length;
 
-  const mission = porBloque
-    ? salidas.find((s) => s.clave === bloqueAbierto)?.mission ?? null
-    : entero;
-  const etiqueta =
-    porBloque && bloqueAbierto
-      ? `bloque${bloqueAbierto.includes("+") ? "s" : ""} ${bloqueAbierto.replace(/\+/g, ", ")}`
-      : "todo el parque";
+  /**
+   * Con quien comparte pasada cada bloque, segun el agrupamiento automatico.
+   *
+   * El agrupamiento deja de ser una jaula y pasa a ser un CONSEJO: se muestra
+   * al lado de cada bloque y hay un boton para sumar los companeros de una. El
+   * dato sigue valiendo —dos bloques que ocupan la misma franja se vuelan dos
+   * veces si van por separado— pero ahora avisa en vez de decidir.
+   */
+  const companeros = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const g of agrupado.grupos) {
+      for (const b of g.bloques) m.set(b, g.bloques.filter((x) => x !== b));
+    }
+    return m;
+  }, [agrupado]);
+
+  const marcados = plan.bloques.filter((b) => elegidos.has(b.block));
+  const filasElegidas = marcados.reduce((n, b) => n + b.filas, 0);
+  const todosMarcados = plan.bloques.length > 0 && marcados.length === plan.bloques.length;
+
+  /**
+   * Los companeros de pasada de lo marcado que todavia no estan marcados.
+   *
+   * Sin el Set, un bloque que es companero de dos marcados aparecia dos veces y
+   * el boton ofrecia "sumar 3" cuando eran 2.
+   */
+  const sueltos = [...new Set(
+    marcados.flatMap((b) => companeros.get(b.block) ?? []).filter((b) => !elegidos.has(b)),
+  )];
+
+  const marcar = (block: string, si: boolean) =>
+    setElegidos((prev) => {
+      const s2 = new Set(prev);
+      if (si) s2.add(block); else s2.delete(block);
+      return s2;
+    });
+
+  /**
+   * La mision del conjunto marcado, planificada de una.
+   *
+   * No es la suma de las misiones de cada bloque: se planifica sobre TODAS las
+   * filas juntas, que es lo unico que evita repetir una pasada sobre dos
+   * bloques que se pisan. Y con el parque entero marcado da exactamente el
+   * mismo plan que daba el viejo modo "todo el parque", asi que ese modo dejo
+   * de tener sentido como casilla aparte: es el boton "seleccionar todo".
+   */
+  const filas = useMemo(
+    () => stored.rows.filter((r) => elegidos.has(r.block)),
+    [stored.rows, elegidos],
+  );
+  const mission = useMemo(
+    () => (filas.length ? planMission(filas, stored.profile, opts) : null),
+    [filas, stored.profile, opts.camera, o],
+  );
+
+  const etiqueta = todosMarcados
+    ? "todo el parque"
+    : marcados.length === 0
+      ? "nada elegido todavia"
+      : `bloque${marcados.length > 1 ? "s" : ""} ${marcados.map((b) => b.block).join(", ")}`;
+  // Para el nombre del archivo: sin comas ni espacios, que van a un disco.
+  const slug = todosMarcados
+    ? "todo"
+    : marcados.map((b) => b.block).join("+").replace(/[^\w+-]/g, "") || "sin-bloques";
 
   /**
    * Que cuesta cada configuracion, en horas.
@@ -158,7 +223,9 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         gsdCm: m?.stats.gsdCm ?? 0,
       };
     });
-  }, [stored.rows, stored.profile, opts.camera, o, baterias]);
+    // `agrupar` estaba usado adentro y faltaba aca: destildar la casilla no
+    // recalculaba la tabla, asi que seguia mostrando las horas del otro modo.
+  }, [stored.rows, stored.profile, opts.camera, o, baterias, agrupar]);
 
   if (!farm) {
     return (
@@ -436,19 +503,20 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         </p>
 
         <div className="stats">
-          <div><b>{salidas.length || plan.bloques.length}</b><span>vuelos</span></div>
-          <div><b>{((total?.totalMinutos ?? plan.totalMinutos) / 60).toFixed(1)} h</b><span>de vuelo en total</span></div>
-          <div><b>{total?.totalBaterias ?? plan.totalBaterias}</b><span>baterias</span></div>
-          <div><b>{total?.salidas ?? plan.salidas}</b><span>salidas de campo</span></div>
+          <div><b>{vuelos}</b><span>vuelos</span></div>
+          <div><b>{(organizacion.totalMinutos / 60).toFixed(1)} h</b><span>de vuelo en total</span></div>
+          <div><b>{organizacion.totalBaterias}</b><span>baterias</span></div>
+          <div><b>{organizacion.salidas}</b><span>salidas de campo</span></div>
         </div>
 
         {agrupado.bloquesAgrupados > 0 && (
           <p className={agrupar ? "note good" : "note bad"}>
             {agrupar ? (
               <>
-                {agrupado.bloquesAgrupados} bloques comparten pasada con algun vecino y se vuelan
-                juntos. Eso ahorra <strong>{(agrupado.ahorroMinutos / 60).toFixed(1)} horas</strong>{" "}
-                contra volarlos por separado.
+                {agrupado.bloquesAgrupados} bloques comparten pasada con algun vecino. Mandandolos
+                en el mismo vuelo se ahorran{" "}
+                <strong>{(agrupado.ahorroMinutos / 60).toFixed(1)} horas</strong> contra volarlos
+                por separado. En la tabla de abajo se ve con quien comparte cada uno.
               </>
             ) : (
               <>
@@ -476,68 +544,19 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
 
         <label className="check">
           <input
-            type="checkbox" checked={porBloque}
-            onChange={(e) => { setPorBloque(e.target.checked); setBloqueAbierto(null); }}
+            type="checkbox" checked={agrupar}
+            onChange={(e) => setAgrupar(e.target.checked)}
           />
           <span>
-            Planificar bloque por bloque
+            Contar el parque juntando los bloques que comparten pasada
             <em>
-              Ademas de hacerlo manejable, sale mas corto: volando el parque entero se cruza el
-              campo vacio de punta a punta en cada pasada.
+              Los bloques de una planta no son rectangulos prolijos: se escalonan y se meten unos
+              entre otros. Dos que ocupan la misma franja repiten las mismas pasadas si se vuelan
+              por separado. Esta casilla cambia las cuentas de arriba; lo que vas a volar de verdad
+              lo elegis vos en la tabla de abajo.
             </em>
           </span>
         </label>
-
-        {porBloque && (
-          <label className="check">
-            <input
-              type="checkbox" checked={agrupar}
-              onChange={(e) => { setAgrupar(e.target.checked); setBloqueAbierto(null); }}
-            />
-            <span>
-              Juntar los bloques que comparten pasada
-              <em>
-                Los bloques de una planta no son rectangulos prolijos: se escalonan y se meten unos
-                entre otros. Dos que ocupan la misma franja repiten las mismas pasadas si se vuelan
-                por separado. Volarlos juntos no mezcla nada — cada foto se ubica sola contra la
-                geometria, asi que el informe sigue saliendo por bloque.
-              </em>
-            </span>
-          </label>
-        )}
-
-        {porBloque && salidas.length > 0 && (
-          <div className="tablewrap">
-            <table>
-              <thead>
-                <tr><th></th><th>{agrupar ? "Bloques" : "Bloque"}</th><th>Filas</th><th>Pasadas</th><th>Fotos</th><th>Minutos</th><th>Baterias</th></tr>
-              </thead>
-              <tbody>
-                {salidas.map((b) => (
-                  <tr key={b.clave} className={bloqueAbierto === b.clave ? "top" : ""}>
-                    <td>
-                      <input
-                        type="radio" name="bloque" checked={bloqueAbierto === b.clave}
-                        onChange={() => setBloqueAbierto(b.clave)}
-                        aria-label={`Bloque ${b.nombre}`}
-                      />
-                    </td>
-                    <td><code>{b.nombre}</code></td>
-                    <td>{b.filas}</td>
-                    <td>{b.mission.stats.lineas}</td>
-                    <td>{b.mission.stats.fotos}</td>
-                    <td>{b.mission.stats.minutos.toFixed(0)}</td>
-                    <td>{b.baterias}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {porBloque && !bloqueAbierto && (
-          <p className="note">Elegi una fila de la tabla para ver su ruta y exportarla.</p>
-        )}
 
         <h3>Que cuesta cada configuracion</h3>
         <p className="help">
@@ -581,10 +600,109 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         )}
       </section>
 
-      {s && mission && (
-        <>
-          <section className="card">
-            <h2>Como queda — {etiqueta}</h2>
+      {/*
+        Que bloques entran en ESTE vuelo.
+        =====================================================================
+        Esta tabla tenia un radio: un bloque, o el paquete de los que comparten
+        pasada, y nada mas. El que planifica mira el plano, ve tres bloques
+        pegados y quiere mandar esos tres — no el bloque solo ni el paquete que
+        arma la app. Ahora se marcan los que uno quiera y la mision se arma
+        sobre el conjunto.
+
+        Los numeros de cada renglon son los de volar ESE bloque solo. La suma
+        de los renglones NO es el vuelo del conjunto y no se muestra como si lo
+        fuera: dos bloques que se pisan comparten pasadas, asi que el conjunto
+        sale mas corto que la suma. El numero del conjunto es el de la tarjeta
+        de abajo, que sale de planificar todas las filas juntas.
+      */}
+      <section className="card">
+        <h2>Que bloques vas a volar</h2>
+        <p className="help">
+          Marcá los que quieras. Si elegis bloques que no estan pegados, el vuelo no cruza el campo
+          del medio: las pasadas se parten en tramos y el dron termina un bloque antes de arrancar
+          el otro.
+        </p>
+
+        <div className="actions">
+          <button
+            className="ghost"
+            disabled={todosMarcados}
+            onClick={() => setElegidos(new Set(plan.bloques.map((b) => b.block)))}
+          >
+            Seleccionar todo
+          </button>
+          <button className="ghost" disabled={marcados.length === 0} onClick={() => setElegidos(new Set())}>
+            Limpiar
+          </button>
+          <button
+            className="ghost"
+            disabled={sueltos.length === 0}
+            onClick={() => setElegidos((prev) => new Set([...prev, ...sueltos]))}
+          >
+            Sumar los que comparten pasada ({sueltos.length})
+          </button>
+        </div>
+
+        <div className="stats">
+          <div><b>{marcados.length}</b><span>bloques marcados</span></div>
+          <div><b>{filasElegidas}</b><span>filas</span></div>
+          <div><b>{mission ? mission.stats.lineas : "—"}</b><span>pasadas del vuelo</span></div>
+          <div><b>{mission ? mission.stats.minutos.toFixed(0) : "—"}</b><span>minutos</span></div>
+        </div>
+
+        {sueltos.length > 0 && (
+          <p className="note">
+            Lo que marcaste comparte pasada con {sueltos.join(", ")}. Volandolos aparte
+            el dron repite esas pasadas dos veces.
+          </p>
+        )}
+
+        <div className="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th></th><th>Bloque</th><th>Filas</th><th>Pasadas</th><th>Fotos</th>
+                <th>Minutos</th><th>Baterias</th><th>Comparte pasada con</th>
+              </tr>
+            </thead>
+            <tbody>
+              {plan.bloques.map((b) => (
+                <tr key={b.block} className={elegidos.has(b.block) ? "top" : ""}>
+                  <td>
+                    <input
+                      type="checkbox" checked={elegidos.has(b.block)}
+                      onChange={(e) => marcar(b.block, e.target.checked)}
+                      aria-label={`Bloque ${b.block}`}
+                    />
+                  </td>
+                  <td><code>{b.block}</code></td>
+                  <td>{b.filas}</td>
+                  <td>{b.mission.stats.lineas}</td>
+                  <td>{b.mission.stats.fotos}</td>
+                  <td>{b.mission.stats.minutos.toFixed(0)}</td>
+                  <td>{b.baterias}</td>
+                  <td>{(companeros.get(b.block) ?? []).join(", ") || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="help">
+          Cada renglon es lo que cuesta volar ese bloque SOLO. El conjunto sale mas corto que la
+          suma cuando los bloques se pisan, porque comparten pasadas: el numero que vale es el de
+          la tarjeta de abajo.
+        </p>
+      </section>
+
+      <section className="card">
+        <h2>Como queda — {etiqueta}</h2>
+        {!(s && mission) ? (
+          <p className="note">
+            Todavia no marcaste ningun bloque. Elegi al menos uno arriba para ver la ruta, los
+            minutos y poder exportarla.
+          </p>
+        ) : (
+          <>
             <div className="stats">
               <div><b>{s.lineas}</b><span>pasadas</span></div>
               <div><b>{s.fotos}</b><span>fotos</span></div>
@@ -610,78 +728,92 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
                 de ancho, y el vuelo entra en {Math.max(1, Math.ceil(s.minutos / MINUTOS_POR_BATERIA))} bateria(s).
               </p>
             )}
-          </section>
+          </>
+        )}
+      </section>
 
-          <section className="card">
-            <h2>La ruta sobre el parque</h2>
-            <p className="help">
-              La franja clara es lo que ve la camara en cada pasada. Si en algun lado se ve el
-              parque asomando fuera de las franjas, ahi va a faltar foto.
-            </p>
-            <GeometryPlot farm={farm} mission={mission} height={480} />
-            <h3>Llevarlo al dron</h3>
-            {perfil ? (
-              <p className="help">
-                Se exporta para <strong>{perfil.nombre}</strong>, que es el dron de la cámara que
-                elegiste arriba. No se elige aparte: si la huella con la que se planificó y el dron
-                que vuela no son el mismo, las líneas quedan separadas para una cámara y el archivo
-                sale para otra.
-                {!perfil.confirmado && ` ${perfil.nota ?? ""}`}
-              </p>
-            ) : (
-              <p className="alert">
-                {CAMARAS[camIndex]!.name} no va en ninguno de los drones que esta app sabe escribir
-                en WPML, así que no se puede exportar el KMZ. El plan es correcto: bajá el KML o los
-                waypoints y armá la misión en Pilot 2 a mano, con esta separación entre líneas.
-              </p>
-            )}
+      <section className="card">
+        <h2>La ruta sobre el parque</h2>
+        <p className="help">
+          La franja clara es lo que ve la camara en cada pasada. Si en algun lado se ve el
+          parque asomando fuera de las franjas, ahi va a faltar foto.
+        </p>
+        <GeometryPlot farm={farm} mission={mission} height={480} />
+        <h3>Llevarlo al dron</h3>
+        {perfil ? (
+          <p className="help">
+            Se exporta para <strong>{perfil.nombre}</strong>, que es el dron de la cámara que
+            elegiste arriba. No se elige aparte: si la huella con la que se planificó y el dron
+            que vuela no son el mismo, las líneas quedan separadas para una cámara y el archivo
+            sale para otra.
+            {!perfil.confirmado && ` ${perfil.nota ?? ""}`}
+          </p>
+        ) : (
+          <p className="alert">
+            {CAMARAS[camIndex]!.name} no va en ninguno de los drones que esta app sabe escribir
+            en WPML, así que no se puede exportar el KMZ. El plan es correcto: bajá el KML o los
+            waypoints y armá la misión en Pilot 2 a mano, con esta separación entre líneas.
+          </p>
+        )}
 
-            <div className="actions">
-              <button
-                disabled={!perfil}
-                onClick={() => {
-                  if (!perfil) return;
-                  const bytes = toKmz(mission, opts, {
-                    nombre: `${stored.profile.name} — ${etiqueta}`,
-                    perfil,
-                    fecha: new Date(),
-                  });
-                  descargarBytes(
-                    `${stored.profile.id}-${bloqueAbierto ?? "todo"}.kmz`,
-                    bytes,
-                    "application/vnd.google-earth.kmz",
-                  );
-                }}
-              >
-                Exportar KMZ para DJI Pilot 2
-              </button>
-              <button className="ghost" onClick={() => download(`${stored.profile.id}-${bloqueAbierto ?? "todo"}-vuelo.kml`, toKml(mission, `${stored.profile.name} — ${etiqueta}`), "application/vnd.google-earth.kml+xml")}>
-                KML para Google Earth
-              </button>
-              <button className="ghost" onClick={() => download(`${stored.profile.id}-${bloqueAbierto ?? "todo"}-waypoints.csv`, toWaypointCsv(mission, opts), "text/csv")}>
-                Waypoints CSV
-              </button>
-            </div>
+        {/*
+          Con cero bloques marcados no hay mision, y los botones quedan apagados
+          en vez de desaparecer. Antes la tarjeta entera no se dibujaba hasta
+          elegir algo: quedaba una pantalla que terminaba en la nada y no decia
+          que faltaba. Apagados se ve que el paso existe y que falta marcar.
+        */}
+        <div className="actions">
+          <button
+            disabled={!perfil || !mission}
+            onClick={() => {
+              if (!perfil || !mission) return;
+              const bytes = toKmz(mission, opts, {
+                nombre: `${stored.profile.name} — ${etiqueta}`,
+                perfil,
+                fecha: new Date(),
+              });
+              descargarBytes(
+                `${stored.profile.id}-${slug}.kmz`,
+                bytes,
+                "application/vnd.google-earth.kmz",
+              );
+            }}
+          >
+            Exportar KMZ para DJI Pilot 2
+          </button>
+          <button
+            className="ghost" disabled={!mission}
+            onClick={() => mission && download(`${stored.profile.id}-${slug}-vuelo.kml`, toKml(mission, `${stored.profile.name} — ${etiqueta}`), "application/vnd.google-earth.kml+xml")}
+          >
+            KML para Google Earth
+          </button>
+          <button
+            className="ghost" disabled={!mission}
+            onClick={() => mission && download(`${stored.profile.id}-${slug}-waypoints.csv`, toWaypointCsv(mission, opts), "text/csv")}
+          >
+            Waypoints CSV
+          </button>
+        </div>
 
-            <div className="warnbox">
-              <h3>Antes de copiarlo al controlador</h3>
-              <ul>
-                {(perfil
-                  ? avisosDeKmz(mission, opts, { nombre: etiqueta, perfil, fecha: new Date() })
-                  : []
-                ).map((a, i) => (<li key={i}>{a}</li>))}
-              </ul>
-            </div>
+        {mission && (
+          <div className="warnbox">
+            <h3>Antes de copiarlo al controlador</h3>
+            <ul>
+              {(perfil
+                ? avisosDeKmz(mission, opts, { nombre: etiqueta, perfil, fecha: new Date() })
+                : []
+              ).map((a, i) => (<li key={i}>{a}</li>))}
+            </ul>
+          </div>
+        )}
 
-            <p className="help">
-              El KMZ va derecho a Pilot 2: copialo a la tarjeta del controlador, en{" "}
-              <code>DJI/wpmz</code>, y aparece en la lista de misiones. El KML es para mirarlo en
-              Google Earth antes de ir. Los disparos salen con el gimbal en −90°, que es lo unico
-              que sirve para mapear: inclinado, la coordenada de la foto deja de ser la del panel.
-            </p>
-          </section>
-        </>
-      )}
+        <p className="help">
+          El KMZ va derecho a Pilot 2: copialo a la tarjeta del controlador, en{" "}
+          <code>DJI/wpmz</code>, y aparece en la lista de misiones. El KML es para mirarlo en
+          Google Earth antes de ir. Los disparos salen con el gimbal en −90°, que es lo unico
+          que sirve para mapear: inclinado, la coordenada de la foto deja de ser la del panel.
+        </p>
+      </section>
     </div>
   );
 }

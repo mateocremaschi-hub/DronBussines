@@ -103,22 +103,7 @@ export function compileFarm(
   const moduleGapM = profile.module.gapMm / 1000;
   const stringGapM = (profile.topology.stringGapMm ?? 0) / 1000;
 
-  /**
-   * Los huecos grandes de la fila, ya resueltos a una sola lista.
-   *
-   * Si el perfil los enumera, mandan. Si no, se expanden del par
-   * (stringsPerRow, stringGapMm), que es como se declara un parque normal. De
-   * aca para abajo el resto del compilador no vuelve a mirar `stringGapMm`:
-   * hay una sola forma de la verdad y las cuentas se escriben una vez.
-   */
-  const huecosM: Hueco[] = profile.topology.gaps?.length
-    ? profile.topology.gaps.map((g) => ({ afterModule: g.afterModule, m: g.mm / 1000 }))
-    : huecosDeStrings(modulesPerString, stringsPerRow, stringGapM);
-  const totalHuecosM = huecosM.reduce((s2, h) => s2 + h.m, 0);
-  const nominalPitchM = (profile.module.widthMm + profile.module.gapMm) / 1000;
   const declaredPitch = profile.module.pitchMm;
-
-  const offsetM = profile.geometry.endpointOffsetMm / 1000;
   const offsetMode = profile.geometry.endpointOffsetMode ?? "both";
 
   // Centrar necesita saber cuanto miden los modulos, asi que no se puede
@@ -144,6 +129,13 @@ export function compileFarm(
     const spr = v?.stringsPerRow ?? stringsPerRow;
     const anchoM = (v?.moduleWidthMm ?? profile.module.widthMm) / 1000;
     const bahiaM = (v?.stringGapMm ?? profile.topology.stringGapMm ?? 0) / 1000;
+    /*
+      Los huecos grandes, resueltos a una sola lista. Si el perfil (o la
+      variante) los enumera, mandan; si no, se expanden del par (stringsPerRow,
+      stringGapMm), que es como se declara un parque normal. De aca para abajo
+      nadie vuelve a mirar `stringGapMm`: hay una sola forma de la verdad y la
+      cuenta se escribe una vez.
+    */
     const gaps = v?.gaps ?? (v ? undefined : profile.topology.gaps);
     const hs: Hueco[] = gaps?.length
       ? gaps.map((g) => ({ afterModule: g.afterModule, m: g.mm / 1000 }))
@@ -367,7 +359,17 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
 
   // --- estrategia de origen (se resuelve una sola vez) ----------------------
   const originRes = resolveOriginEnd(
-    { row, startIsNorth: a.y > b.y, startIsEast: a.x > b.x },
+    {
+      row,
+      startIsNorth: a.y > b.y,
+      startIsEast: a.x > b.x,
+      // Cuanto corre la fila en cada eje, para saber si "la punta norte" esta
+      // bien definida. Ver `fixed-end` en strategies/origin.ts.
+      alineacion: {
+        norteSur: Math.abs(dy) / lengthM,
+        esteOeste: Math.abs(dx) / lengthM,
+      },
+    },
     ctx.profile.addressing,
   );
   const strategyWarnings = [...originRes.warnings];
@@ -380,6 +382,37 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
     strategyWarnings.push(...res.warnings);
   }
 
+  // --- paso declarado -------------------------------------------------------
+  /*
+    El paso se resuelve ANTES de los offsets porque el centrado lo necesita.
+
+    Centrar es repartir entre las dos puntas lo que sobra del largo real, y
+    "lo que sobra" depende de con que paso se van a acomodar los modulos. El
+    centrado usaba el paso NOMINAL —`ancho + hueco`— y el reparto usaba este
+    otro, que puede venir de `module.pitchMm` o de `row.pitchMmOverride` de la
+    fila. En Edenvale los dos numeros dan igual, asi que el parque de control
+    no podia ver la diferencia; en un parque donde el paso declarado NO es
+    ancho + hueco, se centraba contra una fila imaginaria.
+
+    Lo caro es que no lo avisaba nadie: con 56 modulos de 1135+20 declarados a
+    1140, una fila de 64,385 m mide EXACTAMENTE lo que predice el paso
+    declarado, asi que el residuo —que si mira el paso real— daba cero y el
+    aviso de largo no saltaba. La fila entera arrancaba 405 mm afuera de la
+    pica de origen, y la pantalla decia "0 cosas para revisar".
+
+    Aca solo queda afuera `derive`, que necesita el largo ya sin voladizos y se
+    despeja mas abajo. Por eso `centered` + `derive` se rechaza al compilar el
+    parque: seria circular.
+  */
+  const pasoSinDerivar =
+    row.pitchMmOverride != null
+      ? row.pitchMmOverride / 1000
+      : ctx.declaredPitch === "derive"
+        ? null
+        : typeof ctx.declaredPitch === "number"
+          ? ctx.declaredPitch / 1000
+          : ctx.nominalPitchM;
+
   // --- offsets de pica ------------------------------------------------------
   // Pueden ser negativos: en Edenvale los modulos sobresalen 1464 mm mas alla
   // de la pica, que queda debajo del segundo modulo.
@@ -387,7 +420,10 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
   // (o falta) se reparte entre las dos puntas. El offset deja de ser un dato.
   const centrarM =
     ctx.offsetMode === "centered"
-      ? (lengthM - extentConPaso(ctx, ctx.nominalPitchM)) / 2
+      // El `??` es para el compilador y no para el caso: con `centered`,
+      // `pasoSinDerivar` nunca es null. `compileFarm` rechaza de entrada
+      // "centered" con `pitchMm: "derive"`, y una variante no puede pedirlo.
+      ? (lengthM - extentConPaso(ctx, pasoSinDerivar ?? ctx.nominalPitchM)) / 2
       : 0;
 
   const originOffsetM =
@@ -412,16 +448,9 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
   const derivedPitchM =
     (extentM - (ctx.huecos + 1) * ctx.moduleWidthM - ctx.totalHuecosM) / pasosNormales;
 
-  let pitchM: number;
-  if (row.pitchMmOverride != null) {
-    pitchM = row.pitchMmOverride / 1000;
-  } else if (ctx.declaredPitch === "derive") {
-    pitchM = derivedPitchM;
-  } else if (typeof ctx.declaredPitch === "number") {
-    pitchM = ctx.declaredPitch / 1000;
-  } else {
-    pitchM = ctx.nominalPitchM;
-  }
+  // La unica rama que faltaba resolver arriba: sin paso declarado ni override,
+  // el paso es el que exige el largo medido de esta fila.
+  const pitchM = pasoSinDerivar ?? derivedPitchM;
 
   const layout = makeRowLayout({
     modulesPerString: ctx.modulesPerString,
@@ -471,9 +500,24 @@ function compileRow(row: TrackerRow, ctx: RowContext): CompiledRow {
   if (row.stringNumbers && row.stringNumbers.length > 0) {
     // Las etiquetas viajan junto con su numero, no por separado: separarlas es
     // como se termina mostrando la etiqueta de un string sobre otro.
+    /*
+      Si el plano dijo en que mitad esta cada string, ESE es el orden.
+
+      Ordenar por numero ascendente era la version vieja de la misma pregunta,
+      y solo acertaba mientras el conteo arrancara en la caja de continua. Ver
+      `stringsDesdeElNorte` en types.ts.
+    */
+    const medido = row.stringsDesdeElNorte;
     const pares = row.stringNumbers
       .map((n, i) => ({ n, label: row.stringLabels?.[i] }))
-      .sort((x, y) => x.n - y.n);
+      .sort((x, y) => {
+        if (medido?.length) {
+          const ix = x.label ? medido.indexOf(x.label) : -1;
+          const iy = y.label ? medido.indexOf(y.label) : -1;
+          if (ix >= 0 && iy >= 0) return ix - iy;
+        }
+        return x.n - y.n;
+      });
     stringNumbers = pares.map((q) => q.n);
     if (row.stringLabels?.length) stringLabels = pares.map((q) => q.label ?? "");
     if (stringNumbers.length !== ctx.stringsPerRow) {

@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { download } from "../inspection";
 import { eventosDeString, type Hallazgo } from "../detect";
+import { compileFarm } from "@locator";
 import {
   armarPaquete,
   CANALES,
@@ -118,14 +119,27 @@ export function Warranty({ farm: stored, onBack }: { farm: StoredFarm; onBack: (
    * librado a la memoria.
    */
   const deStringEntero = useMemo(() => {
-    const eventos = eventosDeString(hallazgos, stored.profile.topology.modulesPerString);
+    /*
+      El largo del string sale de CADA FILA, no del perfil.
+
+      Un parque puede mezclar trackers largos —56 modulos, dos strings— con
+      cortos de 28, y el compilador congela ese numero por fila justamente
+      porque el del perfil no sirve para todas. Leyendo el del perfil, en un
+      parque mixto un string corto apagado entero nunca llegaba al umbral y el
+      reclamo salia como paneles sueltos en vez de como string completo — que
+      es la diferencia entre un reclamo que el proveedor acepta y uno que
+      rebota.
+    */
+    const compilada = compileFarm(stored.profile, stored.rows);
+    const largoDe = new Map(compilada.rows.map((r) => [r.source.id, r.modulesPerString]));
+    const eventos = eventosDeString(hallazgos, (rowId) => largoDe.get(rowId));
     const rowsChunk = new Set(eventos.map((e) => `${e.rowId}#${e.stringNumber}`));
     const out = new Set<string>();
     for (const h of hallazgos) {
       if (rowsChunk.has(`${h.modulo.rowId}#${h.modulo.stringNumber}`)) out.add(claveDe(h));
     }
     return out;
-  }, [hallazgos, stored.profile.topology.modulesPerString]);
+  }, [hallazgos, stored.profile, stored.rows]);
 
   const items = useMemo(
     () => armarPaquete(hallazgos, { anomalias, deStringEntero, cobertura, condiciones, conRgb }),

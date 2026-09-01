@@ -49,10 +49,48 @@ const PRESETS: Preset[] = [
       module: { widthMm: 1135, gapMm: 20, orientation: "portrait", pitchMm: null },
       topology: { modulesPerString: 28, stringsPerRow: 2, stringGapMm: 555 },
       geometry: { source: "survey-stakes", endpointOffsetMm: -25, endpointOffsetMode: "centered" },
+      /*
+        El modulo 1 es el del extremo NORTE, siempre.
+
+        Antes esto era "dc-box-end": el conteo arrancaba en la punta que da a
+        la caja de continua, y para saber cual era habia que leer las calles
+        del plano. Toda la fragilidad del sistema vivia ahi — si el plano se
+        leia mal, se iba mal el numero de modulo Y la ubicacion del panel.
+
+        En un parque de trackers la fila corre siempre norte-sur, porque el eje
+        tiene que girar de este a oeste para seguir al sol. Asi que "la punta
+        norte" es un dato que sale de las dos picas y no depende de ningun
+        plano. El informe declara la convencion en una linea y listo.
+
+        Lo que sigue necesitando el plano es la ETIQUETA del string —cual de
+        los dos strings de la fila es cual— pero eso ya no arrastra consigo la
+        ubicacion del panel: si falta, el modulo y la coordenada siguen bien.
+      */
       addressing: {
-        originStrategy: "dc-box-end",
-        dcBoxPlacement: "center-road",
-        inversionStrategy: "piercing-chain",
+        originStrategy: "fixed-end",
+        fixedEnd: "north",
+        /*
+          Sin inversion, y no es una simplificacion: es que ya no queda nada que
+          invertir.
+
+          `piercing-chain` existe para decidir si un string se numera al reves
+          porque el cable lo atraviesa viniendo de la caja de continua. Esa
+          pregunta tiene sentido mientras el modulo 1 sea "el primero de la
+          serie electrica". Declarando que el modulo 1 es el del extremo NORTE
+          de su string, la numeracion queda determinada por la geometria y no
+          hay segunda opcion: invertir seria contradecir la convencion que el
+          informe declara.
+
+          Dejarlo en "piercing-chain" con el origen en el norte era una
+          contradiccion: la mitad de las filas se hubiera numerado desde el
+          norte y la otra mitad desde el sur, las dos diciendo que cuentan
+          desde el norte.
+
+          La maquinaria sigue existiendo para un parque que elija contar desde
+          la caja —Edenvale esta asi— pero deja de estar en el camino critico,
+          y con ella se van `pos`, `posTotal` y la cadena electrica.
+        */
+        inversionStrategy: "none",
       },
       matching: { maxDistanceM: 30, neighborhood: 2, maxRowCandidates: 3, defaultAccuracyM: 3 },
     },
@@ -422,7 +460,21 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
       profileVersion: (existing?.profile.profileVersion ?? 0) + 1,
       crs: crs.type === "utm" ? { type: "utm", zone: crs.zone, hemisphere: crs.hemisphere } : { type: "wgs84" },
       ...profileDraft,
-      addressing: { ...profileDraft.addressing, originStrategy: "per-row-flag" as const },
+      /*
+        La estrategia de origen la declara el perfil y NO se pisa aca.
+
+        Antes esta linea forzaba "per-row-flag", o sea: el conteo salia de un
+        `originEnd` por fila deducido midiendo huecos entre las picas. Eso
+        convertia en decorativo cualquier preset — el parque terminaba contando
+        como dijera la deduccion, no como dijera el perfil. Un preset que dice
+        "desde el norte" y un asistente que lo pisa en la linea siguiente es
+        peor que no tener preset: parece configurado y no lo esta.
+
+        `originEnd` se sigue calculando y guardando en cada fila, pero como
+        DATO —sirve de contraste, y lo usa el parque que de verdad elija
+        "per-row-flag"—, no como la regla que manda.
+      */
+      addressing: profileDraft.addressing,
       calibration: existing?.profile.calibration ?? {
         status: "unverified",
         notes: "Perfil creado desde el asistente. Ninguna regla verificada en campo todavia.",

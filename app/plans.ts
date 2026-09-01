@@ -48,7 +48,12 @@ interface TrackerDelPlano {
 interface BloqueDelPlano {
   trackers?: Record<string, TrackerDelPlano>;
   dcbox?: Array<{ name: string; x: number; y: number }>;
-  strings?: Array<{ n: string; s?: string; t?: string; r?: string }>;
+  /**
+   * Los strings del bloque. `x`/`y` son donde esta DIBUJADA la etiqueta en la
+   * lamina — de ahi sale en que mitad de la fila vive cada string, sin tener
+   * que suponer que "el numero menor va cerca de la caja". Ver `app/tramos.ts`.
+   */
+  strings?: Array<{ n: string; s?: string; t?: string; r?: string; x?: number; y?: number }>;
   road?: number;
   axis?: string;
 }
@@ -274,7 +279,12 @@ export function aplicarPlano(
       .filter(([, t]) => typeof t.cx === "number" && typeof t.cy === "number")
       .map(([tracker, t]) => ({ tracker, cx: t.cx!, cy: t.cy!, caja: t.dcbox ?? null }));
     if (!trackers.length) continue;
-    bloquesConCajas.push({ block: bloqueId, trackers, cajas });
+    bloquesConCajas.push({
+      block: bloqueId, trackers, cajas,
+      // Con la posicion dibujada de cada string se puede medir en que mitad de
+      // la fila vive, en vez de suponerlo por el numero.
+      ...(bloque.strings?.length ? { strings: bloque.strings } : {}),
+    });
   }
   const porCajas = sentidoDesdeLasCajas(out, bloquesConCajas);
   /*
@@ -292,8 +302,14 @@ export function aplicarPlano(
   const conSentido = sentido.origins.size + [...porCajas.origins.keys()].filter((id) => !sentido.origins.has(id)).length;
   const rowsFinal = out.map((r) => {
     const o = acuerdo.origins.get(r.id);
-    return o && o !== r.originEnd ? { ...r, originEnd: o } : r;
+    const orden = porCajas.stringsDesdeElNorte.get(r.id);
+    if (!orden && (!o || o === r.originEnd)) return r;
+    const next: TrackerRow = { ...r };
+    if (o && o !== r.originEnd) next.originEnd = o;
+    if (orden) next.stringsDesdeElNorte = orden;
+    return next;
   });
+  const conOrdenDeStrings = rowsFinal.filter((r) => r.stringsDesdeElNorte?.length).length;
   const totalConSentido = rowsFinal.filter((r) => r.originEnd).length;
   const bloquesSinSentido = [...new Set(rowsFinal.filter((r) => !r.originEnd).map((r) => r.block))].sort();
 
@@ -312,6 +328,15 @@ export function aplicarPlano(
       ...notasDelSentido(sentido.origins.size, tramos, sentido.sinCalle, rowsFinal.length,
                          porCajas.bloques.some((b) => b.motivo === "resuelto")),
       ...notasDeLasCajas(porCajas, acuerdo, bloquesSinSentido, totalConSentido, rowsFinal.length),
+      ...(conOrdenDeStrings
+        ? [
+            `En ${conOrdenDeStrings} filas el plano dice ademas EN QUE MITAD esta cada string, porque ` +
+            `dibuja su etiqueta encima de la mitad que le toca. Eso reemplaza a la convencion de que "el ` +
+            `string de numero menor va cerca de la caja", que no es una regla del mundo: medida contra ` +
+            `estos mismos planos se cumple en unas filas y en otras no, y cada parque numera a su manera. ` +
+            `Ahora se mide, y el mismo lector sirve para cualquier parque.`,
+          ]
+        : []),
     ],
   };
 }

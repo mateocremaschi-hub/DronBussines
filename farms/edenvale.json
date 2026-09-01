@@ -35,11 +35,7 @@
   "addressing": {
     "originStrategy": "dc-box-end",
     "dcBoxPlacement": "center-road",
-    "inversionStrategy": "piercing-chain",
-    "sideRule": {
-      "type": "tracker-number-ascending",
-      "firstSide": "north"
-    }
+    "inversionStrategy": "piercing-chain"
   },
   "matching": {
     "maxDistanceM": 30,

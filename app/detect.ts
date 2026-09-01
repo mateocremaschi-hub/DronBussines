@@ -46,6 +46,19 @@ export interface Muestra {
   fileName: string;
   /** Distancia del modulo al centro del cuadro. Cerca del borde la termica miente mas. */
   distanciaAlCentroM: number;
+  /**
+   * Donde cae este modulo DENTRO de la foto, en pixeles de la imagen termica.
+   *
+   * Se guarda al medir y no se recalcula despues. El motivo es que recalcularlo
+   * exige tener otra vez la pose, la camara, el ajuste y el acortamiento del
+   * tracker en ESE momento — cuatro cosas que ya no estan a mano cuando se
+   * arma el informe. Un recuadro dibujado con una de esas mal es peor que no
+   * dibujarlo: senala el panel de al lado con la misma seguridad.
+   *
+   * Es la misma caja que se midio, asi que lo que se ve marcado en la foto es
+   * literalmente de donde salio el numero.
+   */
+  caja?: { cx: number; cy: number; largo: number; cruzado: number; rotRad: number };
 }
 
 /**
@@ -224,6 +237,7 @@ export class Acumulador {
           pixelesPorCelda: ladoCeldaPx * ladoCeldaPx,
           fileName: foto.fileName,
           distanciaAlCentroM: d,
+          caja: { cx, cy, largo: largoCaja, cruzado: cruzadoCaja, rotRad: anguloEnImagen },
         });
       }
     }
@@ -470,6 +484,16 @@ export interface EventoDeString {
 }
 
 /**
+ * Cuantos modulos tiene un string.
+ *
+ * Un numero alcanza mientras el parque tenga una sola geometria. Un parque que
+ * mezcla trackers largos de 56 modulos con cortos de 28 necesita preguntarlo
+ * por fila, y ahi va una funcion: el largo ya lo resolvio el compilador fila
+ * por fila y lo unico que falta es no tirarlo.
+ */
+export type ModulosPorString = number | ((rowId: string) => number | undefined);
+
+/**
  * Junta los strings donde la anomalia no es de un modulo sino de todo el string.
  *
  * Un modulo caliente es un modulo. Un STRING entero caliente es otra cosa: una
@@ -479,9 +503,12 @@ export interface EventoDeString {
  */
 export function eventosDeString(
   hallazgos: Hallazgo[],
-  modulosPorString: number,
+  modulosPorString: ModulosPorString,
   fraccionMinima = 0.5,
 ): EventoDeString[] {
+  const largoDe = (rowId: string): number | undefined =>
+    typeof modulosPorString === "number" ? modulosPorString : modulosPorString(rowId);
+
   const grupos = new Map<string, Hallazgo[]>();
   for (const h of hallazgos) {
     if (h.severidad === "normal") continue;
@@ -490,9 +517,14 @@ export function eventosDeString(
 
   const out: EventoDeString[] = [];
   for (const g of grupos.values()) {
-    const fraccion = g.length / modulosPorString;
-    if (fraccion < fraccionMinima) continue;
     const m = g[0]!.modulo;
+    // El largo del string de ESTA fila. Sin el no hay fraccion que calcular:
+    // dividir por el largo del perfil en una fila corta la reporta como si
+    // estuviera medio apagada cuando esta apagada entera.
+    const largo = largoDe(m.rowId);
+    if (!largo) continue;
+    const fraccion = g.length / largo;
+    if (fraccion < fraccionMinima) continue;
     const ev: EventoDeString = {
       rowId: m.rowId, block: m.block, tracker: m.tracker,
       stringNumber: m.stringNumber,

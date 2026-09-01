@@ -210,11 +210,22 @@ export function resolverSentidoPorGeometria(
   const d = deriveOriginEnds(farm.rows, dcBoxPlacement);
   const rows = aplicarOrigenes(farm.rows, d);
 
+  /*
+    Esto escribe `originEnd` en las filas, y nada mas.
+
+    Antes ademas cambiaba la estrategia del parque a "per-row-flag". O sea que
+    cargar un plano —algo que se hace para MEJORAR los datos— le daba vuelta en
+    silencio la regla de numeracion a un parque que podia estar configurado de
+    otra forma. Ninguna pantalla lo avisaba y ningun test lo cazaba.
+
+    La estrategia es una decision del perfil. Un archivo que entra puede
+    aportar datos; no puede cambiar la regla con la que se lee el parque.
+  */
   return {
     rows,
     profile: {
       ...farm.profile,
-      addressing: { ...farm.profile.addressing, originStrategy: "per-row-flag", dcBoxPlacement },
+      addressing: { ...farm.profile.addressing, dcBoxPlacement },
     },
     resueltas: d.origins.size,
     sinResolver: d.blocks.filter((b) => b.status !== "ok").map((b) => `${b.block}: ${b.detail}`),

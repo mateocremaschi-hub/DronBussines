@@ -15,6 +15,17 @@ export interface OriginContext {
   startIsNorth: boolean;
   /** `true` si el extremo `start` esta mas al este que `end`. */
   startIsEast: boolean;
+  /**
+   * Cuanto de la fila corre en cada eje, como fraccion de su largo (0 a 1).
+   *
+   * Sirve para saber si el rumbo pedido esta bien definido. En un parque de
+   * trackers la fila SIEMPRE corre norte-sur —el eje tiene que girar de este a
+   * oeste para seguir al sol— asi que `norteSur` va a dar casi 1. Si alguna vez
+   * entra un parque de estructura fija, donde las filas corren este-oeste,
+   * "la punta norte" deja de significar algo y hay que decirlo en vez de
+   * contestar cualquier cosa.
+   */
+  alineacion?: { norteSur: number; esteOeste: number };
 }
 
 export interface OriginResult {
@@ -22,7 +33,12 @@ export interface OriginResult {
   warnings: Warning[];
 }
 
-const other = (e: EndRef): EndRef => (e === "start" ? "end" : "start");
+/**
+ * Cuanto tiene que correr la fila sobre el eje pedido para que el rumbo
+ * signifique algo. 0,25 son unos 75 grados de desvio: una fila de trackers da
+ * casi 1, y una de estructura fija puesta al reves da casi 0.
+ */
+const ALINEACION_MINIMA = 0.25;
 
 /** Que extremo del segmento apunta al rumbo pedido. */
 function endTowards(ctx: OriginContext, dir: "north" | "south" | "east" | "west"): EndRef {
@@ -61,6 +77,26 @@ export function resolveOriginEnd(
             'La estrategia "fixed-end" necesita addressing.fixedEnd (north | south | east | west). Uso el extremo `start`.',
         });
         return { end: "start", warnings };
+      }
+      /*
+        La guarda: que el rumbo pedido este bien definido para esta fila.
+
+        No se asume que la fila corra norte-sur: se mide. Si las dos puntas
+        estan casi a la misma latitud, "la punta norte" la decide el ruido del
+        relevamiento, y de ahi sale un numero de modulo que puede estar dado
+        vuelta entero. Es preferible avisar.
+      */
+      const eje = dir === "north" || dir === "south" ? "norteSur" : "esteOeste";
+      const alineado = ctx.alineacion?.[eje];
+      if (alineado != null && alineado < ALINEACION_MINIMA) {
+        warnings.push({
+          code: "origin-ambiguous",
+          rowId,
+          message:
+            `La fila no corre ${dir === "north" || dir === "south" ? "norte-sur" : "este-oeste"}: ` +
+            `sus dos puntas estan casi a la misma ${dir === "north" || dir === "south" ? "latitud" : "longitud"}. ` +
+            `Contar "desde el ${dir}" en esta fila es arbitrario.`,
+        });
       }
       return { end: endTowards(ctx, dir), warnings };
     }
@@ -104,5 +140,3 @@ export function resolveOriginEnd(
     }
   }
 }
-
-export { other as oppositeEnd };

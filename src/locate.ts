@@ -455,6 +455,21 @@ function makeAddress(
     offAxisM,
     confidence: 0,
   };
+  /*
+    Desde que punta se conto, dicho por su rumbo y no por su relacion con la
+    caja. Se mide contra las coordenadas de la propia fila: no depende de la
+    estrategia ni de ningun plano.
+  */
+  const puntaOrigen = row.originEnd === "start" ? row.source.start : row.source.end;
+  const puntaLejana = row.originEnd === "start" ? row.source.end : row.source.start;
+  const dLat = puntaOrigen.lat - puntaLejana.lat;
+  const dLon = puntaOrigen.lon - puntaLejana.lon;
+  // Se nombra el eje sobre el que la fila realmente corre. En un parque de
+  // trackers eso es siempre norte-sur.
+  address.origenGeografico =
+    Math.abs(dLat) >= Math.abs(dLon)
+      ? (dLat >= 0 ? "norte" : "sur")
+      : (dLon >= 0 ? "este" : "oeste");
   if (row.source.row !== undefined) address.row = row.source.row;
   const label = row.stringLabels?.[chunkIndex];
   if (label) address.stringLabel = label;

@@ -138,11 +138,22 @@ describe("aislamiento entre parques", () => {
     expect(b.best?.module).toBe(30);
     expect(b.best?.countedFrom).toBe("near-dc");
 
+    /*
+      La punta se dice por RUMBO, no por su relacion con la caja.
+
+      Antes esto decia "desde la punta lejana" y "desde la caja DC". Esas dos
+      frases solo son ciertas mientras el parque cuente desde la caja de
+      continua; en un parque que cuenta desde el norte mandan a contar desde la
+      punta contraria de una fila de 65 metros, y es la unica frase que el
+      tecnico ejecuta caminando. Ahora la direccion dice cual punta es, medida
+      contra las coordenadas de la propia fila, y la caja queda como lo que es:
+      por donde se entra.
+    */
     expect(formatAddress(a.best!)).toBe(
-      "Bloque 01, tracker 01-001 R1, string 2, modulo 1 (desde la punta lejana)",
+      "Bloque 01, tracker 01-001 R1, string 2, modulo 1 (contando desde la punta sur)",
     );
     expect(formatAddress(b.best!)).toBe(
-      "Bloque A, tracker A-01, string 1, modulo 30 (desde la caja DC)",
+      "Bloque A, tracker A-01, string 1, modulo 30 (contando desde la punta norte)",
     );
   });
 });

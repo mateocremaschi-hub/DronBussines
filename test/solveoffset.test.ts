@@ -199,3 +199,55 @@ describe("cuando el parque centra los modulos", () => {
     expect(v.notas.join(" ")).toMatch(/el paso, la cantidad de modulos/);
   });
 });
+
+/**
+ * El centrado se mide fila por fila, no con la mediana de los largos.
+ *
+ * `centradoEfectivoMm` tomaba la mediana de los largos del parque y la
+ * comparaba contra un unico "cuanto ocupan los modulos" sacado del perfil. En
+ * un parque de un solo tipo de tracker da igual. En uno que mezcla largos de 56
+ * con cortos de 28 —lo normal— la mediana de los largos cae ENTRE los dos
+ * tamanos, y se la resta contra el ocupado del tipo principal: el numero que
+ * sale no es el centrado de ninguna fila del parque.
+ *
+ * Y de ese numero sale el veredicto que le dice al operador si el offset que
+ * tiene cargado es el correcto, asi que un parque mixto recibia un veredicto
+ * calculado sobre una fila que no existe.
+ */
+describe("el centrado en un parque de dos tipos de tracker", () => {
+  const mixto = (): FarmProfile => ({
+    ...edenvale,
+    geometry: { ...edenvale.geometry, endpointOffsetMode: "centered" },
+    topology: {
+      ...edenvale.topology,
+      variants: [{ id: "corto", name: "Tracker corto", modulesPerString: 28, stringsPerRow: 1 }],
+    },
+  });
+
+  it("un parque de puras filas cortas no se mide con la geometria de las largas", () => {
+    const perfil = mixto();
+    const corta = (n: number) => ({
+      ...makeRow(
+        {
+          id: `C${n}`, block: "02", tracker: `02-00${n}`, row: "R1",
+          anchor: { lat: -26.93 + n * 0.0002, lon: 150.59 }, azimuthDeg: 180, side: "north",
+          lengthM: 32.84,
+        },
+        perfil,
+      ),
+      variantId: "corto",
+    });
+
+    /*
+      El centrado tiene que ser una fraccion de modulo: es lo que sobra
+      repartido entre las dos puntas. Con la cuenta vieja —el largo real de una
+      fila corta contra lo que ocupan los modulos de una LARGA— daba decenas de
+      metros negativos, un numero que no describe ninguna fila del parque y del
+      que despues sale el veredicto que le dice al operador si su offset esta
+      bien.
+    */
+    const v = veredictoDeOffset([], perfil, [corta(1), corta(2), corta(3)]);
+    const medioModulo = (perfil.module.widthMm + perfil.module.gapMm) / 2;
+    expect(Math.abs(v.actualMm)).toBeLessThan(medioModulo);
+  });
+});

@@ -211,6 +211,18 @@ export interface Mission {
  */
 const GSD_MAXIMO_CM = 5;
 
+/**
+ * Lo que cuesta cada giro de 180 grados al final de una pasada, en segundos.
+ *
+ * Frenar, girar y volver a acelerar no es instantaneo. El numero estaba suelto
+ * en la cuenta de los minutos, y ademas hace falta en otro lado: es la vara
+ * que decide si conviene PARTIR una pasada en dos. Los segundos que se ahorran
+ * de no cruzar un hueco se comparan contra los segundos de este giro, asi que
+ * tienen que ser el mismo numero — con dos copias, una se cambia y la otra no,
+ * y el planificador empieza a partir pasadas que le salen mas caras.
+ */
+const SEGUNDOS_POR_GIRO = 30;
+
 export function planMission(
   rows: TrackerRow[],
   profile: FarmProfile,
@@ -281,41 +293,130 @@ export function planMission(
     };
   });
 
+  /**
+   * Y cada pasada se parte en TRAMOS, no se vuela de una sola tirada.
+   *
+   * El recorte de arriba tomaba la primera y la ultima fila que la pasada
+   * tocaba y volaba de una punta a la otra. Alcanzaba mientras se volara un
+   * bloque solo, que es mas o menos macizo. Desde que se pueden elegir varios
+   * bloques sueltos ya no alcanza: dos bloques separados por medio kilometro de
+   * campo daban una pasada que cruzaba el vacio entera, con el dron volando y
+   * DISPARANDO sobre el pasto del medio. Los minutos y las fotos que mostraba
+   * la pantalla eran los del rectangulo que envuelve a todo, no los del vuelo
+   * que hace falta — y encima se gastaba bateria en fotos de nada.
+   *
+   * Donde no hay filas debajo, no hay pasada.
+   */
+  interface Tramo { c: number; desde: number; hasta: number; }
+
+  /**
+   * Hueco a partir del cual conviene partir la pasada en dos.
+   *
+   * Partir no es gratis: son dos waypoints mas y un giro mas, y ese giro se
+   * paga en los mismos segundos que se ahorran de no cruzar. Asi que el hueco
+   * tiene que dar para volar mas de lo que cuesta el giro; si no, se cruza de
+   * largo y se sacan las fotos de mas, que salen mas baratas. Los otros dos
+   * pisos son geometricos: por debajo de una huella no se saltea ni un disparo,
+   * y por debajo de dos margenes los dos tramos se tocan igual una vez que se
+   * les suma el margen de las puntas.
+   */
+  const puente = Math.max(2 * opts.marginM, largoHuella, SEGUNDOS_POR_GIRO * opts.speedMps);
+
+  const tramos: Tramo[] = [];
+  const medio = anchoHuella / 2;
+  for (let i = 0; i < cantidad; i++) {
+    const c = inicio + i * separacion;
+
+    // Que filas caen bajo la huella de esta pasada, y hasta donde llegan.
+    const debajo: Array<[number, number]> = [];
+    for (const r of proy) {
+      if (r.c1 < c - medio || r.c0 > c + medio) continue;
+      debajo.push([r.a0, r.a1]);
+    }
+    // Una pasada que no pasa por encima de ninguna fila no se vuela.
+    if (!debajo.length) continue;
+
+    // De izquierda a derecha, pegando lo que queda mas cerca que el puente.
+    debajo.sort((x, y) => x[0] - y[0]);
+    for (const [d, h] of debajo) {
+      const ult = tramos[tramos.length - 1];
+      if (ult && ult.c === c && d - ult.hasta <= puente) {
+        if (h > ult.hasta) ult.hasta = h;
+        continue;
+      }
+      tramos.push({ c, desde: d, hasta: h });
+    }
+  }
+
+  for (const t of tramos) {
+    t.desde = Math.max(a0, t.desde - opts.marginM);
+    t.hasta = Math.min(a1, t.hasta + opts.marginM);
+  }
+
+  /**
+   * Los tramos se juntan en BANDAS, y se vuela una banda entera antes de pasar
+   * a la siguiente.
+   *
+   * Sin esto el partido no ahorraria un metro de vuelo: serpenteando pasada
+   * por pasada, con dos bloques separados el dron cruza el hueco una vez por
+   * pasada, y veinte pasadas son veinte cruces — lo mismo que antes, pero con
+   * un giro de mas en cada una. Terminando un bloque antes de arrancar el otro
+   * el hueco se cruza una sola vez.
+   *
+   * Una banda es un grupo de tramos que se pisan sobre el eje de vuelo, que es
+   * justamente "lo que se puede volar sin cruzar ningun hueco".
+   */
+  const bandas: Tramo[][] = [];
+  let finBanda = -Infinity;
+  for (const t of [...tramos].sort((x, y) => x.desde - y.desde)) {
+    if (bandas.length && t.desde <= finBanda) {
+      bandas[bandas.length - 1]!.push(t);
+      finBanda = Math.max(finBanda, t.hasta);
+      continue;
+    }
+    bandas.push([t]);
+    finBanda = t.hasta;
+  }
+
   const lines: MissionLine[] = [];
   const waypoints: LatLon[] = [];
   let distancia = 0;
   let fotos = 0;
-  for (let i = 0; i < cantidad; i++) {
-    const c = inicio + i * separacion;
-
-    // Que filas caen bajo la huella de esta linea, y hasta donde llegan.
-    const medio = anchoHuella / 2;
-    let desde = Infinity, hasta = -Infinity;
-    for (const r of proy) {
-      if (r.c1 < c - medio || r.c0 > c + medio) continue;
-      if (r.a0 < desde) desde = r.a0;
-      if (r.a1 > hasta) hasta = r.a1;
+  /**
+   * Por que punta se entra a cada tramo: por la que quedo mas cerca.
+   *
+   * Con una sola banda esto es el serpenteo de toda la vida —se termina una
+   * pasada donde arranca la siguiente— y da exactamente lo mismo que alternar
+   * por numero de linea. La diferencia aparece al saltar de una banda a la
+   * otra: ahi la alternancia por numero de linea puede mandar al dron a la
+   * punta lejana del bloque siguiente y hacerle volar el largo de un bloque de
+   * mas, en vacio, porque si.
+   */
+  let ultimaPunta: number | null = null;
+  bandas.forEach((banda, i) => {
+    // La banda que sigue arranca por la pasada donde termino la anterior, en
+    // vez de volver al principio a rehacer el mismo camino en vacio.
+    banda.sort((x, y) => (i % 2 === 0 ? x.c - y.c : y.c - x.c));
+    for (const t of banda) {
+      const alReves =
+        ultimaPunta !== null &&
+        Math.abs(ultimaPunta - t.hasta) < Math.abs(ultimaPunta - t.desde);
+      const [d0, d1] = alReves ? [t.hasta, t.desde] : [t.desde, t.hasta];
+      ultimaPunta = d1;
+      const A = toGeo(frame, fx * d0 + px * t.c, fy * d0 + py * t.c);
+      const B = toGeo(frame, fx * d1 + px * t.c, fy * d1 + py * t.c);
+      const largo = t.hasta - t.desde;
+      lines.push({ a: A, b: B, largoM: largo });
+      waypoints.push(A, B);
+      distancia += largo;
+      fotos += Math.floor(largo / disparoCada) + 1;
     }
-    // Una linea que no pasa por encima de ninguna fila no se vuela.
-    if (desde === Infinity) continue;
-
-    desde = Math.max(a0, desde - opts.marginM);
-    hasta = Math.min(a1, hasta + opts.marginM);
-
-    // Serpenteo: cada linea al reves de la anterior, para no volver en vacio.
-    const [d0, d1] = lines.length % 2 === 0 ? [desde, hasta] : [hasta, desde];
-    const A = toGeo(frame, fx * d0 + px * c, fy * d0 + py * c);
-    const B = toGeo(frame, fx * d1 + px * c, fy * d1 + py * c);
-    const largo = hasta - desde;
-    lines.push({ a: A, b: B, largoM: largo });
-    waypoints.push(A, B);
-    distancia += largo;
-    fotos += Math.floor(largo / disparoCada) + 1;
-  }
+  });
 
   if (!lines.length) return null;
 
-  // El traslado entre lineas: separacion mas lo que se corrio el arranque.
+  // El traslado entre tramos: la separacion entre pasadas vecinas, o el salto
+  // de una banda a la otra, que se paga una sola vez.
   for (let i = 1; i < lines.length; i++) {
     const p1 = toLocal(frame, lines[i - 1]!.b.lat, lines[i - 1]!.b.lon);
     const p2 = toLocal(frame, lines[i]!.a.lat, lines[i]!.a.lon);
@@ -324,8 +425,8 @@ export function planMission(
 
   const cantidadReal = lines.length;
   const largoLinea = lines.reduce((s2, l) => s2 + l.largoM, 0) / cantidadReal;
-  // Los giros no son gratis: se asume medio minuto por giro entre lineas.
-  const minutos = distancia / opts.speedMps / 60 + ((cantidadReal - 1) * 30) / 60;
+  // Los giros no son gratis, y con las pasadas partidas hay uno por tramo.
+  const minutos = distancia / opts.speedMps / 60 + ((cantidadReal - 1) * SEGUNDOS_POR_GIRO) / 60;
 
   const gsdCm = (anchoHuella * 100) / opts.camera.imageW;
   const pasoModulo = profile.module.widthMm / 1000;

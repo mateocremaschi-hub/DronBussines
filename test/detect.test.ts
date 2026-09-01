@@ -152,6 +152,36 @@ describe("cuando el problema es del string entero", () => {
     const h = comparar(muestras(40, { 2: 12, 9: 12, 15: 12 }));
     expect(eventosDeString(h, N)).toHaveLength(0);
   });
+
+  /**
+   * El largo del string se puede preguntar por FILA.
+   *
+   * Salia de `profile.topology.modulesPerString`, un solo numero para todo el
+   * parque, y un parque puede mezclar trackers largos con cortos. Dividir los
+   * hallazgos de un tracker corto por el largo del otro tipo lo muestra medio
+   * apagado cuando esta apagado entero, y con un poco menos lo saca del
+   * agrupamiento: vuelven a leerse como veinte defectos de modulo sueltos.
+   */
+  it("acepta el largo del string por fila, para un parque de dos tipos de tracker", () => {
+    const m = muestras(40).map((x) => (x.modulo.chunkIndex === 0 ? { ...x, celsius: 52 } : x));
+    const h = comparar(m).map((x) =>
+      x.modulo.chunkIndex === 0 ? { ...x, deltaT: 12, severidad: "moderada" as const } : x,
+    );
+
+    const largoDeLaFila = (rowId: string) => (rowId === "05-042-R1" ? N : 56);
+    expect(eventosDeString(h, largoDeLaFila)[0]!.fraccion).toBeCloseTo(1, 3);
+    // Con el largo del otro tipo de tracker, los mismos 28 dan media fila.
+    expect(eventosDeString(h, 56)[0]!.fraccion).toBeCloseTo(0.5, 3);
+
+    // Y con un poco menos ya no hay evento: 20 de 28 es un tracker, 20 de 56 no.
+    const parcial = h.map((x) =>
+      x.modulo.chunkIndex === 0 && x.modulo.positionInRow > 20
+        ? { ...x, severidad: "normal" as const }
+        : x,
+    );
+    expect(eventosDeString(parcial, largoDeLaFila)).toHaveLength(1);
+    expect(eventosDeString(parcial, 56)).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -446,5 +476,96 @@ describe("un solo lado de celda para todo", () => {
     expect(chica).toMatch(/de la altura de este vuelo/);
     expect(grande).toMatch(/de la altura de este vuelo/);
     expect(chica).not.toBe(grande);
+  });
+});
+
+/**
+ * Donde cae el modulo dentro de la foto.
+ *
+ * Se guarda al medir porque el informe lo necesita para marcar el panel sobre
+ * la imagen, y recalcularlo despues exigiria tener otra vez la pose, la camara,
+ * el ajuste y el acortamiento del tracker en ESE instante. Un recuadro dibujado
+ * con uno de esos mal senala el panel de al lado con la misma seguridad — que
+ * es justo el error que hace que una cuadrilla deje de creerle al informe.
+ */
+describe("la caja del modulo en la foto", () => {
+  const camara = camaraDesdeEquivalente35("prueba", 40, 640, 512);
+  const marco = makeFrame(farm.origin.lat, farm.origin.lon);
+  const centroFila = farm.rows[0]!;
+  const centro = (() => {
+    const ms = modulesOfRow(centroFila, farm);
+    const x = ms.reduce((a, m) => a + m.x, 0) / ms.length;
+    const y = ms.reduce((a, m) => a + m.y, 0) / ms.length;
+    return toGeo(marco, x, y);
+  })();
+
+  function medir() {
+    const acc = new Acumulador(farm, marco, {
+      camera: camara, moduloAnchoM: profile.module.widthMm / 1000, moduloLargoM: 2.28,
+    });
+    acc.agregar({
+      fileName: "T.JPG",
+      radio: {
+        width: 640, height: 512,
+        celsius: new Float32Array(640 * 512).fill(45),
+        escala: "de prueba", escalaAuto: "de prueba", topeC: 999, fraccionEnElTope: 0,
+      },
+      pose: { lat: centro.lat, lon: centro.lon, altitudeAglM: 60, gimbalYawDeg: 0, gimbalPitchDeg: -90 },
+    });
+    return acc.muestras();
+  }
+
+  it("queda guardada en cada muestra", () => {
+    const ms = medir();
+    expect(ms.length).toBeGreaterThan(0);
+    expect(ms.every((m) => m.caja != null)).toBe(true);
+  });
+
+  it("cae adentro de la imagen, no en el borde ni afuera", () => {
+    for (const m of medir()) {
+      expect(m.caja!.cx).toBeGreaterThan(0);
+      expect(m.caja!.cx).toBeLessThan(640);
+      expect(m.caja!.cy).toBeGreaterThan(0);
+      expect(m.caja!.cy).toBeLessThan(512);
+    }
+  });
+
+  /*
+    La caja es el 60 % util del modulo, no el modulo entero: el marco de
+    aluminio al sol esta a otra temperatura que la celda. Si esta relacion se
+    rompe, lo que se marca en la foto deja de ser lo que se midio.
+  */
+  it("es el 60 % del modulo, y el largo va por el lado corto", () => {
+    const ms = medir();
+    const m = ms[0]!;
+    const anchoM = profile.module.widthMm / 1000;
+    // largo/cruzado tiene que dar la misma proporcion que ancho/largo del modulo.
+    expect(m.caja!.largo / m.caja!.cruzado).toBeCloseTo(anchoM / 2.28, 2);
+  });
+
+  /*
+    Y con el tracker inclinado la caja se angosta. Sin esto, media caja cae
+    sobre el pasto — que al sol lee muy distinto y le baja la mediana al modulo.
+  */
+  it("con el tracker inclinado la caja se angosta, y el largo no cambia", () => {
+    const acc = new Acumulador(farm, marco, {
+      camera: camara, moduloAnchoM: profile.module.widthMm / 1000, moduloLargoM: 2.28,
+    });
+    const foto = {
+      fileName: "T.JPG",
+      radio: {
+        width: 640, height: 512,
+        celsius: new Float32Array(640 * 512).fill(45),
+        escala: "de prueba", escalaAuto: "de prueba", topeC: 999, fraccionEnElTope: 0,
+      },
+      pose: { lat: centro.lat, lon: centro.lon, altitudeAglM: 60, gimbalYawDeg: 0, gimbalPitchDeg: -90 },
+    };
+    acc.agregar(foto, 0.57); // tracker contra su tope de 55 grados
+    const inclinado = acc.muestras()[0]!;
+    const plano = medir()[0]!;
+
+    expect(inclinado.caja!.cruzado).toBeLessThan(plano.caja!.cruzado);
+    expect(inclinado.caja!.cruzado / plano.caja!.cruzado).toBeCloseTo(0.57, 2);
+    expect(inclinado.caja!.largo).toBeCloseTo(plano.caja!.largo, 6);
   });
 });

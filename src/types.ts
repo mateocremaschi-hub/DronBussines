@@ -59,6 +59,24 @@ export interface TrackerRow {
   stringLabels?: string[];
 
   /**
+   * Los strings de esta fila ordenados DESDE EL NORTE, medidos contra el plano.
+   *
+   * Existe porque el orden no se puede deducir del numero. El compilador
+   * ordenaba ascendente asumiendo "el menor va primero", que era cierto
+   * mientras el conteo arrancara en la caja de continua. Contando desde el
+   * norte, esa suposicion da vuelta la etiqueta del string en toda fila cuya
+   * caja este al sur: el mismo panel pasa de "string 5, modulo 1" a "string 6,
+   * modulo 28". El numero de modulo es una convencion que se puede declarar;
+   * la etiqueta del string es un dato del cliente y no se puede inventar.
+   *
+   * Y tampoco alcanza con invertir la convencion, porque no hay una: Edenvale
+   * y Wellington numeran distinto. El plano de interconexion dibuja cada
+   * etiqueta encima de la mitad que le toca, asi que se mide. Ver
+   * `app/cajas.ts`.
+   */
+  stringsDesdeElNorte?: string[];
+
+  /**
    * Como se llama la caja de continua de la que cuelga esta fila. Ej: DCB-5.1.3.
    *
    * Es por donde se entra caminando. El plano de interconexion la trae, y hasta
@@ -284,9 +302,6 @@ export interface FarmProfile {
     dcBoxPlacement?: "center-road" | "outer-edge";
 
     inversionStrategy: InversionStrategyName;
-
-    /** Como se deduce el lado del tracker si la ingesta no lo trae. Informativo. */
-    sideRule?: { type: string; firstSide?: Cardinal };
   };
 
   matching?: {
@@ -335,6 +350,21 @@ export interface Address {
   /** 1 … modulesPerString. */
   module: number;
   countedFrom: CountedFrom;
+  /**
+   * Desde que punta FISICA de la fila se conto este modulo, dicha por su rumbo.
+   *
+   * `countedFrom` dice "cerca de la caja" o "en la punta lejana", y eso solo es
+   * cierto cuando el parque cuenta desde la caja de continua. Un parque que
+   * cuenta desde el norte —lo normal, porque la punta norte sale de las dos
+   * picas y no depende de ningun plano— hacia que esa frase mintiera: mandaba
+   * a contar desde la caja una fila que se numera al reves. En una fila de
+   * 65 m eso es el error mas caro que puede cometer la app, porque es la unica
+   * frase que el tecnico ejecuta caminando.
+   *
+   * Este campo no interpreta nada: mira las dos puntas de la fila y dice cual
+   * es la que se uso.
+   */
+  origenGeografico?: "norte" | "sur" | "este" | "oeste";
 
   /** Posicion cruda dentro de la fila, 1 … modulesPerString * stringsPerRow. */
   positionInRow: number;
@@ -362,7 +392,13 @@ export type WarningCode =
   /** La coordenada cae al costado del eje de la fila, no sobre la mesa. */
   | "off-axis"
   /** El modulo elegido esta mas lejos de lo que explica el error del GPS. */
-  | "far-from-module";
+  | "far-from-module"
+  /**
+   * Se pidio contar desde un rumbo geografico, pero la fila casi no corre en
+   * ese eje: sus dos puntas estan a la misma latitud (o longitud) y elegir
+   * "la punta norte" seria decidirlo con el ruido del relevamiento.
+   */
+  | "origin-ambiguous";
 
 export interface Warning {
   code: WarningCode;

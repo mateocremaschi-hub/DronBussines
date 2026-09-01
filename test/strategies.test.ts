@@ -198,3 +198,94 @@ describe("splitPosition", () => {
     }
   });
 });
+
+/**
+ * "Desde el norte" tiene que significar algo en esta fila.
+ *
+ * En un parque de trackers la fila corre siempre norte-sur: el eje gira de
+ * este a oeste para seguir al sol. Por eso contar desde el norte es un dato
+ * geometrico y no una deduccion — no hace falta leer ninguna calle ni ninguna
+ * caja para saberlo.
+ *
+ * Pero la app no lo asume: lo mide. Si alguna vez entra un parque de
+ * estructura fija, donde las filas corren este-oeste, las dos puntas quedan a
+ * la misma latitud y "la punta norte" la decidiria el ruido del relevamiento.
+ * Ahi hay que avisar, no contestar con seguridad.
+ */
+describe("contar desde el norte", () => {
+  const fila = (start: { lat: number; lon: number }, end: { lat: number; lon: number }): TrackerRow => ({
+    id: "r1", block: "01", tracker: "01-001", row: "R1", start, end,
+  });
+  const norte: FarmProfile["addressing"] = {
+    originStrategy: "fixed-end", fixedEnd: "north", inversionStrategy: "none",
+  };
+
+  it("elige la punta de mayor latitud, venga como venga el par de picas", () => {
+    const haciaElSur = resolveOriginEnd(
+      { row: fila({ lat: -32.5, lon: 148.9 }, { lat: -32.5006, lon: 148.9 }),
+        startIsNorth: true, startIsEast: false, alineacion: { norteSur: 1, esteOeste: 0 } },
+      norte);
+    expect(haciaElSur.end).toBe("start");
+    expect(haciaElSur.warnings).toEqual([]);
+
+    // Las mismas dos picas cargadas al reves dan la MISMA punta fisica.
+    const haciaElNorte = resolveOriginEnd(
+      { row: fila({ lat: -32.5006, lon: 148.9 }, { lat: -32.5, lon: 148.9 }),
+        startIsNorth: false, startIsEast: false, alineacion: { norteSur: 1, esteOeste: 0 } },
+      norte);
+    expect(haciaElNorte.end).toBe("end");
+  });
+
+  it("avisa si la fila corre este-oeste, en vez de decidirlo con el ruido", () => {
+    const r = resolveOriginEnd(
+      { row: fila({ lat: -32.5, lon: 148.9 }, { lat: -32.5, lon: 148.9007 }),
+        startIsNorth: true, startIsEast: false, alineacion: { norteSur: 0.02, esteOeste: 0.99 } },
+      norte);
+    expect(r.warnings.map((w) => w.code)).toContain("origin-ambiguous");
+    expect(r.warnings[0]!.message).toMatch(/no corre norte-sur/);
+  });
+
+  it("una fila de trackers normal no dispara ningun aviso", () => {
+    const r = resolveOriginEnd(
+      { row: fila({ lat: -32.5, lon: 148.9 }, { lat: -32.5006, lon: 148.9 }),
+        startIsNorth: true, startIsEast: false, alineacion: { norteSur: 0.999, esteOeste: 0.03 } },
+      norte);
+    expect(r.warnings).toEqual([]);
+  });
+});
+
+/**
+ * Origen fijo e inversion son excluyentes, y eso hay que poder verlo.
+ *
+ * `piercing-chain` decide si un string se numera al reves porque el cable lo
+ * atraviesa viniendo de la caja. Esa pregunta tiene sentido mientras el modulo
+ * 1 sea "el primero de la serie electrica". Declarando que el modulo 1 es el
+ * del extremo norte, la numeracion la fija la geometria: invertir seria
+ * contradecir la convencion que el informe declara, y dejaria media fila
+ * numerada desde el norte y la otra media desde el sur, las dos diciendo que
+ * cuentan desde el norte.
+ */
+describe("con origen en el norte no hay nada que invertir", () => {
+  const fila: TrackerRow = {
+    id: "r1", block: "01", tracker: "01-001", row: "R1",
+    start: { lat: -32.5, lon: 148.9 }, end: { lat: -32.5006, lon: 148.9 },
+    pos: 1, posTotal: 3,
+  };
+
+  it("sin inversion, los dos strings se cuentan para el mismo lado", () => {
+    const sin: FarmProfile["addressing"] = {
+      originStrategy: "fixed-end", fixedEnd: "north", inversionStrategy: "none",
+    };
+    expect(resolveInversion(fila, 0, sin).inverted).toBe(false);
+    expect(resolveInversion(fila, 1, sin).inverted).toBe(false);
+  });
+
+  it("con piercing-chain uno de los dos sale al reves: por eso no se combinan", () => {
+    const con: FarmProfile["addressing"] = {
+      originStrategy: "fixed-end", fixedEnd: "north", inversionStrategy: "piercing-chain",
+    };
+    const a = resolveInversion(fila, 0, con).inverted;
+    const b = resolveInversion(fila, 1, con).inverted;
+    expect(a).not.toBe(b);
+  });
+});

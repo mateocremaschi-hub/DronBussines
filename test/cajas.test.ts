@@ -174,6 +174,66 @@ describe("la punta de entrada medida contra la caja", () => {
     expect(p.get(7)).toBe("end");
   });
 
+  it("un bloque dibujado en dos pedazos de la hoja se resuelve igual", () => {
+    /*
+      Un bloque no siempre se dibuja de una pieza. El 06 de Wellington tiene 130
+      trackers y una sola lamina, pero esta partido para que entre en la hoja
+      —como un texto que sigue en la columna de al lado—, y cada pedazo esta en
+      su lugar con su propia escala. Un solo mapa no puede describir a los dos:
+      el ajuste de compromiso quedaba en 69,8 m y el bloque entero se
+      descartaba. Con un mapa por pedazo: 1,4 m y 246 de 260 filas.
+
+      Aca se arma un bloque de cuatro bancos de a diez, y los dos bancos del
+      norte se dibujan corridos y a otra escala, como la segunda columna de la
+      hoja.
+    */
+    const bancos = [200, 600, 1000, 1400];
+    const mover = (x: number, y: number): [number, number] => [x * 0.8 + 4000, (y - 1000) * 0.8 + 100];
+    const cajas = [
+      { name: "SUR", x: 600, y: 20 },
+      { name: "C1-abajo", x: 600, y: 800 },
+      { name: "C1-arriba", x: 600, y: 800 },
+      { name: "NORTE", x: 600, y: 1580 },
+    ].map((c) => (c.name === "C1-arriba" || c.name === "NORTE"
+      ? { ...c, x: mover(c.x, c.y)[0], y: mover(c.x, c.y)[1] }
+      : c));
+
+    const trackers: BloqueConCajas["trackers"] = [];
+    const rows: TrackerRow[] = [];
+    const esperado = new Map<number, "start" | "end">();
+    let n = 0;
+    for (let b = 0; b < bancos.length; b++) {
+      for (let i = 0; i < 10; i++) {
+        n++;
+        const cx = 500 + i * 30;
+        const cy = bancos[b]!;
+        const segundo = cy >= 1000;
+        const [px, py] = segundo ? mover(cx, cy) : [cx, cy];
+        trackers.push({
+          tracker: `07-${String(n).padStart(3, "0")}`,
+          cx: px, cy: py,
+          caja: ["SUR", "C1-abajo", "C1-arriba", "NORTE"][b]!,
+        });
+        const norte = cy * 0.2, este = cx * 0.2;
+        rows.push({
+          id: `07-07-${String(n).padStart(3, "0")}-R1`,
+          block: "07", tracker: `07-${String(n).padStart(3, "0")}`, row: "R1",
+          start: { lat: LAT0 + (norte - 32.5) / M_LAT, lon: LON0 + este / M_LON },
+          end: { lat: LAT0 + (norte + 32.5) / M_LAT, lon: LON0 + este / M_LON },
+        });
+        // La caja del banco 0 y del 2 les queda al sur; la del 1 y el 3, al norte.
+        esperado.set(n, b === 0 || b === 2 ? "start" : "end");
+      }
+    }
+
+    const { origins, bloques } = sentidoDesdeLasCajas(rows, [{ block: "07", trackers, cajas }]);
+    expect(bloques[0]!.motivo).toBe("resuelto");
+    expect(bloques[0]!.detail).toMatch(/dibujado en 2 pedazos/);
+    const p = puntas(rows, origins);
+    expect(p.size).toBe(40);
+    for (const [k, v] of esperado) expect(p.get(k)).toBe(v);
+  });
+
   it("dice que le falta el plano de interconexion en vez de quedarse callado", () => {
     const { origins, bloques } = sentidoDesdeLasCajas(filas(), [bloque({ cajas: [] })]);
     expect(origins.size).toBe(0);
@@ -213,6 +273,59 @@ describe("la caja que manda es la de la lista del cliente", () => {
   });
 });
 
+describe("en que mitad de la fila vive cada string", () => {
+  /*
+    El compilador ordenaba los strings por numero ascendente, asumiendo que el
+    menor va primero. Eso era cierto mientras el conteo arrancara en la caja de
+    continua. Contando desde el norte, la suposicion da vuelta la etiqueta en
+    toda fila cuya caja este al sur: el mismo panel pasa de "string 5, modulo 1"
+    a "string 6, modulo 28".
+
+    Y no alcanza con invertir la convencion, porque no hay una. Medido contra
+    los planos de Wellington, el string menor queda al norte en el 75% de las
+    filas del bloque 29, el 87% del 34 y el 100% del 47 — no es ruido, es la
+    simetria real: los bancos de un lado de la calle son el espejo de los del
+    otro. Ninguna regla fija puede describir las dos mitades.
+
+    El plano dibuja cada etiqueta encima de la mitad que le toca, asi que se
+    mide. Contra 1506 filas reales, el orden medido coincide con el lado de la
+    caja en 1504.
+  */
+  const conStrings = (): BloqueConCajas => ({
+    ...bloque(),
+    strings: [
+      // El tracker 1 tiene el string 9 al norte y el 4 al sur: al reves de lo
+      // que diria "el menor primero".
+      { n: "S-1.9", t: "07-001", r: "R1", x: CX(1), y: 200 + 120 },
+      { n: "S-1.4", t: "07-001", r: "R1", x: CX(1), y: 200 - 120 },
+    ],
+  });
+
+  it("los ordena por donde estan dibujados, no por su numero", () => {
+    const rows = filas().map((r) =>
+      r.tracker === "07-001" ? { ...r, stringLabels: ["S-1.4", "S-1.9"] } : r);
+    const { stringsDesdeElNorte } = sentidoDesdeLasCajas(rows, [conStrings()]);
+    // En este bloque la lamina tiene el norte hacia +y, asi que el 9 va primero.
+    expect(stringsDesdeElNorte.get("07-07-001-R1")).toEqual(["S-1.9", "S-1.4"]);
+  });
+
+  it("no opina si las dos etiquetas caen casi en el mismo punto", () => {
+    const b = conStrings();
+    b.strings = b.strings!.map((s) => ({ ...s, y: 200 }));
+    const rows = filas().map((r) =>
+      r.tracker === "07-001" ? { ...r, stringLabels: ["S-1.4", "S-1.9"] } : r);
+    const { stringsDesdeElNorte } = sentidoDesdeLasCajas(rows, [b]);
+    expect(stringsDesdeElNorte.has("07-07-001-R1")).toBe(false);
+  });
+
+  it("no inventa un orden para una etiqueta que el plano no dibuja", () => {
+    const rows = filas().map((r) =>
+      r.tracker === "07-001" ? { ...r, stringLabels: ["S-1.4", "S-QUE-NO-ESTA"] } : r);
+    const { stringsDesdeElNorte } = sentidoDesdeLasCajas(rows, [conStrings()]);
+    expect(stringsDesdeElNorte.has("07-07-001-R1")).toBe(false);
+  });
+});
+
 describe("cruzar las dos lecturas", () => {
   const rows = filas();
   const ids = rows.map((r) => r.id);
@@ -248,17 +361,24 @@ describe("cruzar las dos lecturas", () => {
     expect(r.origins.size).toBe(ids.length);
   });
 
-  it("compara contra lo que la fila ya traia, porque los planos entran de a tandas", () => {
-    // Segunda tanda: entran los de interconexion, que traen la caja y NO la
-    // marca de perimetro. Si el cruce solo mirara la lectura en curso, aca no
-    // habria contra que comparar y el control cruzado se perderia entero.
+  it("lo que la fila ya traia no ensucia el cruce: la caja lo corrige y se cuenta aparte", () => {
+    /*
+      Son dos comparaciones distintas. La marca de perimetro es otra lectura
+      del plano, independiente: si coincide con la caja, el dato es bueno. Lo
+      que la fila traia de antes suele venir del heuristico que mide huecos
+      entre picas — el que en Wellington erraba en los 52 bloques de 52. Que la
+      caja lo contradiga es lo ESPERADO. Contarlo junto con lo otro bajaba el
+      porcentaje de acuerdo y llenaba la lista de "bloques para mirar" con
+      bloques donde no hay nada que mirar.
+    */
     const previo = new Map(ids.map((id) => [id, "start" as const]));
     const cajas = new Map(ids.map((id) => [id, "end" as const]));
     const r = acordar(rows, new Map(), cajas, previo);
-    expect(r.difieren).toBe(ids.length);
-    expect(r.bloquesAlReves).toEqual(["07"]);
-    // Y la caja le gana a la deduccion vieja: una esta dibujada, la otra salio
-    // de medir huecos entre picas.
+    expect(r.difieren).toBe(0);          // el perimetro no opino: no hay cruce
+    expect(r.bloquesMezclados).toEqual([]);
+    expect(r.bloquesAlReves).toEqual([]);
+    expect(r.corregidas).toBe(ids.length);
+    // Y la caja le gana igual: una esta dibujada, la otra salio de medir huecos.
     expect([...r.origins.values()].every((v) => v === "end")).toBe(true);
   });
 });

@@ -52,13 +52,3 @@ export function projectOnSegment(
     foot: { x: a.x + ux * alongM, y: a.y + uy * alongM },
   };
 }
-
-/** Punto a distancia `d` desde `a` en direccion a `b`. */
-export function pointAlong(
-  a: { x: number; y: number },
-  ux: number,
-  uy: number,
-  d: number,
-): { x: number; y: number } {
-  return { x: a.x + ux * d, y: a.y + uy * d };
-}

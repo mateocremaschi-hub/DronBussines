@@ -914,7 +914,22 @@ function armarBloque(
     const best = tpos.reduce((a, b) =>
       10 * Math.abs(b[1] - ss.y) + Math.abs(b[0] - ss.x) <
       10 * Math.abs(a[1] - ss.y) + Math.abs(a[0] - ss.x) ? b : a);
-    return { n: ss.n, s, t: best[2], r: best[3] };
+    /*
+      Se guarda DONDE esta dibujada la etiqueta, no solo a que fila pertenece.
+
+      Una fila larga tiene dos strings, uno en cada mitad, y hasta ahora la app
+      decidia cual era cual con una convencion —"el numero menor esta mas cerca
+      de la caja"— que no es una regla del mundo: Edenvale y Wellington numeran
+      distinto, y medido contra los planos de Wellington esa convencion se
+      cumple en el 69%, 76% y 28% de las filas segun el bloque. O sea que no es
+      una convencion, es una moneda.
+
+      El plano no necesita que se lo adivine: dibuja cada etiqueta encima de la
+      mitad que le toca. Esa posicion, llevada al terreno, dice en que mitad
+      esta cada string sin suponer nada — y sirve igual en cualquier parque,
+      numere como numere.
+    */
+    return { n: ss.n, s, t: best[2], r: best[3], x: Math.round(ss.x * 10) / 10, y: Math.round(ss.y * 10) / 10 };
   });
 
   const sinCaja = [...tmap.values()].filter((t) => !t.dcbox).length;

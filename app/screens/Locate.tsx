@@ -274,10 +274,10 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     () => diagnosticoDeReglas(checks, parque.profile, parque.rows),
     [checks, parque.profile, parque.rows],
   );
-  const espejo = useMemo(
-    () => pareceEspejado(checks, parque.profile.topology.modulesPerString),
-    [checks, parque.profile.topology.modulesPerString],
-  );
+  // El N con el que se compara sale de la fila de cada conteo, no del perfil:
+  // en un parque que mezcla trackers de 56 con trackers de 28, el N del perfil
+  // no es el de la fila donde se conto.
+  const espejo = useMemo(() => pareceEspejado(checks, farm), [checks, farm]);
 
   const resumen = useMemo(() => summarize(checks, parque.rows), [checks, parque.rows]);
 
@@ -546,12 +546,25 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             <h3>Que regla explica los desacuerdos</h3>
             {espejo.espejado && (
               <p>
-                <strong>Esta espejado.</strong> En un string de{" "}
-                {parque.profile.topology.modulesPerString} modulos, contar desde la otra punta
-                convierte el modulo k en el {espejo.esperada} − k. Tus sumas dan{" "}
-                <strong>{espejo.sumas.join(", ")}</strong> — o sea {espejo.esperada}, con el ruido
-                del GPS. Y como los conteos cubren las dos puntas de la fila, eso ademas descarta
-                un error de paso: si el paso estuviera mal, las sumas se irian corriendo.
+                <strong>Esta espejado.</strong>{" "}
+                {espejo.esperada != null ? (
+                  <>
+                    En un string de {espejo.esperada - 1} modulos, contar desde la otra punta
+                    convierte el modulo k en el {espejo.esperada} − k. Tus sumas dan{" "}
+                    <strong>{espejo.sumas.join(", ")}</strong> — o sea {espejo.esperada}, con el
+                    ruido del GPS.
+                  </>
+                ) : (
+                  <>
+                    Contar desde la otra punta convierte el modulo k en el N+1 − k, con el N del
+                    tracker donde estes parado. Tus sumas dan{" "}
+                    <strong>{espejo.sumas.join(", ")}</strong>, y cada una da el N+1 de SU fila
+                    (<strong>{espejo.esperadas.join(", ")}</strong>) con el ruido del GPS: este
+                    parque mezcla dos largos de tracker.
+                  </>
+                )}{" "}
+                Y como los conteos cubren las dos puntas de la fila, eso ademas descarta un error
+                de paso: si el paso estuviera mal, las sumas se irian corriendo.
               </p>
             )}
             <div className="tablewrap">

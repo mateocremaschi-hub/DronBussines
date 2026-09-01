@@ -47,6 +47,17 @@ export interface BloqueConCajas {
   block: string;
   trackers: TrackerConCaja[];
   cajas: Array<{ name: string; x: number; y: number }>;
+  /**
+   * Los strings del bloque con la posicion donde estan DIBUJADOS en la lamina.
+   *
+   * De aca sale en que mitad de la fila vive cada string. La app lo decidia
+   * hasta ahora con una convencion —"el numero menor esta mas cerca de la
+   * caja"— que no es una regla del mundo: medida contra los planos de
+   * Wellington se cumple en el 69%, 76% y 28% de las filas segun el bloque, y
+   * Edenvale numera distinto que Wellington. El dibujo, en cambio, pone cada
+   * etiqueta encima de la mitad que le toca.
+   */
+  strings?: Array<{ n: string; t?: string; r?: string; x?: number; y?: number }>;
 }
 
 export interface BloqueResuelto {
@@ -59,6 +70,11 @@ export interface BloqueResuelto {
 export interface SentidoPorCajas {
   origins: Map<string, "start" | "end">;
   bloques: BloqueResuelto[];
+  /**
+   * Para cada fila, sus strings ordenados DESDE EL NORTE, medidos contra el
+   * dibujo. El primero es el que ocupa la mitad norte.
+   */
+  stringsDesdeElNorte: Map<string, string[]>;
 }
 
 function numeroDeTracker(texto: string): number | null {
@@ -122,6 +138,8 @@ export interface PuntoDelBloque { n: number; cx: number; cy: number; X: number; 
 
 interface Pedazo {
   A: [[number, number], [number, number]];
+  /** El corrimiento del mapa, para poder ubicar un punto y no solo una direccion. */
+  t: [number, number];
   /** Numeros de tracker que este pedazo explica. */
   miembros: Set<number>;
   /** Mediana del residuo, en metros. */
@@ -225,6 +243,7 @@ function apoyarPorPartes(puntos: PuntoDelBloque[], tolerancia: number): Pedazo[]
     const res = grupo.map((q) => residuo(q, f)).sort((a, b) => a - b);
     out.push({
       A: [[f.sx[0], f.sx[1]], [f.sy[0], f.sy[1]]],
+      t: [f.sx[2], f.sy[2]],
       miembros: new Set(grupo.map((q) => q.n)),
       error: res[res.length >> 1] ?? 0,
     });
@@ -270,6 +289,7 @@ export function sentidoDesdeLasCajas(
   bloques: BloqueConCajas[],
 ): SentidoPorCajas {
   const origins = new Map<string, "start" | "end">();
+  const stringsDesdeElNorte = new Map<string, string[]>();
   const detalles: BloqueResuelto[] = [];
 
   for (const b of bloques) {
@@ -409,6 +429,76 @@ export function sentidoDesdeLasCajas(
     };
     const errorTipico = mediana(pedazos.map((p) => p.error));
 
+    /*
+      En que mitad de la fila vive cada string, medido y no supuesto.
+
+      El mismo mapa que lleva el dibujo al terreno ubica la etiqueta de cada
+      string. Proyectada sobre el eje de la fila da una posicion a lo largo, y
+      con eso los strings de la fila se ordenan de norte a sur. No hace falta
+      ninguna convencion sobre como numera el parque: Edenvale y Wellington
+      numeran distinto y los dos se leen igual.
+    */
+    const alTerreno = (n: number, p: { x: number; y: number }) => {
+      const pz = dePedazo.get(n);
+      if (!pz) return null;
+      return {
+        X: pz.A[0][0] * p.x + pz.A[0][1] * p.y + pz.t[0],
+        Y: pz.A[1][0] * p.x + pz.A[1][1] * p.y + pz.t[1],
+      };
+    };
+    /*
+      Que strings tiene cada fila lo dice la LISTA DEL CLIENTE, no el dibujo.
+
+      El plano tambien lo intenta —le adjudica cada etiqueta al tracker mas
+      cercano— pero esa asignacion es ruidosa: en los planos de Wellington hay
+      filas a las que les cae media docena de strings, cuando una fila tiene uno
+      o dos. Usar eso para ordenar era heredar su ruido.
+
+      La lista del cliente ya trae, fila por fila, sus strings. Del dibujo se usa
+      lo unico que el dibujo sabe mejor que nadie: DONDE esta cada etiqueta. Las
+      dos fuentes se juntan por el nombre del string.
+    */
+    const normalizar = (t: string) => t.trim().toUpperCase().replace(/[\s._/-]+/g, ".");
+    const posDeString = new Map<string, { x: number; y: number }>();
+    for (const st of b.strings ?? []) {
+      if (st.x == null || st.y == null) continue;
+      const k = normalizar(st.n);
+      // Una etiqueta repetida en la lamina no sirve para ubicar nada.
+      if (posDeString.has(k)) posDeString.set(k, { x: NaN, y: NaN });
+      else posDeString.set(k, { x: st.x, y: st.y });
+    }
+    for (const fila of filas) {
+      const n = numeroDeTracker(fila.tracker);
+      const etiquetas = fila.stringLabels;
+      if (n == null || !etiquetas || etiquetas.length < 2) continue;
+      const a = geo(fila.start), z = geo(fila.end);
+      // El eje de la fila, apuntando al NORTE.
+      const haciaElNorte = a.Y >= z.Y
+        ? { X: a.X - z.X, Y: a.Y - z.Y }
+        : { X: z.X - a.X, Y: z.Y - a.Y };
+      const largo = Math.hypot(haciaElNorte.X, haciaElNorte.Y);
+      if (largo === 0) continue;
+      const conPos: Array<{ n: string; u: number }> = [];
+      for (const et of etiquetas) {
+        const p = posDeString.get(normalizar(et));
+        if (!p || !Number.isFinite(p.x)) continue;
+        const g = alTerreno(n, p);
+        if (!g) continue;
+        // Proyeccion sobre el eje: cuanto mas grande, mas al norte.
+        conPos.push({ n: et, u: (g.X * haciaElNorte.X + g.Y * haciaElNorte.Y) / largo });
+      }
+      if (conPos.length !== etiquetas.length) continue;
+      const orden = conPos.sort((p, q) => q.u - p.u);
+      /*
+        Dos etiquetas practicamente encimadas no dicen quien va primero. Se pide
+        que se separen al menos un cuarto del largo de la fila: dos strings de
+        una fila larga estan a media fila uno del otro, asi que esto solo saca
+        los casos en que el dibujo no distingue.
+      */
+      if (Math.abs(orden[0]!.u - orden[orden.length - 1]!.u) < largo * 0.25) continue;
+      stringsDesdeElNorte.set(fila.id, orden.map((o) => o.n));
+    }
+
     const largos: number[] = [];
     for (const r of filas) {
       const n = numeroDeTracker(r.tracker);
@@ -465,7 +555,7 @@ export function sentidoDesdeLasCajas(
     });
   }
 
-  return { origins, bloques: detalles };
+  return { origins, bloques: detalles, stringsDesdeElNorte };
 }
 
 /**

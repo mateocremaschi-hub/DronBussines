@@ -196,18 +196,35 @@ export interface Reconciled extends VendorFinding {
   ownString?: string;
 }
 
-/** Cuantos modulos tiene un string, para saber cual es el espejo de cual. */
-function modulesPerString(farm: CompiledFarm): number {
-  return farm.profile.topology.modulesPerString;
+/**
+ * Cuantos modulos tiene el string de CADA fila, para saber cual es el espejo
+ * de cual.
+ *
+ * Esto era un solo numero leido del perfil, y daba por sentado que todas las
+ * filas del parque son iguales. Una variante de tracker puede cambiar el largo
+ * del string —56 modulos en las filas largas, 28 en las cortas— y el compilador
+ * ya lo resuelve fila por fila: leer el del perfil es tirar ese dato.
+ *
+ * Lo que rompia: un hallazgo espejado en una fila corta —el proveedor dice
+ * modulo 5, la geometria da 24— se probaba contra 56 + 1 − 5 = 52, no daba, y
+ * caia en "otro-string". Con eso el veredicto general pasaba de "esta todo
+ * espejado", que es accionable, a "no cierran de ninguna de las dos formas",
+ * que manda a revisar a mano un archivo que no tiene nada raro.
+ */
+function modulosPorFila(farm: CompiledFarm): Map<string, number> {
+  return new Map(farm.rows.map((r) => [r.source.id, r.modulesPerString]));
 }
 
 export function reconcile(findings: VendorFinding[], farm: CompiledFarm): Reconciled[] {
-  const n = modulesPerString(farm);
+  const porFila = modulosPorFila(farm);
   return findings.map((f) => {
     const res = locate({ lat: f.lat, lon: f.lon }, farm);
     const a = res.best;
     const out: Reconciled = { ...f, address: a, agreement: "sin-ubicar" };
     if (!a) return out;
+
+    // El largo del string de la fila que devolvio `locate`, no el del perfil.
+    const n = porFila.get(a.rowId) ?? farm.profile.topology.modulesPerString;
 
     out.ownModule = a.module;
     if (a.stringLabel) out.ownString = a.stringLabel;
@@ -326,7 +343,19 @@ export function trackerEvents(
   farm: CompiledFarm,
   minFraccion = 0.5,
 ): TrackerEvent[] {
-  const porFila = farm.profile.topology.modulesPerString * farm.profile.topology.stringsPerRow;
+  /*
+    Cuantos modulos tiene cada fila, de la fila y no del perfil.
+
+    Era `modulesPerString * stringsPerRow` del perfil, un solo numero para todo
+    el parque. En un parque mixto eso divide los hallazgos de un tracker corto
+    de 28 por 56: la fila marcada entera da fraccion 0.5 —justo el umbral— y
+    con unos pocos modulos menos ya no se reporta como evento de tracker. El
+    agrupamiento es lo que convierte 767 "defectos de modulo" en 15 trackers
+    desalineados; perderlo en las filas cortas es perderlo donde mas se nota.
+  */
+  const modulosDeLaFila = new Map(farm.rows.map((r) => [r.source.id, r.modulesPerRow]));
+  const porFilaDelPerfil =
+    farm.profile.topology.modulesPerString * farm.profile.topology.stringsPerRow;
   const info = new Map(geometry.map((r) => [r.id, r]));
   const grupos = new Map<string, Reconciled[]>();
 
@@ -338,9 +367,9 @@ export function trackerEvents(
 
   const out: TrackerEvent[] = [];
   for (const [k, g] of grupos) {
-    const fraccion = g.length / porFila;
-    if (fraccion < minFraccion) continue;
     const rowId = k.slice(0, k.lastIndexOf("|"));
+    const fraccion = g.length / (modulosDeLaFila.get(rowId) ?? porFilaDelPerfil);
+    if (fraccion < minFraccion) continue;
     const geo = info.get(rowId);
     const ev: TrackerEvent = {
       rowId,

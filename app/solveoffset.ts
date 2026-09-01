@@ -159,15 +159,35 @@ export function veredictoDeOffset(
 function centradoEfectivoMm(profile: FarmProfile, rows: TrackerRow[]): number {
   if (!rows.length) return 0;
   const farm = compileFarm(profile, rows);
-  const largos = farm.rows.map((r) => r.lengthM).sort((a, b) => a - b);
-  const mediana = largos[Math.floor(largos.length / 2)]!;
-  const n = profile.topology.modulesPerString * profile.topology.stringsPerRow;
+  /*
+    El sobrante se mide FILA POR FILA y recien despues se saca la mediana.
+
+    Antes se tomaba la mediana de los largos y se la comparaba contra un unico
+    "cuanto ocupan los modulos" sacado del perfil. En un parque de un solo tipo
+    de tracker da igual; en uno que mezcla largos de 56 modulos con cortos de
+    28 —lo normal— la mediana de los largos cae entre los dos tamanos y se la
+    compara contra el ocupado del tipo principal, asi que el centrado sale de
+    restar una fila de un tipo contra los modulos del otro. El numero que salia
+    de ahi no era el centrado de ninguna fila del parque.
+
+    Cada fila compilada ya sabe cuantos modulos tiene y cuanto mide, asi que el
+    sobrante propio de cada una es una resta, y la mediana de esos sobrantes es
+    la que representa al parque.
+  */
   const paso = (profile.module.widthMm + profile.module.gapMm) / 1000;
-  const ocupan =
-    n * paso -
-    profile.topology.stringsPerRow * (profile.module.gapMm / 1000) +
-    (profile.topology.stringsPerRow - 1) * ((profile.topology.stringGapMm ?? 0) / 1000);
-  return Math.round(((mediana - ocupan) / 2) * 1000);
+  const sobrantes = farm.rows
+    .map((r) => {
+      const porFila = r.stringsPerRow ?? profile.topology.stringsPerRow;
+      const n = r.modulesPerString * porFila;
+      const ocupan =
+        n * paso -
+        porFila * (profile.module.gapMm / 1000) +
+        (porFila - 1) * ((profile.topology.stringGapMm ?? 0) / 1000);
+      return r.lengthM - ocupan;
+    })
+    .sort((a, b) => a - b);
+  const mediana = sobrantes[Math.floor(sobrantes.length / 2)]!;
+  return Math.round((mediana / 2) * 1000);
 }
 
 function notasDe(x: {

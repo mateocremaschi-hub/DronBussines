@@ -20,11 +20,12 @@
 
 import { describe, expect, it } from "vitest";
 import edenvaleJson from "../farms/edenvale.json" with { type: "json" };
-import type { FarmProfile } from "../src/types.js";
+import northfieldJson from "../farms/northfield-synthetic.json" with { type: "json" };
+import type { CompiledFarm, FarmProfile, TrackerRow } from "../src/types.js";
 import { compileFarm, locate } from "../src/index.js";
 import { diagnosticoDeReglas, pareceEspejado, voltearLadoDelBloque } from "../app/diagnostico";
 import type { FieldCheck } from "../app/checks";
-import { makeRow } from "./helpers/synthetic.js";
+import { makeRow, pointAtSlot } from "./helpers/synthetic.js";
 
 const profile = edenvaleJson as unknown as FarmProfile;
 const N = profile.topology.modulesPerString;
@@ -37,6 +38,16 @@ const fila = makeRow(
   },
   profile,
 );
+
+/**
+ * El parque compilado, que es lo que ahora recibe `pareceEspejado`.
+ *
+ * Antes recibia el `modulesPerString` del perfil, un numero suelto. Eso daba
+ * por sentado que todas las filas del parque miden lo mismo, y un parque puede
+ * mezclar trackers largos de 56 modulos con cortos de 28: el largo del string
+ * donde se conto lo sabe la fila compilada, no el perfil.
+ */
+const compilado = compileFarm(profile, [fila]);
 
 /** Los cuatro conteos reales, tal como quedaron registrados. */
 const REALES: Array<{ dijo: number; conto: number; string: number }> = [
@@ -59,8 +70,8 @@ const comoChecks = (): FieldCheck[] =>
 
 describe("la pista rapida: las sumas", () => {
   it("reconoce el espejo en los cuatro conteos reales", () => {
-    const p = pareceEspejado(comoChecks(), N);
-    expect(p.esperada).toBe(29);
+    const p = pareceEspejado(comoChecks(), compilado);
+    expect(p.esperada).toBe(N + 1);
     expect(p.sumas).toEqual([30, 29, 27, 29]);
     expect(p.espejado).toBe(true);
   });
@@ -74,18 +85,18 @@ describe("la pista rapida: las sumas", () => {
     const dijo = REALES.map((r) => r.dijo);
     expect(Math.min(...dijo)).toBeLessThanOrEqual(2);
     expect(Math.max(...dijo)).toBeGreaterThanOrEqual(26);
-    const p = pareceEspejado(comoChecks(), N);
+    const p = pareceEspejado(comoChecks(), compilado);
     const desvios = p.sumas.map((s) => Math.abs(s - 29));
     expect(Math.max(...desvios)).toBeLessThanOrEqual(2);
   });
 
   it("un desacuerdo cualquiera no lo llama espejo", () => {
     const sueltos = comoChecks().slice(0, 2).map((c, i) => ({ ...c, countedModule: i === 0 ? 12 : 5 }));
-    expect(pareceEspejado(sueltos, N).espejado).toBe(false);
+    expect(pareceEspejado(sueltos, compilado).espejado).toBe(false);
   });
 
   it("con un solo conteo no se pronuncia: una suma sola es casualidad", () => {
-    expect(pareceEspejado(comoChecks().slice(0, 1), N).espejado).toBe(false);
+    expect(pareceEspejado(comoChecks().slice(0, 1), compilado).espejado).toBe(false);
   });
 });
 
@@ -224,5 +235,270 @@ describe("el desempate entre las dos hipotesis que empatan", () => {
     expect(d.notas.join(" ")).toMatch(/lado de la calle del bloque 04/);
     // Y avisa del alcance: es el bloque entero, no una fila.
     expect(d.notas.join(" ")).toMatch(/BLOQUE entero/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Un parque que cuenta desde el norte, con dos bloques que no estan igual
+// ---------------------------------------------------------------------------
+
+/**
+ * Northfield cuenta SIEMPRE desde el extremo norte de la fila y no invierte
+ * nada. Es el parque de control justo para esto: la fila no trae `originEnd`
+ * escrito —lo resuelve el compilador mirando cual pica queda mas al norte— asi
+ * que una hipotesis que quiera dar vuelta el conteo tiene que preguntarselo al
+ * compilado en vez de suponer que las picas del Excel estan todas en el mismo
+ * sentido.
+ */
+const norte = northfieldJson as unknown as FarmProfile;
+
+/** El mismo parque, pero con cada fila contando desde su punta opuesta. */
+function alReves(rows: TrackerRow[]): CompiledFarm {
+  const hoy = compileFarm(norte, rows);
+  return compileFarm(
+    { ...norte, addressing: { ...norte.addressing, originStrategy: "per-row-flag" } },
+    rows.map((r) => {
+      const c = hoy.rows.find((x) => x.source.id === r.id)!;
+      return { ...r, originEnd: c.originEnd === "start" ? "end" : "start" } as TrackerRow;
+    }),
+  );
+}
+
+/**
+ * Un conteo hecho parado en el hueco fisico `slot`, contando desde la pica
+ * `start` de la fila.
+ *
+ * Si `espejado`, la persona conto lo que da la otra punta y queda registrado
+ * como desacuerdo. Si no, conto lo mismo que dijo la app y queda como acuerdo.
+ */
+function conteoEn(
+  rows: TrackerRow[],
+  row: TrackerRow,
+  slot: number,
+  espejado: boolean,
+): FieldCheck {
+  const hoy = compileFarm(norte, rows);
+  const coord = pointAtSlot(row, slot, norte, "start");
+  const dijo = locate({ ...coord, accuracyM: 1 }, hoy).best?.module;
+  const otro = locate({ ...coord, accuracyM: 1 }, alReves(rows)).best?.module;
+  expect(dijo).toBeTypeOf("number");
+  expect(otro).toBeTypeOf("number");
+
+  const c: FieldCheck = {
+    id: `${row.id}-${slot}`,
+    at: "2026-09-01T09:00:00Z",
+    coord,
+    accuracyM: 1,
+    said: `modulo ${dijo}`,
+    rowId: row.id,
+    block: row.block,
+    tracker: row.tracker,
+    module: dijo!,
+    outcome: espejado ? "mismatch" : "match",
+  };
+  if (espejado) c.countedModule = otro!;
+  return c;
+}
+
+describe("que bloques se ofrecen para dar vuelta", () => {
+  /**
+   * El escenario que rompia: conteos en dos bloques, uno bien y otro espejado.
+   *
+   * `bloquesParaVoltear` salia de `utiles.map(c => c.block)`, o sea TODOS los
+   * bloques donde hubiera un conteo. La pantalla ofrecia un boton para el 04 y
+   * otro para el 05, y el del 04 daba vuelta un bloque que estaba bien: lo
+   * dejaba contando al reves y encima le borraba sus conteos, porque al
+   * aplicarlo se reescribe la calibracion del bloque.
+   */
+  const bien = makeRow(
+    { id: "04-001-R1", block: "04", tracker: "04-001", row: "R1",
+      anchor: { lat: -26.92, lon: 150.58 }, azimuthDeg: 180 },
+    norte,
+  );
+  const espejada = makeRow(
+    { id: "05-001-R1", block: "05", tracker: "05-001", row: "R1",
+      anchor: { lat: -26.92, lon: 150.59 }, azimuthDeg: 180 },
+    norte,
+  );
+  const rows = [bien, espejada];
+
+  // El 05 pesa mas que el 04 a proposito: si empataran, el diagnostico no
+  // propondria nada y el test no probaria nada.
+  const checks = [
+    conteoEn(rows, bien, 10, false),
+    conteoEn(rows, bien, 20, false),
+    conteoEn(rows, espejada, 2, true),
+    conteoEn(rows, espejada, 5, true),
+    conteoEn(rows, espejada, 26, true),
+    conteoEn(rows, espejada, 29, true),
+  ];
+
+  it("los conteos del bloque sano coinciden y los del otro no", () => {
+    const d = diagnosticoDeReglas(checks, norte, rows);
+    expect(d.usados).toBe(6);
+    expect(d.actual).toBe(2);
+    expect(d.mejor).not.toBeNull();
+    expect(d.mejor!.titulo).toMatch(/otra punta/);
+    expect(d.mejor!.aciertos).toBe(4);
+  });
+
+  it("ofrece el bloque espejado y NO el que ya estaba bien", () => {
+    const d = diagnosticoDeReglas(checks, norte, rows);
+    expect(d.bloquesParaVoltear).toEqual(["05"]);
+  });
+
+  // Un bloque sin ningun desacuerdo no se ofrece jamas, ni cuando el resto del
+  // parque esta espejado: no hay nada que arreglar ahi.
+  it("un bloque donde la hipotesis rompe conteos que hoy coinciden no se ofrece", () => {
+    const d = diagnosticoDeReglas(checks, norte, rows);
+    expect(d.bloquesParaVoltear).not.toContain("04");
+    expect(d.notas.join(" ")).toMatch(/lado de la calle del bloque 05/);
+    expect(d.notas.join(" ")).not.toMatch(/bloque 04/);
+  });
+
+  // Sin desacuerdos no hay boton, aunque haya conteos de sobra.
+  it("con todos los conteos coincidiendo no ofrece ningun bloque", () => {
+    const soloBuenos = checks.filter((c) => c.outcome === "match");
+    const d = diagnosticoDeReglas(soloBuenos, norte, rows);
+    expect(d.bloquesParaVoltear).toEqual([]);
+  });
+});
+
+describe("una sola hipotesis de origen, que invierte fila por fila", () => {
+  /**
+   * El parque donde las dos hipotesis viejas no podian ganar.
+   *
+   * `origen-start` y `origen-end` forzaban `originEnd` al MISMO valor en todas
+   * las filas probadas, y el orden de las picas del Excel no significa nada:
+   * el topografo tomo unas filas de sur a norte y otras al reves (ver
+   * `deriveOriginEnds` en app/ingest.ts). Estas dos filas son ese caso —una
+   * relevada de norte a sur y la otra de sur a norte, las dos espejadas en el
+   * campo— y ahi cada una de las hipotesis viejas explicaba la mitad: la que
+   * ganaba terminaba siendo «los dos strings se cuentan invertidos», que da el
+   * mismo numero por una razon que no se puede ir a comprobar.
+   */
+  const deNorteASur = makeRow(
+    { id: "07-001-R1", block: "07", tracker: "07-001", row: "R1",
+      anchor: { lat: -26.92, lon: 150.58 }, azimuthDeg: 180 },
+    norte,
+  );
+  const deSurANorte = makeRow(
+    { id: "07-002-R1", block: "07", tracker: "07-002", row: "R1",
+      anchor: { lat: -26.9268, lon: 150.59 }, azimuthDeg: 0 },
+    norte,
+  );
+  const rows = [deNorteASur, deSurANorte];
+
+  it("las dos filas se relevaron en sentidos opuestos, que es el caso dificil", () => {
+    const hoy = compileFarm(norte, rows);
+    const a = hoy.rows.find((r) => r.source.id === "07-001-R1")!;
+    const b = hoy.rows.find((r) => r.source.id === "07-002-R1")!;
+    expect(a.originEnd).not.toBe(b.originEnd);
+  });
+
+  /*
+    Los slots se eligen lejos del medio de la fila. En una fila de 30, el
+    modulo 15 y su espejo (el 16) son vecinos, y el diagnostico da por bueno un
+    conteo que caiga entre los candidatos que la app ofrece por el error del
+    GPS: un conteo ahi no distingue una punta de la otra.
+  */
+  const checks = [
+    conteoEn(rows, deNorteASur, 3, true),
+    conteoEn(rows, deNorteASur, 10, true),
+    conteoEn(rows, deNorteASur, 28, true),
+    conteoEn(rows, deSurANorte, 3, true),
+    conteoEn(rows, deSurANorte, 10, true),
+    conteoEn(rows, deSurANorte, 28, true),
+  ];
+
+  it("explica las dos filas con una sola regla, no la mitad cada una", () => {
+    const d = diagnosticoDeReglas(checks, norte, rows);
+    expect(d.actual).toBe(0);
+    expect(d.mejor).not.toBeNull();
+    expect(d.mejor!.titulo).toMatch(/otra punta/);
+    expect(d.mejor!.aciertos).toBe(d.usados);
+  });
+
+  // La tabla mostraba dos filas con el mismo titulo y el mismo texto de
+  // arreglo, palabra por palabra, y numeros distintos.
+  it("en la tabla no hay dos hipotesis con el mismo titulo", () => {
+    const d = diagnosticoDeReglas(checks, norte, rows);
+    const titulos = d.hipotesis.map((h) => h.titulo);
+    expect(new Set(titulos).size).toBe(titulos.length);
+    expect(titulos.filter((t) => /otra punta/.test(t))).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// La pista rapida en un parque de dos tipos de tracker
+// ---------------------------------------------------------------------------
+
+/**
+ * El N contra el que se compara la suma sale de la FILA.
+ *
+ * `pareceEspejado` lo leia del perfil, y un parque puede mezclar trackers
+ * largos de 56 modulos con cortos de 28. Un conteo hecho en una fila corta
+ * —dijo 5, conto 24, suma 29— se comparaba contra el 57 de una fila larga: la
+ * pista decia "no esta espejado" justo donde lo estaba, y encima lo decia
+ * mirando conteos que SI cerraban en su propia fila.
+ */
+describe("la pista rapida con dos largos de tracker", () => {
+  const dosTipos: FarmProfile = {
+    id: "mixto-pista", name: "Parque de dos tipos", profileVersion: 1,
+    module: { widthMm: 1134, gapMm: 10, pitchMm: null },
+    topology: {
+      modulesPerString: 56,
+      stringsPerRow: 1,
+      variants: [{ id: "corto", modulesPerString: 28, stringsPerRow: 1 }],
+    },
+    geometry: { source: "survey-stakes", endpointOffsetMm: 0, endpointOffsetMode: "none" },
+    addressing: { originStrategy: "fixed-end", fixedEnd: "north", inversionStrategy: "none" },
+  };
+  const comoLarga: FarmProfile = { ...dosTipos, topology: { modulesPerString: 56, stringsPerRow: 1 } };
+  const comoCorta: FarmProfile = { ...dosTipos, topology: { modulesPerString: 28, stringsPerRow: 1 } };
+
+  const filaLarga = makeRow(
+    { id: "01-001-R1", block: "01", tracker: "01-001", anchor: { lat: -26.92, lon: 150.58 }, azimuthDeg: 180 },
+    comoLarga,
+  );
+  const filaCorta = makeRow(
+    { id: "01-002-R1", block: "01", tracker: "01-002", anchor: { lat: -26.92, lon: 150.582 }, azimuthDeg: 180 },
+    comoCorta,
+  );
+  const parque = compileFarm(dosTipos, [filaLarga, filaCorta]);
+
+  const conteo = (row: TrackerRow, dijo: number, conto: number): FieldCheck => ({
+    id: `${row.id}-${dijo}`, at: "2026-09-01T09:00:00Z",
+    coord: { ...row.start }, accuracyM: 3,
+    said: `modulo ${dijo}`, rowId: row.id, block: row.block, tracker: row.tracker,
+    module: dijo, outcome: "mismatch", countedModule: conto,
+  });
+
+  it("mide cada suma contra el largo de SU fila", () => {
+    const p = pareceEspejado([conteo(filaLarga, 10, 47), conteo(filaCorta, 5, 24)], parque);
+    expect(p.sumas).toEqual([57, 29]);
+    expect(p.esperadas).toEqual([57, 29]);
+    expect(p.espejado).toBe(true);
+  });
+
+  // Con dos largos distintos no hay un solo numero que escribir en pantalla.
+  it("no inventa una suma esperada unica cuando el parque mezcla dos largos", () => {
+    const p = pareceEspejado([conteo(filaLarga, 10, 47), conteo(filaCorta, 5, 24)], parque);
+    expect(p.esperada).toBeNull();
+  });
+
+  it("con los conteos en filas del mismo largo si dice cual es la suma", () => {
+    const p = pareceEspejado([conteo(filaCorta, 5, 24), conteo(filaCorta, 3, 26)], parque);
+    expect(p.esperada).toBe(29);
+    expect(p.espejado).toBe(true);
+  });
+
+  // Un conteo de una fila que este parque no tiene no aporta nada, y meterlo
+  // con el largo del perfil es exactamente el error que se esta arreglando.
+  it("descarta el conteo de una fila que no esta en el parque", () => {
+    const fantasma = { ...filaCorta, id: "99-999-R1" };
+    const p = pareceEspejado([conteo(filaCorta, 5, 24), conteo(fantasma, 5, 24)], parque);
+    expect(p.sumas).toEqual([29]);
+    expect(p.espejado).toBe(false);
   });
 });

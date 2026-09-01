@@ -25,7 +25,7 @@ import {
 } from "../app/vendor";
 import { applyStrings } from "../app/strings";
 import { compileFarm } from "../src/index.js";
-import type { FarmProfile } from "../src/types.js";
+import type { FarmProfile, TrackerRow } from "../src/types.js";
 import { makeRow, pointAtSlot } from "./helpers/synthetic.js";
 
 const profile = edenvaleJson as unknown as FarmProfile;
@@ -326,5 +326,132 @@ describe("el CSV se lee sin que nadie le cambie los numeros", () => {
     const f = readVendorFindings(sheets[0]!, suggestVendorMapping(sheets[0]!.headers));
     expect(f[0]!.lat).toBeCloseTo(-26.919, 3);
     expect(f[0]!.lon).toBeCloseTo(150.577, 3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Un parque con dos tipos de tracker mezclados
+// ---------------------------------------------------------------------------
+
+/**
+ * El largo del string sale de la FILA, no del perfil.
+ *
+ * La auditoria leia `profile.topology.modulesPerString` una sola vez y lo usaba
+ * para todo el parque. Un parque puede mezclar trackers largos con cortos —los
+ * cortos van contra el limite del terreno o en las puntas de fila, en los
+ * mismos bloques y en la misma lista de strings— y el compilador ya resuelve el
+ * largo fila por fila. Leer el del perfil es tirar ese dato justo donde importa.
+ *
+ * Lo que rompia, con los numeros de este archivo: en una fila corta de 28, el
+ * proveedor dice modulo 5 y la geometria da 24. Son el mismo modulo contado
+ * desde puntas opuestas (24 = 29 − 5), pero el espejo se probaba contra 56 + 1
+ * − 5 = 52, no daba, y el hallazgo caia en "otro-string". En una fila de 32 m
+ * eso son los dos extremos del tracker.
+ */
+const mixto: FarmProfile = {
+  id: "mixto", name: "Parque de dos tipos", profileVersion: 1,
+  module: { widthMm: 1134, gapMm: 10, lengthMm: 2278, orientation: "portrait", pitchMm: null },
+  topology: {
+    modulesPerString: 56,
+    stringsPerRow: 1,
+    variants: [{ id: "corto", name: "Tracker corto de 28", modulesPerString: 28, stringsPerRow: 1 }],
+  },
+  geometry: { source: "survey-stakes", endpointOffsetMm: 0, endpointOffsetMode: "none" },
+  addressing: { originStrategy: "fixed-end", fixedEnd: "north", inversionStrategy: "none" },
+  matching: { maxDistanceM: 20, neighborhood: 1, defaultAccuracyM: 1 },
+};
+
+/** El mismo perfil visto como si solo existiera un tipo: para medir largos. */
+const vistaLarga: FarmProfile = { ...mixto, topology: { modulesPerString: 56, stringsPerRow: 1 } };
+const vistaCorta: FarmProfile = { ...mixto, topology: { modulesPerString: 28, stringsPerRow: 1 } };
+
+const larga = makeRow(
+  { id: "01-001-R1", block: "01", tracker: "01-001", row: "R1",
+    anchor: { lat: -26.92, lon: 150.58 }, azimuthDeg: 180 },
+  vistaLarga,
+);
+const corta = makeRow(
+  { id: "01-002-R1", block: "01", tracker: "01-002", row: "R1",
+    anchor: { lat: -26.92, lon: 150.582 }, azimuthDeg: 180 },
+  vistaCorta,
+);
+const parqueMixto = compileFarm(mixto, [larga, corta]);
+
+/** Un hallazgo del proveedor parado en el modulo fisico `slot` de la fila. */
+function hallazgoEn(
+  index: number,
+  row: TrackerRow,
+  vista: FarmProfile,
+  slot: number,
+  moduleIndex: number,
+  anomaly = "Hot spot",
+): VendorFinding {
+  const c = pointAtSlot(row, slot, vista, "start");
+  return { index, lat: c.lat, lon: c.lon, moduleIndex, anomaly };
+}
+
+describe("la auditoria en un parque de dos tipos de tracker", () => {
+  it("el compilador le da a cada fila su largo, que es de donde hay que leerlo", () => {
+    const l = parqueMixto.rows.find((r) => r.source.id === "01-001-R1")!;
+    const c = parqueMixto.rows.find((r) => r.source.id === "01-002-R1")!;
+    expect(l.modulesPerString).toBe(56);
+    expect(c.modulesPerString).toBe(28);
+    expect(c.variantId).toBe("corto");
+  });
+
+  // El caso exacto: fila corta, el proveedor dice 5 y la geometria da 24.
+  it("reconoce el espejo en una fila corta, que con el largo del perfil no daba", () => {
+    const r = reconcile([hallazgoEn(1, corta, vistaCorta, 24, 5)], parqueMixto)[0]!;
+    expect(r.ownModule).toBe(24);
+    expect(r.agreement).toBe("espejado");
+  });
+
+  it("y lo sigue reconociendo en una fila larga, que es donde ya funcionaba", () => {
+    const r = reconcile([hallazgoEn(1, larga, vistaLarga, 50, 7)], parqueMixto)[0]!;
+    expect(r.ownModule).toBe(50);
+    expect(r.agreement).toBe("espejado");
+  });
+
+  it("una coincidencia en la fila corta sigue siendo coincidencia", () => {
+    const r = reconcile([hallazgoEn(1, corta, vistaCorta, 24, 24)], parqueMixto)[0]!;
+    expect(r.agreement).toBe("coincide");
+  });
+
+  /**
+   * El veredicto es lo que se lee en dos segundos. Con el largo del perfil, los
+   * hallazgos de las filas cortas caian en "no cierran de ninguna de las dos
+   * formas" y el numero del titular dejaba de contar medio archivo: un parque
+   * enteramente espejado —que se arregla de una sola manera— se leia como un
+   * archivo mezclado, que manda a revisar casos a mano.
+   */
+  it("un archivo entero espejado se ve entero espejado, no medio sin explicar", () => {
+    const findings = [
+      hallazgoEn(1, larga, vistaLarga, 50, 7),
+      hallazgoEn(2, larga, vistaLarga, 10, 47),
+      hallazgoEn(3, corta, vistaCorta, 24, 5),
+      hallazgoEn(4, corta, vistaCorta, 3, 26),
+    ];
+    const resumen = summarizeReconcile(reconcile(findings, parqueMixto));
+    expect(resumen.espejados).toBe(4);
+    expect(resumen.otros).toBe(0);
+    expect(resumen.veredicto).toMatch(/Practicamente todo el archivo esta espejado \(4 de 4\)/);
+    expect(resumen.nivel).toBe("malo");
+  });
+
+  /**
+   * Lo mismo en el agrupamiento por tracker. Un tracker corto marcado casi
+   * entero se dividia por 56 en vez de por 28: daba fraccion 0.36 y se caia del
+   * umbral, asi que 20 hallazgos que son UN tracker volvian a leerse como 20
+   * defectos de modulo.
+   */
+  it("un tracker corto marcado casi entero se reporta como un evento de tracker", () => {
+    const findings = Array.from({ length: 20 }, (_, i) =>
+      hallazgoEn(i + 1, corta, vistaCorta, i + 1, i + 1, "Tracker desalineado"),
+    );
+    const eventos = trackerEvents(reconcile(findings, parqueMixto), [larga, corta], parqueMixto);
+    expect(eventos).toHaveLength(1);
+    expect(eventos[0]!.rowId).toBe("01-002-R1");
+    expect(eventos[0]!.modulos).toBe(20);
+    expect(eventos[0]!.fraccion).toBeCloseTo(20 / 28, 3);
   });
 });

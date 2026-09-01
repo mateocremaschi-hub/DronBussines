@@ -49,10 +49,6 @@ export async function listFarms(): Promise<StoredFarm[]> {
   return farms.sort((a, b) => a.profile.name.localeCompare(b.profile.name));
 }
 
-export async function loadFarm(id: string): Promise<StoredFarm | undefined> {
-  return get<StoredFarm>(PREFIX + id);
-}
-
 export async function saveFarm(farm: StoredFarm): Promise<void> {
   await set(PREFIX + farm.profile.id, farm);
 }

@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState } from "react";
 import { compileFarm, makeFrame } from "@locator";
 import type { CompiledFarm } from "@locator";
 import { ThermalMap } from "../components/ThermalMap";
+import { FotoDelHallazgo } from "../components/FotoDelHallazgo";
 import { download } from "../inspection";
 import { camaraDesdeEquivalente35, type Camera } from "../mission";
 import { readPhoto, type PhotoFix } from "../photos";
@@ -86,14 +87,35 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
     () => (muestras.length ? comparar(muestras, umbrales) : []),
     [muestras, umbrales],
   );
+  /*
+    Cuantos modulos tiene cada fila, sacado de la fila y no del perfil.
+
+    Los dos numeros de abajo —el largo del string y el total de modulos del
+    parque— salian de `topology.modulesPerString * stringsPerRow`, o sea del
+    tipo principal de tracker multiplicado por la cantidad de filas. En un
+    parque que mezcla trackers largos de 56 con cortos de 28 eso miente en las
+    dos direcciones: un string corto apagado entero da fraccion 0.5 y se cae
+    del agrupamiento, y el total de modulos —que es el denominador de todos
+    los porcentajes del informe— cuenta cada fila corta como si fuera larga.
+
+    El compilador ya resuelve el largo fila por fila; lo unico que faltaba era
+    preguntarselo. El perfil queda de respaldo para cuando la geometria no
+    compila y la pantalla igual tiene que mostrar algo.
+  */
+  const largoDelString = useMemo(() => {
+    const porFila = new Map((farm?.rows ?? []).map((r) => [r.source.id, r.modulesPerString]));
+    return (rowId: string) => porFila.get(rowId) ?? stored.profile.topology.modulesPerString;
+  }, [farm, stored.profile.topology.modulesPerString]);
+
   const eventos = useMemo(
-    () => eventosDeString(hallazgos, stored.profile.topology.modulesPerString),
-    [hallazgos, stored.profile.topology.modulesPerString],
+    () => eventosDeString(hallazgos, largoDelString),
+    [hallazgos, largoDelString],
   );
-  const totalModulos =
-    stored.rows.length *
-    stored.profile.topology.modulesPerString *
-    stored.profile.topology.stringsPerRow;
+  const totalModulos = farm
+    ? farm.rows.reduce((s, r) => s + r.modulesPerRow, 0)
+    : stored.rows.length *
+      stored.profile.topology.modulesPerString *
+      stored.profile.topology.stringsPerRow;
   const resumen = useMemo(
     () =>
       hallazgos.length
@@ -514,6 +536,13 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
                     {elegido.origen === "celda" && " — eso es una celda, no el modulo entero"}.
                   </>
                 )}
+                {/*
+                  La foto, con el modulo marcado. El numero dice cuanto; el
+                  patron de la imagen dice QUE es —celda, diodo de bypass,
+                  modulo desconectado— y eso es lo que se escribe en el informe
+                  y lo que pide un reclamo de garantia.
+                */}
+                <FotoDelHallazgo hallazgo={elegido} archivos={archivos} />
               </div>
             )}
 
