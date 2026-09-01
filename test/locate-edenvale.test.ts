@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import profileJson from "../farms/edenvale.json" with { type: "json" };
 import { compileFarm } from "../src/profile/compile.js";
 import { locate } from "../src/locate.js";
+import { formatAddress } from "../src/index.js";
 import { makeFrame, toGeo } from "../src/geo/frame.js";
 import type { FarmProfile } from "../src/types.js";
 import { makeRow, pointAtSlot } from "./helpers/synthetic.js";
@@ -507,5 +508,29 @@ describe("estar cerca no es estar encima", () => {
     const fix = pointAtSlot(rowNorthMid, 20, profile, "start", 8);
     const w = locate({ ...fix, accuracyM: 10 }, farm).warnings.map((x) => x.code);
     expect(w).not.toContain("far-from-module");
+  });
+});
+
+/**
+ * La direccion dice donde esta el panel, y nada mas.
+ *
+ * La caja de continua estuvo dos veces en esta frase y las dos veces sobraba.
+ * Primero como "desde la caja DC" —que ademas quedo falso cuando el conteo paso
+ * a arrancar en el norte— y despues como "entrando por DCB-…", que era cierto
+ * pero seguia siendo una instruccion para CAMINAR hasta el panel. El trabajo no
+ * es caminar hasta el panel: es entregar su ubicacion. La caja sigue en el
+ * informe como columna, que es donde le sirve al cliente para cruzar con su
+ * documentacion electrica.
+ */
+describe("la direccion no da instrucciones para caminar", () => {
+  it("no nombra la caja de continua aunque la fila la tenga", () => {
+    const conCaja = compileFarm(profile, [{ ...rowNorthMid, dcBoxLabel: "DCB-1.2.15" }]);
+    const r = locate({ ...pointAtSlot(rowNorthMid, 5, profile), accuracyM: 0.5 }, conCaja);
+    const texto = formatAddress(r.best!);
+    expect(texto).not.toMatch(/DCB/);
+    expect(texto).not.toMatch(/caja/i);
+    expect(texto).toMatch(/contando desde la punta/);
+    // Y el dato sigue disponible para el informe, solo que no en esta frase.
+    expect(r.best!.dcBoxLabel).toBe("DCB-1.2.15");
   });
 });

@@ -30,15 +30,17 @@ export {
 /**
  * Formato humano de una direccion, para la app de campo y el reporte.
  *
- * La frase de la punta se dice por RUMBO —"desde la punta norte"— y no por su
- * relacion con la caja de continua. Decir "desde la caja DC" solo era cierto
- * mientras el parque contara desde la caja; con un parque que cuenta desde el
- * norte, esa misma frase manda a contar desde la punta contraria de una fila de
- * 65 metros. Es la unica frase que el tecnico ejecuta caminando, asi que no
- * puede depender de una configuracion que el que lee no ve.
+ * Dice DONDE ESTA EL PANEL y nada mas. La punta se nombra por su rumbo —"desde
+ * la punta norte"— porque el numero de modulo es una posicion y necesita un
+ * datum declarado; el informe declara el mismo en su encabezado.
  *
- * La caja sigue estando, pero como lo que es: por donde se entra. En un bloque
- * con doce cajas, el nombre es lo que convierte la direccion en un camino.
+ * Lo que NO va aca es la caja de continua. Estuvo dos veces y las dos veces
+ * sobraba. Primero como "desde la caja DC", que ademas era falso desde que el
+ * conteo arranca en el norte. Despues como "entrando por DCB-…", que era
+ * cierto pero seguia siendo una instruccion para caminar hasta el panel — y el
+ * trabajo no es caminar hasta el panel, es entregar su ubicacion. La caja sigue
+ * estando en el informe como columna, que es donde le sirve al cliente para
+ * cruzar con su documentacion electrica.
  */
 export function formatAddress(a: import("./types.js").Address): string {
   const row = a.row ? ` ${a.row}` : "";
@@ -47,6 +49,5 @@ export function formatAddress(a: import("./types.js").Address): string {
     : a.countedFrom === "near-dc"
       ? `desde la caja DC${a.dcBoxLabel ? " " + a.dcBoxLabel : ""}`
       : `desde la punta lejana${a.dcBoxLabel ? ", o sea la mas lejos de " + a.dcBoxLabel : ""}`;
-  const entrada = a.origenGeografico && a.dcBoxLabel ? `, entrando por ${a.dcBoxLabel}` : "";
-  return `Bloque ${a.block}, tracker ${a.tracker}${row}, string ${a.stringNumber}, modulo ${a.module} (${end}${entrada})`;
+  return `Bloque ${a.block}, tracker ${a.tracker}${row}, string ${a.stringNumber}, modulo ${a.module} (${end})`;
 }
