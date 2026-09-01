@@ -47,11 +47,9 @@ const LARGO_MODULO_M = 2.28;
 interface Props {
   farm: StoredFarm;
   onBack: () => void;
-  /** Ir a armar los reclamos con lo que salio de este vuelo. */
-  onWarranty?: () => void;
 }
 
-export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
+export function Analysis({ farm: stored, onBack }: Props) {
   const [archivos, setArchivos] = useState<File[]>([]);
   const [muestras, setMuestras] = useState<Muestra[]>([]);
   const [camera, setCamera] = useState<Camera | null>(null);
@@ -539,8 +537,8 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
                 {/*
                   La foto, con el modulo marcado. El numero dice cuanto; el
                   patron de la imagen dice QUE es —celda, diodo de bypass,
-                  modulo desconectado— y eso es lo que se escribe en el informe
-                  y lo que pide un reclamo de garantia.
+                  modulo desconectado— y eso es lo que se escribe en el informe,
+                  que es lo que se entrega.
                 */}
                 <FotoDelHallazgo hallazgo={elegido} archivos={archivos} />
               </div>
@@ -672,15 +670,10 @@ export function Analysis({ farm: stored, onBack, onWarranty }: Props) {
               <button onClick={() => download(`${stored.profile.id}-hallazgos.csv`, toCsv(hallazgos), "text/csv")}>
                 Exportar CSV
               </button>
-              {onWarranty && (
-                <button className="ghost" onClick={onWarranty}>
-                  Armar los reclamos →
-                </button>
-              )}
             </div>
             <p className="help">
-              La lista de arriba dice que esta caliente. Lo que le devuelve plata al cliente es la
-              de al lado: quien lo paga. Esta guardada, asi que podes cerrar y seguir despues.
+              La lista de arriba es la entrega: qué módulos están calientes y cuánto. Queda
+              guardada, así que podés cerrar y seguir después.
             </p>
           </section>
         </>

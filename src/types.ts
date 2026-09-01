@@ -203,8 +203,8 @@ export interface FarmProfile {
      *
      * Sin esto habia que dar de alta el parque DOS VECES: subir los mismos
      * planos dos veces, cortar la lista de strings a mano, y terminar con dos
-     * parques en la app para un solo sitio — con los vuelos, los informes y las
-     * garantias partidos al medio. Eso no es una limitacion tecnica, es un dia
+     * parques en la app para un solo sitio — con los vuelos y los informes
+     * partidos al medio. Eso no es una limitacion tecnica, es un dia
      * de trabajo perdido cada vez.
      *
      * Los campos que no se declaran en una variante se heredan del tipo

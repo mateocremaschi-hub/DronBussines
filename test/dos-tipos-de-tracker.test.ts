@@ -7,8 +7,8 @@
  *
  * La respuesta anterior era que si: dar de alta el parque dos veces, subir los
  * mismos PDF dos veces, cortar la lista de strings a mano, y terminar con dos
- * parques en la app para un solo sitio — con los vuelos, los informes y las
- * garantias partidos al medio. Eso no es una limitacion tecnica, es un dia de
+ * parques en la app para un solo sitio — con los vuelos y los informes
+ * partidos al medio. Eso no es una limitacion tecnica, es un dia de
  * trabajo perdido cada vez que se visita el parque.
  *
  * Ahora el tipo va por FILA, y casi nunca hay que declararlo: el compilador

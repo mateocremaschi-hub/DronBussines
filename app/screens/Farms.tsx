@@ -13,14 +13,12 @@ interface Props {
   onAddGeometry: (farm: StoredFarm) => void;
   onParams: (farm: StoredFarm) => void;
   onStrings: (farm: StoredFarm) => void;
-  onVendor: (farm: StoredFarm) => void;
   onFlight: (farm: StoredFarm) => void;
   onAnalysis: (farm: StoredFarm) => void;
-  onWarranty: (farm: StoredFarm) => void;
   onChanged: () => void;
 }
 
-export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams, onStrings, onVendor, onFlight, onAnalysis, onWarranty, onChanged }: Props) {
+export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams, onStrings, onFlight, onAnalysis, onChanged }: Props) {
   const [problema, setProblema] = useState<string | null>(null);
   const [plano, setPlano] = useState<{ farm: string; notas: string[]; avisos: string[] } | null>(null);
   // El problema del plano va aparte del de importar un parque: son dos botones
@@ -123,7 +121,9 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
         ...a.notas,
         a.conSentido
           ? `El sentido del conteo salio del PLANO en ${a.conSentido} filas` +
-            (sentido.resueltas ? `, y de medir las coordenadas en otras ${sentido.resueltas}.` : ".")
+            (sentido.resueltas ? `, y de medir las coordenadas en otras ${sentido.resueltas}.` : ".") +
+            ` Sumando lo que ya estaba, el parque queda con ${a.conSentidoTotal} de ${a.rows.length} ` +
+            `filas resueltas.`
           : `El sentido del conteo quedo resuelto en ${sentido.resueltas} filas, midiendo coordenadas.`,
       ],
       avisos,
@@ -225,8 +225,6 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
                     <span className="grupo-tit">Despues de volar</span>
                     <button className="link" onClick={() => onAnalysis(f)}>Analizar un vuelo</button>
                     <button className="link" onClick={() => onInspect(f)}>Inspecciones</button>
-                    <button className="link" onClick={() => onWarranty(f)}>Garantias</button>
-                    <button className="link" onClick={() => onVendor(f)}>Auditar un informe</button>
                   </div>
 
                   <div className="grupo">

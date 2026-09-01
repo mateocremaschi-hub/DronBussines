@@ -11,11 +11,9 @@ import { del, get, keys, set } from "idb-keyval";
 import type { FarmProfile, TrackerRow } from "@locator";
 import type { FieldCheck } from "./checks";
 import type { Hallazgo } from "./detect";
-import type { Cobertura, Condiciones } from "./warranty";
 
 const PREFIX = "farm:";
 const ANALISIS = "analisis:";
-const GARANTIA = "garantia:";
 
 export interface StoredFarm {
   profile: FarmProfile;
@@ -82,39 +80,6 @@ export async function saveAnalysis(a: StoredAnalysis): Promise<void> {
 
 export async function loadAnalysis(farmId: string): Promise<StoredAnalysis | undefined> {
   return get<StoredAnalysis>(ANALISIS + farmId);
-}
-
-// ---------------------------------------------------------------------------
-// La clasificacion a mano
-// ---------------------------------------------------------------------------
-
-/**
- * Lo que pone una persona mirando cada hallazgo.
- *
- * Esto se guarda aparte del analisis y sobrevive a un vuelo nuevo por una
- * razon practica: clasificar doscientos modulos a mano son horas de trabajo, y
- * perderlas por recargar la pagina seria inaceptable.
- *
- * Los Map y Set van como arrays porque IndexedDB los serializa mal entre
- * versiones del navegador.
- */
-export interface StoredWarranty {
-  farmId: string;
-  cobertura: Cobertura;
-  condiciones: Condiciones;
-  /** Clave de modulo → tipo de anomalia asignado a mano. */
-  anomalias: Array<[string, string]>;
-  /** Claves de modulo que tienen foto visible archivada. */
-  conRgb: string[];
-  savedAt: string;
-}
-
-export async function saveWarranty(w: StoredWarranty): Promise<void> {
-  await set(GARANTIA + w.farmId, w);
-}
-
-export async function loadWarranty(farmId: string): Promise<StoredWarranty | undefined> {
-  return get<StoredWarranty>(GARANTIA + farmId);
 }
 
 /** Exporta un parque a un archivo, para pasarlo a otro dispositivo o guardarlo. */

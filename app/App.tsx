@@ -4,10 +4,8 @@ import { Inspection } from "./screens/Inspection";
 import { Locate } from "./screens/Locate";
 import { Setup } from "./screens/Setup";
 import { StringList } from "./screens/StringList";
-import { Vendor } from "./screens/Vendor";
 import { Flight } from "./screens/Flight";
 import { Analysis } from "./screens/Analysis";
-import { Warranty } from "./screens/Warranty";
 import { listFarms, type StoredFarm } from "./storage";
 import { detalleDe, registrarOffline, type Offline } from "./offline";
 
@@ -18,10 +16,8 @@ type View =
   | { name: "locate"; farm: StoredFarm }
   | { name: "inspection"; farm: StoredFarm }
   | { name: "strings"; farm: StoredFarm }
-  | { name: "vendor"; farm: StoredFarm }
   | { name: "flight"; farm: StoredFarm }
-  | { name: "analysis"; farm: StoredFarm }
-  | { name: "warranty"; farm: StoredFarm };
+  | { name: "analysis"; farm: StoredFarm };
 
 export function App() {
   const [farms, setFarms] = useState<StoredFarm[]>([]);
@@ -99,10 +95,8 @@ export function App() {
           onAddGeometry={(farm) => setView({ name: "setup", existing: farm })}
           onParams={(farm) => setView({ name: "params", farm })}
           onStrings={(farm) => setView({ name: "strings", farm })}
-          onVendor={(farm) => setView({ name: "vendor", farm })}
           onFlight={(farm) => setView({ name: "flight", farm })}
           onAnalysis={(farm) => setView({ name: "analysis", farm })}
-          onWarranty={(farm) => setView({ name: "warranty", farm })}
           onOpen={(farm) => setView({ name: "locate", farm })}
           onInspect={(farm) => setView({ name: "inspection", farm })}
           onChanged={() => void refresh()}
@@ -130,20 +124,10 @@ export function App() {
         <Inspection farm={view.farm} onBack={() => setView({ name: "farms" })} />
       )}
       {view.name === "analysis" && (
-        <Analysis
-          farm={view.farm}
-          onBack={() => setView({ name: "farms" })}
-          onWarranty={() => setView({ name: "warranty", farm: view.farm })}
-        />
-      )}
-      {view.name === "warranty" && (
-        <Warranty farm={view.farm} onBack={() => setView({ name: "farms" })} />
+        <Analysis farm={view.farm} onBack={() => setView({ name: "farms" })} />
       )}
       {view.name === "flight" && (
         <Flight farm={view.farm} onBack={() => setView({ name: "farms" })} />
-      )}
-      {view.name === "vendor" && (
-        <Vendor farm={view.farm} onBack={() => setView({ name: "farms" })} />
       )}
       {view.name === "strings" && (
         <StringList
