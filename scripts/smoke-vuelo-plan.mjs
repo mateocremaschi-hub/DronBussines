@@ -31,24 +31,44 @@ await page.getByRole("heading", { name: "Parques" }).waitFor();
 await page.getByRole("button", { name: "Planificar vuelo" }).first().click();
 await page.getByRole("heading", { name: "Planificar el vuelo" }).waitFor();
 
-// El parque de ejemplo tiene dos bloques: tiene que ofrecer el plan por bloque.
-const organiza = await page.locator(".card").nth(2).innerText();
-console.log("Organizacion:", organiza.split("\n").filter(l => /bloques|horas|baterias|salidas/.test(l)).join(" · "));
-// El Excel de ejemplo trae un solo bloque; el reparto en varios lo cubren los
-// tests unitarios. Aca alcanza con que la tabla exista y se pueda elegir.
-const filasBloque = await page.locator('input[name="bloque"]').count();
+/*
+  La eleccion de bloques.
+
+  Antes era UNA fila a la vez —un radio `name="bloque"`— y ahora son casillas:
+  se marcan los que se van a volar de una salida, que es como se vuela de
+  verdad. La prueba sigue el mismo camino: que la tabla exista, que sin marcar
+  nada avise, y que marcar cambie el plan.
+*/
+const tabla = page.locator("section.card", { hasText: "Que bloques vas a volar" });
+console.log("Organizacion:", (await tabla.locator(".stats div").allInnerTexts()).map((t) => t.replace(/\n/g, " ")).join(" · "));
+
+const casillas = page.locator('input[type="checkbox"][aria-label^="Bloque "]');
+const filasBloque = await casillas.count();
 console.log(`Bloques en la tabla: ${filasBloque}`);
 if (filasBloque < 1) { console.error("ESPERABA al menos 1 bloque"); process.exitCode = 1; }
-const sinElegir = (await page.locator(".note").allInnerTexts()).join(" ");
-if (!/Elegi una fila/.test(sinElegir)) { console.error("ESPERABA el aviso de elegir una fila"); process.exitCode = 1; }
 
-// Con un solo bloque la casilla de agrupar no cambia nada, pero tiene que estar.
-const agrupar = page.getByText("Juntar los bloques que comparten pasada");
+const sinElegir = (await page.locator(".note").allInnerTexts()).join(" ");
+if (!/Todavia no marcaste ningun bloque/.test(sinElegir)) {
+  console.error("ESPERABA el aviso de que no hay ningun bloque marcado"); process.exitCode = 1;
+}
+
+// Los atajos de la seleccion multiple, que es lo que se pidio: marcar varios
+// sin ir tildando uno por uno.
+for (const b of ["Seleccionar todo", "Limpiar", /Sumar los que comparten pasada/]) {
+  if (!(await page.getByRole("button", { name: b }).count())) {
+    console.error(`ESPERABA el boton ${b}`); process.exitCode = 1;
+  }
+}
+
+const agrupar = page.getByText("Contar el parque juntando los bloques que comparten pasada");
 if (await agrupar.count()) console.log("Opcion de agrupar: presente");
 else { console.error("ESPERABA la opcion de agrupar bloques"); process.exitCode = 1; }
 
-await page.locator('input[name="bloque"]').first().check();
+await page.getByRole("button", { name: "Seleccionar todo" }).click();
 await page.waitForTimeout(400);
+const marcadas = await casillas.evaluateAll((els) => els.filter((e) => e.checked).length);
+console.log(`Tras "Seleccionar todo" quedan ${marcadas} de ${filasBloque} marcados.`);
+if (marcadas !== filasBloque) { console.error("ESPERABA todos los bloques marcados"); process.exitCode = 1; }
 
 const leer = async () => (await page.locator(".stats").allInnerTexts()).slice(1).join(" · ").replace(/\n/g, " ");
 console.log("Con los valores por defecto:");

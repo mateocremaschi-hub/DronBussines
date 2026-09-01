@@ -1,31 +1,46 @@
 /**
- * El lote de vuelo: carpeta de fotos -> hallazgos ubicados -> revision -> CSV.
+ * El vuelo, de punta a punta: fotos -> deteccion -> revision -> entrega.
  *
- * Es la pantalla que convierte un vuelo en algo que se entrega. El motor ya
- * sabia resolver una coordenada; lo que faltaba era hacerlo cuatrocientas veces
- * sin que nadie transcriba nada a mano.
+ * Habia dos caminos paralelos para esto y no se hablaban.
+ * ---------------------------------------------------------------------------
+ * Esta pantalla cargaba la carpeta y hacia UN hallazgo POR FOTO, con la
+ * coordenada del dron y el ΔT escrito a mano. La otra —"Analizar un vuelo"—
+ * cargaba las mismas fotos, media todos los modulos del parque contra sus
+ * hermanos de string, y guardaba esa lista en otra clave de la misma base. La
+ * deteccion buena estaba en una pantalla y la revision buena en la otra, y
+ * cargando el mismo vuelo en las dos salian dos listas que no se conocian.
+ *
+ * Ahora es uno solo. Las fotos se cargan una vez, la deteccion produce los
+ * hallazgos —un modulo, no una foto— y abajo se los revisa: anomalia, clase
+ * IEC, nota, confirmar o descartar, y corregir el modulo mirando la imagen. De
+ * ahi salen los cuatro formatos de entrega.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { compileFarm, formatAddress, locate } from "@locator";
+import { compileFarm, formatAddress } from "@locator";
 import type { CompiledFarm } from "@locator";
-import { offNadirDeg, readPhoto } from "../photos";
+import { offNadirDeg } from "../photos";
 import {
   ANOMALIAS,
   CLASES,
   deleteInspection,
+  deltaTDe,
   download,
+  esModeloViejo,
   listInspections,
   saveInspection,
   summarize,
-  toCsv,
   descargarBytes,
+  type Cobertura,
   type Finding,
   type Inspection as Insp,
 } from "../inspection";
-import type { StoredFarm } from "../storage";
-import { aExcel, aInformeHtml, entregables, nombreDeFoto } from "../informe";
+import { UMBRALES, type Severidad, type Umbrales } from "../detect";
+import { deleteAnalysis, loadAnalysis, type StoredFarm } from "../storage";
+import { aExcel, aInformeHtml, entregables, nombreDeFoto, toCsv } from "../informe";
+import { fusionarRevision, reclasificarFindings, vueloDesdeAnalisis } from "../vuelo";
 import { zip } from "../zip";
+import { Analysis } from "./Analysis";
 
 /** El JPEG como data URL, para meterlo adentro del HTML del informe. */
 function comoDataUrl(file: File): Promise<string> {
@@ -38,21 +53,6 @@ function comoDataUrl(file: File): Promise<string> {
 }
 
 /**
- * Un identificador de hallazgo que no se repite entre sesiones.
- *
- * El anterior era una funcion del contador, y el contador arrancaba en 0 cada
- * vez que se abria la pantalla. Volver a una inspeccion de ayer y agregarle
- * fotos generaba de nuevo los ids 1, 2, 3… que ya existian: a partir de ahi
- * editar un hallazgo editaba dos, y descartar uno descartaba los dos. En un
- * informe de garantia eso es un modulo que se reporta y no existe, o uno que
- * existe y no se reporta.
- *
- * Con el instante de carga adelante, dos lotes distintos no pueden chocar.
- */
-const nuevoId = (n: number, cuando: number) =>
-  `${cuando.toString(36)}-${n.toString(36)}`;
-
-/**
  * Un numero de un campo de texto, distinguiendo "cero" de "vacio".
  *
  * `Number(x) || undefined` los confunde: el cero es falsy, asi que un viento de
@@ -63,6 +63,9 @@ function numeroOVacio(texto: string): number | undefined {
   const v = Number(texto);
   return Number.isFinite(v) ? v : undefined;
 }
+
+/** De la peor a la mejor: es el orden en que se camina el parque. */
+const ORDEN: Severidad[] = ["critica", "moderada", "leve", "normal"];
 
 export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack: () => void }) {
   const [list, setList] = useState<Insp[]>([]);
@@ -78,10 +81,15 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
   const inputFotos = useRef<HTMLInputElement>(null);
   const pedido = useRef<((fs: File[]) => void) | null>(null);
   const [exportando, setExportando] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [problemas, setProblemas] = useState<Array<{ fileName: string; error: string }>>([]);
   const [filtro, setFiltro] = useState<"todos" | "pendiente" | "confirmado" | "sin-ubicar">("todos");
-  const contador = useRef(0);
+  /**
+   * Los umbrales con los que se lee la lista de ESTE vuelo.
+   *
+   * Viven aca y no en el paso de deteccion porque lo que reclasifican es la
+   * LISTA, y la lista sobrevive a las fotos: un vuelo abierto un mes despues,
+   * con las fotos en otro disco, se tiene que poder releer con otro criterio.
+   */
+  const [umbrales, setUmbrales] = useState<Umbrales>(UMBRALES);
 
   const farm = useMemo<CompiledFarm | null>(() => {
     try {
@@ -97,10 +105,38 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  /*
+    El analisis que la version anterior guardaba aparte.
+
+    Mientras hubo dos caminos, el automatico escribia su lista en una clave
+    propia por parque, sin nombre, sin condiciones y sin revision. Al unificar,
+    esa clave se queda sin nadie que la lea — y adentro esta el ultimo vuelo
+    analizado. Se convierte en un vuelo normal la primera vez que se entra, y
+    despues se borra la clave para no importarlo de nuevo.
+  */
+  useEffect(() => {
+    if (!farm) return;
+    void (async () => {
+      const viejo = await loadAnalysis(stored.profile.id);
+      if (!viejo?.hallazgos?.length) return;
+      await saveInspection(vueloDesdeAnalisis(viejo, stored, farm));
+      await deleteAnalysis(stored.profile.id);
+      void refresh();
+    })();
+  }, [farm, stored, refresh]);
+
   // Guardar en cuanto cambia algo: en el campo nadie toca "guardar".
   useEffect(() => {
     if (current) void saveInspection(current).then(refresh);
   }, [current, refresh]);
+
+  function abrir(i: Insp) {
+    setCurrent(i);
+    // Con los umbrales con los que se lo clasifico, no con los de fabrica: si
+    // no, abrir un vuelo guardado lo reclasifica solo y el informe cambia sin
+    // que nadie haya tocado nada.
+    setUmbrales(i.cobertura?.umbrales ?? UMBRALES);
+  }
 
   function nueva() {
     const now = new Date();
@@ -113,51 +149,57 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
       conditions: {},
       findings: [],
     });
-    setProblemas([]);
+    setUmbrales(UMBRALES);
   }
 
-  async function cargarFotos(files: FileList) {
-    if (!farm || !current) return;
-    const arr = [...files];
-    setProgress({ done: 0, total: arr.length });
-    // El instante en que empezo ESTE lote: es lo que separa los ids de hoy de
-    // los de la sesion anterior sobre la misma inspeccion.
-    const loteStamp = Date.now();
-    const nuevos: Finding[] = [];
-    const fallos: Array<{ fileName: string; error: string }> = [];
+  /**
+   * Lo que produce la deteccion entra al vuelo sin pisar la revision humana.
+   *
+   * `fusionarRevision` es la pieza que lo garantiza: la medicion viene siempre
+   * de la corrida nueva, y lo que escribio una persona se conserva. Es lo que
+   * permite mover la grilla un metro o cambiar un umbral sin volver a
+   * clasificar cuarenta anomalias a mano.
+   */
+  const onDeteccion = useCallback((d: { findings: Finding[]; cobertura: Cobertura }) => {
+    setCurrent((c) =>
+      c ? { ...c, findings: fusionarRevision(d.findings, c.findings), cobertura: d.cobertura } : c,
+    );
+  }, []);
 
-    for (let i = 0; i < arr.length; i++) {
-      const read = await readPhoto(arr[i]!);
-      if (!read.fix) {
-        fallos.push({ fileName: read.fileName, error: read.error ?? "sin coordenada" });
-      } else {
-        // La coordenada de la foto es la del DRON. Si el gimbal no miraba
-        // derecho para abajo, lo que se ve en el cuadro esta corrido, asi que
-        // ese corrimiento entra al margen en vez de quedar escondido.
-        const margen = Math.hypot(read.fix.accuracyM ?? 0, read.fix.tiltOffsetM ?? 0);
-        const res = locate(
-          margen > 0
-            ? { lat: read.fix.lat, lon: read.fix.lon, accuracyM: margen }
-            : { lat: read.fix.lat, lon: read.fix.lon },
-          farm,
-        );
-        contador.current += 1;
-        nuevos.push({
-          id: nuevoId(contador.current, loteStamp),
-          fileName: read.fileName,
-          fix: read.fix,
-          address: res.best,
-          candidates: res.candidates.slice(0, 8),
-          warnings: res.warnings,
-          status: "pendiente",
-        });
-      }
-      setProgress({ done: i + 1, total: arr.length });
-    }
+  /**
+   * Mover un umbral no vuelve a leer ninguna foto.
+   *
+   * La temperatura de cada modulo, la de su punto mas caliente y su delta
+   * contra los vecinos ya estan medidos: un umbral solo decide como se LLAMA
+   * ese numero. Asi que la lista guardada se reclasifica en el acto.
+   *
+   * Con las fotos todavia cargadas, el paso de deteccion ademas vuelve a
+   * comparar todas las muestras y manda una lista nueva —ahi bajar el umbral
+   * tambien SUMA modulos que antes no llegaban—. Los dos caminos clasifican
+   * con la misma funcion, asi que lo que aparece en los dos sale igual.
+   */
+  function aplicarUmbrales(nuevo: Umbrales) {
+    setUmbrales(nuevo);
+    setCurrent((c) =>
+      c
+        ? {
+            ...c,
+            findings: reclasificarFindings(c.findings, nuevo),
+            ...(c.cobertura ? { cobertura: { ...c.cobertura, umbrales: nuevo } } : {}),
+          }
+        : c,
+    );
+  }
 
-    setProblemas((p) => [...p, ...fallos]);
-    setCurrent((c) => (c ? { ...c, findings: [...c.findings, ...nuevos] } : c));
-    setProgress(null);
+  function cambiarUmbral(k: keyof Umbrales, texto: string) {
+    const v = Number(texto);
+    // Borrar el campo daba `Number("") === 0`, y con el umbral leve en 0 TODO
+    // modulo del parque queda clasificado como anomalia: mil hallazgos falsos
+    // y el informe entero al tacho, sin ningun aviso.
+    aplicarUmbrales({
+      ...umbrales,
+      [k]: texto.trim() === "" || !Number.isFinite(v) || v <= 0 ? UMBRALES[k] : v,
+    });
   }
 
   /** Pide la carpeta de fotos y resuelve cuando el usuario elige. */
@@ -215,14 +257,25 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
     setExportando("Renombrando las fotos…");
     try {
       const encontradas = fotosDeLosHallazgos(archivos);
+      /*
+        Un modulo, un archivo. Con la deteccion automatica, una misma foto
+        puede tener varios hallazgos —son varios modulos del mismo cuadro— y
+        cada uno se entrega con SU nombre. Escribirlos con la misma ruta
+        dejaria un ZIP con entradas repetidas, que el que lo abre ve como un
+        solo archivo: los otros hallazgos desaparecen sin aviso.
+      */
+      const usados = new Set<string>();
       const entradas = [];
       for (const f of entregables(current)) {
         const file = encontradas.get(f.fileName);
         if (!file) continue;
-        entradas.push({
-          ruta: `fotos/${nombreDeFoto(f)}`,
-          contenido: new Uint8Array(await file.arrayBuffer()),
-        });
+        let ruta = `fotos/${nombreDeFoto(f)}`;
+        if (usados.has(ruta)) {
+          const ext = /\.[a-z0-9]+$/i.exec(ruta)?.[0] ?? "";
+          ruta = `${ruta.slice(0, ruta.length - ext.length)}__${f.id.replace(/[^\w.-]+/g, "-")}${ext}`;
+        }
+        usados.add(ruta);
+        entradas.push({ ruta, contenido: new Uint8Array(await file.arrayBuffer()) });
       }
       if (!entradas.length) {
         setExportando(
@@ -282,7 +335,7 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
         <header className="screen-head">
           <div>
             <p className="eyebrow">{stored.profile.name}</p>
-            <h1>Inspecciones</h1>
+            <h1>Vuelos</h1>
           </div>
           <button onClick={nueva}>Nuevo vuelo</button>
         </header>
@@ -291,12 +344,9 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
           <section className="card empty">
             <h2>Todavia no hay ningun vuelo cargado</h2>
             <p>
-              Un vuelo es una carpeta de fotos. La app les lee la coordenada de los metadatos,
-              ubica cada una, y te deja una tabla para revisar y exportar.
-            </p>
-            <p className="muted small">
-              Para probarlo no hace falta el dron: sacale 20 fotos con el celular caminando el
-              parque. Traen GPS adentro igual.
+              Un vuelo es una carpeta de fotos térmicas. La app mide cada módulo del parque que
+              aparece en ellas, lo compara contra los otros de su mismo string, y te deja la lista
+              de los que se despegan para revisarla y entregarla.
             </p>
             <button onClick={nueva}>Crear el primero</button>
           </section>
@@ -306,11 +356,17 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
               const s = summarize(i.findings);
               return (
                 <li key={i.id}>
-                  <button className="farm-open" onClick={() => setCurrent(i)}>
+                  <button className="farm-open" onClick={() => abrir(i)}>
                     <strong>{i.name}</strong>
                     <span className="mono">
                       {s.total} hallazgos · {s.confirmados} confirmados · {s.pendientes} pendientes
                       {s.sinUbicar ? ` · ${s.sinUbicar} sin ubicar` : ""}
+                    </span>
+                    <span className="mono muted">
+                      {i.cobertura
+                        ? `${i.cobertura.modulosMedidos} modulos medidos de ${i.cobertura.totalModulos || "?"}` +
+                          (i.cobertura.sinMedir ? ` · ${i.cobertura.sinMedir} sin mirar` : "")
+                        : "sin deteccion: cargá las fotos del vuelo"}
                     </span>
                   </button>
                   <div className="farm-actions">
@@ -339,11 +395,24 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
 
   // -------------------------------------------------------------------------
   const s = summarize(current.findings);
-  const visibles = current.findings.filter((f) =>
-    filtro === "todos" ? true
-      : filtro === "sin-ubicar" ? !f.address
-      : f.status === filtro,
-  );
+  const visibles = current.findings
+    .filter((f) =>
+      filtro === "todos" ? true
+        : filtro === "sin-ubicar" ? !f.address
+        : f.status === filtro,
+    )
+    /*
+      Lo peor arriba. La lista dejo de ser el orden en que salieron las fotos
+      —que no significa nada— y pasa a ser una lista de modulos: el que tiene
+      que salir a caminar el parque empieza por los criticos. Dentro de la
+      misma severidad manda el delta.
+    */
+    .sort((a, b) => {
+      const sa = ORDEN.indexOf(a.medicion?.peor ?? "normal");
+      const sb = ORDEN.indexOf(b.medicion?.peor ?? "normal");
+      if (sa !== sb) return sa - sb;
+      return (deltaTDe(b) ?? -99) - (deltaTDe(a) ?? -99);
+    });
 
   return (
     <div className="screen">
@@ -352,8 +421,29 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
           <p className="eyebrow">{current.farmName}</p>
           <h1>{current.name}</h1>
         </div>
-        <button className="ghost" onClick={() => setCurrent(null)}>Inspecciones</button>
+        <button className="ghost" onClick={() => setCurrent(null)}>Vuelos</button>
       </header>
+
+      {/*
+        Los vuelos que quedaron guardados con el modelo anterior.
+        =====================================================================
+        Se abren y no se pierde nada: la revision humana esta toda ahi. Lo que
+        no tienen es la medicion del motor, porque en ese modelo un hallazgo
+        era una foto con un ΔT escrito a mano. Decirlo importa: si no, el
+        informe sale con la mitad de las columnas vacias y parece un error de
+        la app.
+      */}
+      {esModeloViejo(current) && (
+        <section className="card">
+          <p className="note bad">
+            Este vuelo se cargó con el modelo anterior: <strong>un hallazgo por foto</strong>, con
+            el ΔT escrito a mano y sin la medición del motor. Se abre y se entrega igual, pero las
+            columnas de temperatura, ΔT medido y comparación contra el string van vacías. Para
+            tenerlas, volvé a cargar las fotos del vuelo acá abajo: lo que ya clasificaste a mano
+            no se pierde.
+          </p>
+        </section>
+      )}
 
       {/* --- condiciones --- */}
       <section className="card">
@@ -396,36 +486,13 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
         </div>
       </section>
 
-      {/* --- carga --- */}
-      <section className="card">
-        <h2>Las fotos</h2>
-        <label className="drop">
-          <input
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={(e) => { if (e.target.files?.length) void cargarFotos(e.target.files); }}
-          />
-          <strong>Elegir fotos</strong>
-          <span className="muted">Se pueden seleccionar todas juntas</span>
-        </label>
-
-        {progress && (
-          <p className="note ok">
-            Procesando {progress.done} de {progress.total}…
-          </p>
-        )}
-
-        {problemas.length > 0 && (
-          <div className="warnbox">
-            <h3>{problemas.length} foto(s) sin coordenada</h3>
-            <ul>
-              {problemas.slice(0, 5).map((p, i) => (<li key={i}><strong>{p.fileName}</strong> — {p.error}</li>))}
-            </ul>
-            {problemas.length > 5 && <p className="muted small">…y {problemas.length - 5} mas.</p>}
-          </div>
-        )}
-      </section>
+      {/* --- carga y deteccion: el paso que produce los hallazgos --- */}
+      <Analysis
+        stored={stored}
+        farm={farm}
+        umbrales={umbrales}
+        onDeteccion={onDeteccion}
+      />
 
       {/* --- resumen --- */}
       {s.total > 0 && (
@@ -434,11 +501,49 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
           <div className="stats">
             <div><b>{s.total}</b><span>hallazgos</span></div>
             <div><b>{s.bloques}</b><span>bloques</span></div>
+            <div className={s.porSeveridad.critica ? "alerta" : ""}><b>{s.porSeveridad.critica}</b><span>criticas</span></div>
+            <div className={s.porSeveridad.moderada ? "alerta" : ""}><b>{s.porSeveridad.moderada}</b><span>moderadas</span></div>
             <div><b>{s.confirmados}</b><span>confirmados</span></div>
             <div><b>{s.pendientes}</b><span>pendientes</span></div>
             <div className={s.porClase[3] ? "alerta" : ""}><b>{s.porClase[3]}</b><span>clase 3</span></div>
             <div className={s.sinUbicar ? "alerta" : ""}><b>{s.sinUbicar}</b><span>sin ubicar</span></div>
           </div>
+
+          {/*
+            Los umbrales, sobre la lista y no sobre las fotos.
+            =================================================================
+            Reclasifican en el acto porque el delta de cada modulo ya esta
+            medido: un umbral solo decide como se llama ese numero. Por eso
+            funciona tambien con un vuelo abierto un mes despues, con las fotos
+            en otro disco.
+          */}
+          <h3>Como se clasifica la lista</h3>
+          <div className="row">
+            {(["leve", "moderada", "critica"] as const).map((k) => (
+              <label className="inline" key={k}>
+                ΔT {k} (°C)
+                <input
+                  type="number" min={0.5} step={0.5} value={umbrales[k]}
+                  onChange={(e) => cambiarUmbral(k, e.target.value)}
+                />
+              </label>
+            ))}
+          </div>
+          {(umbrales.leve >= umbrales.moderada || umbrales.moderada >= umbrales.critica) && (
+            <p className="note bad">
+              Los tres umbrales tienen que ir de menor a mayor: leve &lt; moderada &lt; critica.
+              Como estan ahora, la clasificacion no significa nada.
+              <button className="link" onClick={() => aplicarUmbrales(UMBRALES)}>
+                volver a {UMBRALES.leve} / {UMBRALES.moderada} / {UMBRALES.critica} →
+              </button>
+            </p>
+          )}
+          <p className="help">
+            Los umbrales son una convencion de trabajo, no una cita de la norma: la IEC clasifica
+            por patron y contexto, no por un numero suelto. Sirven para ordenar la lista, y quedan
+            declarados en el informe. Con las fotos cargadas, bajarlos ademas suma modulos que
+            antes no llegaban; con el vuelo ya guardado solo reclasifica los que estan.
+          </p>
 
           <div className="row">
             {(["todos", "pendiente", "confirmado", "sin-ubicar"] as const).map((f) => (
@@ -478,7 +583,8 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
             El Excel y la carpeta de fotos van juntos: dejalos en la misma carpeta y el link de
             cada fila abre su foto. El informe visual es un solo archivo con las imagenes adentro
             — se abre en cualquier navegador y con <strong>Cmd+P → Guardar como PDF</strong> sale
-            el PDF, sin carpeta al lado.
+            el PDF, sin carpeta al lado. Los cuatro llevan lo que midio el motor y lo que
+            clasificaste vos, y declaran lo que el vuelo no permite afirmar.
           </p>
           <input
             ref={inputFotos}
@@ -500,20 +606,45 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
       {visibles.map((f) => (
         <section className={`card hallazgo ${f.status}`} key={f.id}>
           <div className="hallazgo-top">
-            {f.fix.thumb && <img src={f.fix.thumb} alt={f.fileName} />}
+            {f.fix?.thumb && <img src={f.fix.thumb} alt={f.fileName} />}
             <div className="hallazgo-id">
               <p className="eyebrow">{f.fileName}</p>
               <p className="answer">
                 {f.address ? formatAddress(f.address) : "Sin ubicar"}
               </p>
+              {/*
+                Lo que midio el motor, al lado de la direccion.
+
+                Es la mitad que antes estaba en la otra pantalla. Sin el numero
+                y sin contra que se comparo, el que revisa esta clasificando a
+                ojo: "modulo 19" no dice si hay que ir hoy o el mes que viene.
+              */}
+              {f.medicion && (
+                <p className="mono small">
+                  {f.medicion.celsius.toFixed(1)} °C ·{" "}
+                  <strong>{f.medicion.deltaT >= 0 ? "+" : ""}{f.medicion.deltaT.toFixed(1)} °C</strong>{" "}
+                  contra {f.medicion.vecinos}{" "}
+                  {f.medicion.ambito === "string"
+                    ? "vecinos de su mismo string"
+                    : `vecinos (por ${f.medicion.ambito} — vecindario flojo)`}
+                  {" · "}{f.medicion.peor}
+                  {f.medicion.deltaInterno != null && (
+                    <>
+                      {" · punto caliente "}
+                      <strong>+{f.medicion.deltaInterno.toFixed(1)} °C</strong> sobre el propio modulo
+                      {f.medicion.origen === "celda" && " (es una celda, no el modulo entero)"}
+                    </>
+                  )}
+                </p>
+              )}
               <p className="muted small">
                 {f.address
                   ? `${(f.address.confidence * 100).toFixed(0)} % · ${f.address.offAxisM.toFixed(1)} m del eje`
                   : "No hay filas de trackers cerca de esa coordenada"}
-                {f.fix.accuracyM ? ` · precision ±${f.fix.accuracyM} m` : ""}
-                {f.fix.takenAt ? ` · ${new Date(f.fix.takenAt).toLocaleString("es-AR")}` : ""}
+                {f.fix?.accuracyM ? ` · precision ±${f.fix.accuracyM} m` : ""}
+                {f.fix?.takenAt ? ` · ${new Date(f.fix.takenAt).toLocaleString("es-AR")}` : ""}
               </p>
-              {f.fix.tiltOffsetM != null && f.fix.tiltOffsetM > 0.5 && (
+              {f.fix?.tiltOffsetM != null && f.fix.tiltOffsetM > 0.5 && (
                 <p className="note bad small">
                   La camara no estaba a plomo: {offNadirDeg(f.fix.gimbalPitchDeg)!.toFixed(0)}° de
                   desvio a {f.fix.relativeAltitudeM!.toFixed(0)} m de altura. Lo que quedo en el
@@ -589,6 +720,13 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
                 // vecinos. Con `|| undefined` se guardaba como "no medido".
                 onChange={(e) => patch(f.id, { deltaT: numeroOVacio(e.target.value) })}
               />
+              {f.medicion && (
+                <span className="help">
+                  Solo si corregis el medido. Vacio se entrega el del motor
+                  ({f.medicion.deltaT >= 0 ? "+" : ""}{f.medicion.deltaT.toFixed(1)} °C), y el
+                  medido queda igual en el informe: no se pisa.
+                </span>
+              )}
             </div>
             <div className="field">
               <label htmlFor={`${f.id}-nota`}>Nota</label>

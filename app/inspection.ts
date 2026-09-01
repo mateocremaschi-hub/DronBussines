@@ -1,16 +1,32 @@
 /**
- * El modelo de una inspeccion: un vuelo, sus hallazgos, y su revision.
+ * El modelo de un vuelo: sus hallazgos, lo que midio el motor y su revision.
  *
  * Los campos de condiciones y de clasificacion no son decorativos: la IEC TS
  * 62446-3 pide que un reporte de termografia documente la irradiancia, la
  * temperatura ambiente, el viento y el estado del cielo del momento de la
  * captura, y que cada hallazgo lleve su ubicacion a nivel de modulo, su ΔT y su
  * clase. Si no se cargan al momento, despues nadie se acuerda.
+ *
+ * Habia DOS modelos para lo mismo y no se hablaban.
+ * ---------------------------------------------------------------------------
+ * Un `Finding` era una FOTO clasificada a mano: se cargaba la carpeta, cada
+ * foto daba un hallazgo, y el tecnico escribia el ΔT mirando la pantalla de la
+ * camara. En paralelo, `StoredAnalysis` guardaba los `Hallazgo` del motor: un
+ * MODULO medido contra sus 27 hermanos de string, con su delta calculado y el
+ * recuadro de donde salio el numero. Cargando las mismas fotos en las dos
+ * pantallas salian dos listas que no se conocian: la deteccion buena en una y
+ * la revision buena en la otra.
+ *
+ * Ahora hay uno solo. El hallazgo sigue siendo lo que una persona revisa y
+ * confirma, y ademas lleva adentro lo que midio el motor. Las dos mitades
+ * viajan juntas: al informe, al guardado, y de vuelta cuando el vuelo se abre
+ * un mes despues.
  */
 
 import { del, get, keys, set } from "idb-keyval";
 import type { Address, Warning } from "@locator";
 import type { PhotoFix } from "./photos";
+import type { Caja, EventoDeString, Severidad, Umbrales } from "./detect";
 
 export type FindingStatus = "pendiente" | "confirmado" | "descartado";
 
@@ -35,24 +51,95 @@ export const ANOMALIAS = [
   "Otro",
 ] as const;
 
+/**
+ * Lo que midio el motor sobre un modulo.
+ *
+ * Es la mitad que antes vivia aparte, en el `Hallazgo` de la otra pantalla. Va
+ * completa a proposito, incluida la caja: sin ella no se puede volver a marcar
+ * el modulo sobre la foto, y recalcularla despues exige la pose, la camara, el
+ * ajuste y el angulo del tracker de ESE instante — cuatro cosas que ya no
+ * estan a mano cuando alguien discute un hallazgo seis meses despues.
+ */
+export interface Medicion {
+  /** Temperatura del modulo: la mediana del 60 % central, sin marco ni suelo. */
+  celsius: number;
+  /** Cuanto se despega de sus hermanos del mismo string. */
+  deltaT: number;
+  /** Contra que se comparo. */
+  referenciaC: number;
+  /** Contra cuantos. */
+  vecinos: number;
+  /** Que vecindario se pudo usar. `string` es el bueno; los otros son flojos. */
+  ambito: "string" | "fila" | "vuelo";
+  severidad: Severidad;
+  /** La zona mas caliente adentro del propio modulo. */
+  puntoCalienteC?: number;
+  /** Cuanto se despega esa zona del propio modulo. Es como se ve una celda. */
+  deltaInterno?: number;
+  severidadInterna?: Severidad;
+  /** La peor de las dos comparaciones. Es la que ordena la lista. */
+  peor: Severidad;
+  /** Cual de las dos la disparo. */
+  origen: "modulo" | "celda" | "ninguno";
+  /** Sobre cuantos pixeles se midio. */
+  pixeles: number;
+  /** Cuantos pixeles cubria una celda. Debajo de 4 no se busca punto caliente. */
+  pixelesPorCelda?: number;
+  /** El recuadro que se midio, en pixeles de la imagen termica. */
+  caja?: Caja;
+}
+
 export interface Finding {
   id: string;
   fileName: string;
-  fix: PhotoFix;
+  /**
+   * La foto en la que se midio este modulo.
+   *
+   * Paso a ser opcional. Antes un hallazgo ERA una foto y sin coordenada no
+   * existia; ahora es un MODULO, y su ubicacion sale de la geometria del
+   * parque, que es exacta. La foto queda para poder decir a que hora se tomo y
+   * con cuanto error de GPS se la ubico.
+   */
+  fix?: PhotoFix;
   /** Lo que resolvio el motor. `null` si no habia geometria cerca. */
   address: Address | null;
   /** Los vecinos, para que el tecnico confirme contra la foto. */
   candidates: Address[];
   warnings: Warning[];
+  /**
+   * Lo que midio el motor. Ausente en los vuelos cargados con el modelo viejo,
+   * donde el ΔT lo escribia una persona a mano.
+   */
+  medicion?: Medicion;
 
   // --- revision humana ---
   status: FindingStatus;
   anomaly?: string;
   klass?: 1 | 2 | 3;
+  /**
+   * El ΔT que corrige el tecnico, si corrige alguno.
+   *
+   * NO pisa `medicion.deltaT`, igual que `moduleCorregido` no pisa el modulo
+   * que calculo la app. Borrar de donde salio cada numero es lo que convierte
+   * un informe en algo que no se puede defender: el que lo recibe tiene que
+   * poder ver que midio la maquina y que cambio la persona.
+   */
   deltaT?: number;
   note?: string;
   /** Si el tecnico corrige el modulo mirando la foto, queda registrado aparte. */
   moduleCorregido?: number;
+}
+
+/**
+ * El ΔT que se entrega: el de la persona si lo corrigio, si no el del motor.
+ *
+ * Vale la pena que sea una funcion y no una lectura suelta: el informe, el
+ * nombre de la foto y el color de la tarjeta tienen que elegir lo mismo, y
+ * tres lugares eligiendo por su cuenta es como salen tres numeros distintos
+ * para el mismo modulo en el mismo entregable.
+ */
+export function deltaTDe(f: Finding): number | undefined {
+  return f.deltaT ?? f.medicion?.deltaT;
 }
 
 export interface Conditions {
@@ -64,6 +151,44 @@ export interface Conditions {
   equipment?: string;
 }
 
+/**
+ * Lo que el vuelo NO permite afirmar.
+ *
+ * Es lo mas valioso que produce la deteccion y vivia suelto en el estado de la
+ * pantalla de analisis: se calculaba, se mostraba, y se perdia al cerrar. Un
+ * informe que no dice que NO miro no sirve para un reclamo — el que lo recibe
+ * no puede distinguir "ese modulo esta sano" de "ese modulo no cayo en ninguna
+ * foto", y son cosas opuestas.
+ *
+ * Por eso viaja con el vuelo, se guarda con el vuelo, y sale en los cuatro
+ * formatos de entrega.
+ */
+export interface Cobertura {
+  /** Cuando se corrio la deteccion. */
+  analizadoEl: string;
+  /** Archivos elegidos, y cuantos de esos traian temperatura adentro. */
+  fotos: number;
+  fotosTermicas: number;
+  /** Centimetros por pixel del vuelo. Decide si una celda se puede ver. */
+  gsdCm: number;
+  /** Modulos que tiene el parque cargado. */
+  totalModulos: number;
+  /** Modulos que se pudieron medir. */
+  modulosMedidos: number;
+  /** Los que aparecieron SOLO cortados por el borde de alguna foto. */
+  soloEnElBorde: number;
+  /** Los que no cayeron en ninguna foto. */
+  sinMedir: number;
+  /** Con que umbrales se clasifico la lista. */
+  umbrales: Umbrales;
+  /** Fotos que se ubicaron con un supuesto porque les faltaba un dato. */
+  posesSupuestas: Array<{ motivo: string; fotos: number }>;
+  /** Strings enteros calientes: no son defectos de modulo, se arreglan en otro lado. */
+  eventosDeString: EventoDeString[];
+  /** Las frases, ya escritas, de lo que este vuelo no permite afirmar. */
+  limitaciones: string[];
+}
+
 export interface Inspection {
   id: string;
   farmId: string;
@@ -72,6 +197,20 @@ export interface Inspection {
   createdAt: string;
   conditions: Conditions;
   findings: Finding[];
+  /** Ausente en los vuelos cargados con el modelo viejo, y en los que no se analizaron. */
+  cobertura?: Cobertura;
+}
+
+/**
+ * Si este vuelo viene del modelo anterior: una foto, un hallazgo, sin medicion.
+ *
+ * Se pregunta por los datos y no por un numero de version, porque nunca hubo
+ * uno. Un vuelo viejo tiene hallazgos y ninguno trae lo que midio el motor;
+ * uno nuevo sin fotos cargadas todavia no tiene hallazgos, y ese no es viejo:
+ * esta vacio.
+ */
+export function esModeloViejo(i: Inspection): boolean {
+  return i.findings.length > 0 && i.findings.every((f) => !f.medicion);
 }
 
 // ---------------------------------------------------------------------------
@@ -110,16 +249,30 @@ export interface Summary {
   descartados: number;
   sinUbicar: number;
   porClase: Record<1 | 2 | 3, number>;
+  /**
+   * Cuantos hay de cada severidad medida.
+   *
+   * Es lo que antes solo se veia en la pantalla del analisis, y se perdia al
+   * cerrarla: la clase IEC la pone una persona y tarda, asi que un vuelo recien
+   * cargado tiene 400 hallazgos y cero clases. Sin esto, la unica cuenta que
+   * mostraba el resumen era la humana y un vuelo entero sin revisar se veia
+   * igual que uno sin nada.
+   */
+  porSeveridad: Record<Severidad, number>;
   bloques: number;
 }
 
 export function summarize(findings: Finding[]): Summary {
   const porClase: Record<1 | 2 | 3, number> = { 1: 0, 2: 0, 3: 0 };
+  const porSeveridad: Record<Severidad, number> = {
+    normal: 0, leve: 0, moderada: 0, critica: 0,
+  };
   const bloques = new Set<string>();
   let sinUbicar = 0;
 
   for (const f of findings) {
     if (f.klass) porClase[f.klass]++;
+    if (f.medicion) porSeveridad[f.medicion.peor]++;
     if (f.address) bloques.add(f.address.block);
     else sinUbicar++;
   }
@@ -131,89 +284,20 @@ export function summarize(findings: Finding[]): Summary {
     descartados: findings.filter((f) => f.status === "descartado").length,
     sinUbicar,
     porClase,
+    porSeveridad,
     bloques: bloques.size,
   };
 }
 
-const CSV_HEADERS = [
-  "archivo", "fecha", "latitud", "longitud", "precision_m",
-  "bloque", "tracker", "fila", "string", "modulo", "conteo_desde", "caja_dc",
-  "modulo_corregido", "confianza", "anomalia", "clase", "delta_t", "estado", "nota", "avisos",
-];
+/*
+  El CSV se mudo a `informe.ts`.
 
-function csvCell(v: unknown): string {
-  if (v == null) return "";
-  const s = String(v);
-  return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
-/**
- * Las condiciones del vuelo, arriba de la tabla.
- *
- * La pantalla dice "la norma de termografia exige documentarlas en el reporte"
- * y despues las guardaba en la base y nada mas: el CSV, que ES el reporte que
- * se entrega, no las llevaba. Se cargaban seis campos en el campo, con frio,
- * para nada.
- *
- * Van como encabezado con una linea en blanco antes de la tabla: Excel lo abre
- * igual y el que recibe el archivo las ve sin tener que preguntar.
- */
-function cabeceraDeCondiciones(i: Inspection): string[] {
-  const c = i.conditions;
-  const filas: Array<[string, unknown]> = [
-    ["inspeccion", i.name],
-    ["parque", i.farmName],
-    ["fecha", i.createdAt],
-    ["irradiancia_wm2", c.irradianceWm2],
-    ["temperatura_ambiente_c", c.ambientC],
-    ["viento_ms", c.windMs],
-    ["cielo", c.sky],
-    ["piloto", c.pilot],
-    ["equipo", c.equipment],
-  ];
-  return [
-    ...filas.map(([k, v]) => [k, v == null || v === "" ? "sin registrar" : v].map(csvCell).join(",")),
-    "",
-  ];
-}
-
-/** Exporta los hallazgos a CSV. Solo los descartados quedan afuera. */
-export function toCsv(inspection: Inspection): string {
-  const rows = [...cabeceraDeCondiciones(inspection), CSV_HEADERS.join(",")];
-
-  for (const f of inspection.findings) {
-    if (f.status === "descartado") continue;
-    const a = f.address;
-    rows.push(
-      [
-        f.fileName,
-        f.fix.takenAt ?? "",
-        f.fix.lat.toFixed(7),
-        f.fix.lon.toFixed(7),
-        f.fix.accuracyM ?? "",
-        a?.block ?? "",
-        a?.tracker ?? "",
-        a?.row ?? "",
-        a?.stringNumber ?? "",
-        a?.module ?? "",
-        a ? (a.countedFrom === "near-dc" ? "caja DC" : "punta lejana") : "",
-        a?.dcBoxLabel ?? "",
-        f.moduleCorregido ?? "",
-        a ? (a.confidence * 100).toFixed(0) + "%" : "",
-        f.anomaly ?? "",
-        f.klass ?? "",
-        f.deltaT ?? "",
-        f.status,
-        f.note ?? "",
-        f.warnings.map((w) => w.code).join(" "),
-      ]
-        .map(csvCell)
-        .join(","),
-    );
-  }
-
-  return rows.join("\n");
-}
+  Vivia aca con su propia lista de columnas, al lado de la de `informe.ts` que
+  usan el Excel y el HTML. Eran dos listas para la misma tabla: el mismo
+  archivo de este mismo vuelo salia con una columna de diferencia segun por
+  que boton se lo pidiera. Ahora los cuatro formatos de entrega estan en un
+  solo lugar y sacan las columnas de la misma funcion.
+*/
 
 export function download(name: string, content: string, mime: string): void {
   descargarBytes(name, content, mime);

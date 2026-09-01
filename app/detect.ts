@@ -58,7 +58,24 @@ export interface Muestra {
    * Es la misma caja que se midio, asi que lo que se ve marcado en la foto es
    * literalmente de donde salio el numero.
    */
-  caja?: { cx: number; cy: number; largo: number; cruzado: number; rotRad: number };
+  caja?: Caja;
+}
+
+/**
+ * El recuadro del modulo dentro de la foto, en pixeles de la imagen termica.
+ *
+ * Estaba escrito a mano adentro de `Muestra` y no tenia nombre. Ahora viaja
+ * mas lejos —el hallazgo revisado la guarda para poder marcar la foto meses
+ * despues— y un tipo anonimo copiado en dos archivos es como se desincronizan
+ * los ejes: alcanza con que uno diga `largo` donde el otro dice `ancho` para
+ * que el recuadro senale el panel de al lado.
+ */
+export interface Caja {
+  cx: number;
+  cy: number;
+  largo: number;
+  cruzado: number;
+  rotRad: number;
 }
 
 /**
@@ -403,51 +420,97 @@ export function comparar(
     }
 
     const deltaT = m.celsius - referenciaC;
-    const severidad = severidadDe(deltaT, umbrales);
 
-    /**
-     * El punto caliente adentro del modulo, con dos condiciones.
-     *
-     * La primera es que la foto resuelva la celda. La segunda es menos
-     * evidente y sale de mirar los datos: un modulo que lee MAS FRIO que sus
-     * hermanos de string no esta midiendo bien el panel.
-     *
-     * Pasa en las puntas de las filas. La caja de medicion queda medio sobre
-     * el modulo y medio sobre el pasto; la mediana entonces es la del pasto
-     * —varios grados por debajo del string— y la zona "mas caliente" que
-     * aparece adentro es simplemente el panel. El resultado tiene la firma
-     * inconfundible: delta T de modulo muy negativo y delta interno positivo
-     * por casi exactamente lo mismo.
-     *
-     * Un modulo con una celda en corto nunca esta mas frio que sus hermanos.
-     * Si lo esta, lo que sobra en la caja no es un defecto: es pasto.
-     */
-    const resuelve = (m.pixelesPorCelda ?? 0) >= PIXELES_POR_CELDA_MINIMO;
-    const mideElPanel = deltaT > -umbrales.leve;
-    const deltaInterno =
-      resuelve && mideElPanel && m.puntoCalienteC != null
-        ? m.puntoCalienteC - m.celsius
-        : undefined;
-    const severidadInterna =
-      deltaInterno != null ? severidadDe(deltaInterno, internos) : undefined;
-
-    const peor = peorDe(severidad, severidadInterna ?? "normal");
     return {
       ...m,
       deltaT,
       referenciaC,
       vecinos,
       ambito,
-      severidad,
-      ...(deltaInterno != null ? { deltaInterno } : {}),
-      ...(severidadInterna ? { severidadInterna } : {}),
-      peor,
-      origen:
-        peor === "normal" ? "ninguno"
-        : peor === severidad ? "modulo"
-        : "celda",
+      ...clasificar({ ...m, deltaT }, umbrales, internos),
     };
   });
+}
+
+/**
+ * Lo que midio el motor sobre un modulo, sin la clasificacion todavia.
+ *
+ * Es lo minimo que hace falta para volver a clasificar: la temperatura del
+ * modulo, cuanto se despega de sus vecinos, la de su zona mas caliente y si la
+ * foto resolvia una celda.
+ */
+export interface Medido {
+  celsius: number;
+  deltaT: number;
+  puntoCalienteC?: number;
+  pixelesPorCelda?: number;
+}
+
+/** Como queda clasificada una medicion contra los umbrales de hoy. */
+export interface Clasificacion {
+  severidad: Severidad;
+  deltaInterno?: number;
+  severidadInterna?: Severidad;
+  peor: Severidad;
+  origen: "modulo" | "celda" | "ninguno";
+}
+
+/**
+ * Clasifica una medicion ya hecha contra los umbrales que se le pasen.
+ *
+ * Vivia adentro de `comparar`, que ademas necesita TODAS las muestras del
+ * vuelo para sacar la mediana de cada vecindario. Mientras las muestras vivian
+ * en la memoria de la pantalla eso daba lo mismo; ahora un vuelo se guarda y
+ * se vuelve a abrir, y lo unico que sobrevive es la lista corta de hallazgos
+ * con su temperatura y su delta ya restados. Mover un umbral sobre esa lista
+ * tiene que dar exactamente lo mismo que moverlo con las fotos a mano, y la
+ * unica forma de garantizarlo es que sea esta misma funcion la que decide en
+ * los dos casos.
+ */
+export function clasificar(
+  m: Medido,
+  umbrales: Umbrales = UMBRALES,
+  internos: Umbrales = UMBRALES_INTERNOS,
+): Clasificacion {
+  const severidad = severidadDe(m.deltaT, umbrales);
+
+  /**
+   * El punto caliente adentro del modulo, con dos condiciones.
+   *
+   * La primera es que la foto resuelva la celda. La segunda es menos
+   * evidente y sale de mirar los datos: un modulo que lee MAS FRIO que sus
+   * hermanos de string no esta midiendo bien el panel.
+   *
+   * Pasa en las puntas de las filas. La caja de medicion queda medio sobre
+   * el modulo y medio sobre el pasto; la mediana entonces es la del pasto
+   * —varios grados por debajo del string— y la zona "mas caliente" que
+   * aparece adentro es simplemente el panel. El resultado tiene la firma
+   * inconfundible: delta T de modulo muy negativo y delta interno positivo
+   * por casi exactamente lo mismo.
+   *
+   * Un modulo con una celda en corto nunca esta mas frio que sus hermanos.
+   * Si lo esta, lo que sobra en la caja no es un defecto: es pasto.
+   */
+  const resuelve = (m.pixelesPorCelda ?? 0) >= PIXELES_POR_CELDA_MINIMO;
+  const mideElPanel = m.deltaT > -umbrales.leve;
+  const deltaInterno =
+    resuelve && mideElPanel && m.puntoCalienteC != null
+      ? m.puntoCalienteC - m.celsius
+      : undefined;
+  const severidadInterna =
+    deltaInterno != null ? severidadDe(deltaInterno, internos) : undefined;
+
+  const peor = peorDe(severidad, severidadInterna ?? "normal");
+  return {
+    severidad,
+    ...(deltaInterno != null ? { deltaInterno } : {}),
+    ...(severidadInterna ? { severidadInterna } : {}),
+    peor,
+    origen:
+      peor === "normal" ? "ninguno"
+      : peor === severidad ? "modulo"
+      : "celda",
+  };
 }
 
 const ESCALA: Severidad[] = ["normal", "leve", "moderada", "critica"];

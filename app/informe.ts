@@ -24,7 +24,7 @@
  */
 
 import type { Cardinal, FarmProfile } from "@locator";
-import type { Finding, Inspection } from "./inspection";
+import { deltaTDe, type Finding, type Inspection } from "./inspection";
 
 // ---------------------------------------------------------------------------
 // El nombre de la foto
@@ -47,12 +47,17 @@ const limpio = (s: string) => s.replace(/[^\w.+-]+/g, "-").replace(/^-+|-+$/g, "
  */
 export function nombreDeFoto(f: Finding): string {
   const a = f.address;
+  // El del tecnico si lo corrigio, y si no el que midio el motor. Antes solo
+  // miraba el de la persona, asi que con la deteccion automatica —que mide
+  // TODOS los hallazgos y no pide que nadie transcriba nada— la carpeta salia
+  // entera sin el delta en el nombre, que es la mitad de para que sirve.
+  const dt = deltaTDe(f);
   const partes = [
     a?.block ? `B${limpio(String(a.block))}` : "sin-bloque",
     a?.tracker ? limpio(String(a.tracker)) : "",
     a?.row ? limpio(String(a.row)) : "",
     a?.module != null ? `m${a.module}` : "",
-    f.deltaT != null ? `${f.deltaT >= 0 ? "+" : ""}${f.deltaT.toFixed(1)}C` : "",
+    dt != null ? `${dt >= 0 ? "+" : ""}${dt.toFixed(1)}C` : "",
     f.anomaly ? limpio(f.anomaly) : "",
   ].filter(Boolean);
   const base = partes.join("_");
@@ -76,18 +81,38 @@ export function nombreDeFoto(f: Finding): string {
 export const COLUMNAS = [
   "archivo", "foto", "fecha", "latitud", "longitud", "precision_m",
   "bloque", "tracker", "fila", "string", "modulo", "conteo_desde", "caja_dc",
-  "modulo_corregido", "confianza", "anomalia", "clase", "delta_t", "estado", "nota", "avisos",
+  "modulo_corregido", "confianza", "anomalia", "clase", "delta_t",
+  // Lo que midio el motor. Va DESPUES de la clasificacion humana y no en vez
+  // de ella: el que recibe el archivo tiene que poder ver las dos mitades y
+  // cual es cual. Un entregable donde no se distingue lo que midio la maquina
+  // de lo que escribio una persona no se puede defender en un reclamo.
+  "temperatura_c", "delta_t_medido", "referencia_c", "vecinos", "comparado_contra",
+  "delta_t_celda", "severidad",
+  "estado", "nota", "avisos",
 ] as const;
 
 export function filaDe(f: Finding): Array<string | number> {
   const a = f.address;
+  const m = f.medicion;
+  /*
+    La coordenada que se entrega es la del MODULO, no la del dron.
+
+    Salia de `f.fix`, que es donde estaba el DRON cuando disparo — que con el
+    gimbal a plomo y 30 m de altura son unos metros de diferencia, y con el
+    gimbal inclinado bastante mas. Mientras un hallazgo era una foto, esa era
+    la unica coordenada que habia. Ahora un hallazgo es un modulo, y el centro
+    del modulo lo da la geometria relevada del parque: es exacto, y es el punto
+    al que hay que caminar. La del dron queda de respaldo para los vuelos
+    viejos, que no tienen otra.
+  */
+  const punto = a?.center ?? (f.fix ? { lat: f.fix.lat, lon: f.fix.lon } : null);
   return [
     f.fileName,
     nombreDeFoto(f),
-    f.fix.takenAt ?? "",
-    Number(f.fix.lat.toFixed(7)),
-    Number(f.fix.lon.toFixed(7)),
-    f.fix.accuracyM ?? "",
+    f.fix?.takenAt ?? "",
+    punto ? Number(punto.lat.toFixed(7)) : "",
+    punto ? Number(punto.lon.toFixed(7)) : "",
+    f.fix?.accuracyM ?? "",
     a?.block ?? "",
     a?.tracker ?? "",
     a?.row ?? "",
@@ -100,6 +125,16 @@ export function filaDe(f: Finding): Array<string | number> {
     f.anomaly ?? "",
     f.klass ?? "",
     f.deltaT ?? "",
+    m ? Number(m.celsius.toFixed(1)) : "",
+    m ? Number(m.deltaT.toFixed(1)) : "",
+    m ? Number(m.referenciaC.toFixed(1)) : "",
+    m ? m.vecinos : "",
+    // Contra que vecindario se comparo. "su string" es el bueno; los otros
+    // salen marcados porque su delta vale menos, y esconderlo seria entregar
+    // dos numeros con la misma pinta y distinto valor.
+    m ? (m.ambito === "string" ? "su string" : `${m.ambito} — vecindario flojo`) : "",
+    m?.deltaInterno != null ? Number(m.deltaInterno.toFixed(1)) : "",
+    m?.peor ?? "",
     f.status,
     f.note ?? "",
     f.warnings.map((w) => w.code).join(" "),
@@ -184,6 +219,40 @@ export function convencionDeConteo(addressing?: FarmProfile["addressing"]): stri
   return frase;
 }
 
+/**
+ * Lo que el vuelo miro y lo que no, en frases cortas para el encabezado.
+ *
+ * Va con los metadatos y no como columnas al lado de cada hallazgo: es una
+ * propiedad del VUELO, no del defecto. Y va en los cuatro formatos porque es
+ * justo lo que un informe de garantia necesita declarar — sin esto, el que lo
+ * recibe no puede distinguir "ese modulo esta sano" de "ese modulo no cayo en
+ * ninguna foto", que son cosas opuestas y se leen igual de bien en una tabla
+ * que no las nombra.
+ */
+export function cobertura(i: Inspection): Array<[string, string]> {
+  const c = i.cobertura;
+  if (!c) return [];
+  const u = c.umbrales;
+  return [
+    ["Fotos del vuelo", `${c.fotos} archivos, ${c.fotosTermicas} con temperatura adentro`],
+    ["Resolucion", `${c.gsdCm.toFixed(1)} cm por pixel`],
+    [
+      "Modulos medidos",
+      c.totalModulos
+        ? `${c.modulosMedidos} de ${c.totalModulos} del parque` +
+          (c.sinMedir ? ` — ${c.sinMedir} no cayeron en ninguna foto` : "")
+        : `${c.modulosMedidos}`,
+    ],
+    ...(c.soloEnElBorde
+      ? ([[
+          "Modulos no medidos por el borde",
+          `${c.soloEnElBorde} aparecieron solo cortados por el borde del cuadro`,
+        ]] as Array<[string, string]>)
+      : []),
+    ["Umbrales de ΔT", `leve ${u.leve} · moderada ${u.moderada} · critica ${u.critica} °C`],
+  ];
+}
+
 export function condiciones(
   i: Inspection,
   addressing?: FarmProfile["addressing"],
@@ -208,7 +277,27 @@ export function condiciones(
   */
   const convencion = convencionDeConteo(addressing);
   if (convencion) filas.push(["Numeracion de modulos", convencion]);
-  return filas.map(([k, v]) => [k, v == null || v === "" ? "sin registrar" : String(v)]);
+  return [
+    ...filas.map(([k, v]): [string, string] => [
+      k,
+      v == null || v === "" ? "sin registrar" : String(v),
+    ]),
+    ...cobertura(i),
+  ];
+}
+
+/**
+ * Lo que el vuelo no permite afirmar, como filas de una tabla.
+ *
+ * Van aparte de `condiciones` porque el informe HTML las muestra en su propia
+ * caja —son lo primero que tiene que leer el que recibe el informe— mientras
+ * que el Excel y el CSV, que son tablas planas, las llevan abajo del resto del
+ * encabezado. La lista es la misma en los tres.
+ */
+export function limitacionesComoFilas(i: Inspection): Array<[string, string]> {
+  return (i.cobertura?.limitaciones ?? []).map(
+    (l, n): [string, string] => [n === 0 ? "No se puede afirmar" : "", l],
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -260,19 +349,43 @@ export function aInformeHtml(
     porBloque.set(b, [...(porBloque.get(b) ?? []), f]);
   }
 
-  const severidad = (f: Finding) =>
-    f.deltaT == null ? "" : f.deltaT >= 20 ? "critica" : f.deltaT >= 10 ? "moderada" : f.deltaT >= 3 ? "leve" : "";
+  /*
+    De que color sale la tarjeta.
+
+    Manda la severidad que calculo el motor —que ya mira las DOS comparaciones,
+    la del modulo contra su string y la de la celda contra su propio modulo— y
+    no un numero suelto contra tres constantes escritas aca. Un modulo con una
+    celda 30 °C por encima de si mismo tiene ΔT de modulo casi cero: pintado
+    por el ΔT solo, el defecto mas comun de todos salia sin color.
+
+    Los vuelos viejos no traen medicion y siguen saliendo como salian.
+  */
+  const severidad = (f: Finding) => {
+    if (f.medicion) return f.medicion.peor === "normal" ? "" : f.medicion.peor;
+    const dt = deltaTDe(f);
+    return dt == null ? "" : dt >= 20 ? "critica" : dt >= 10 ? "moderada" : dt >= 3 ? "leve" : "";
+  };
+
+  const grados = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)} °C`;
 
   const tarjeta = (f: Finding) => {
     const a = f.address;
+    const m = f.medicion;
     const img = porNombre.get(f.fileName);
+    const dt = deltaTDe(f);
     return `<article class="h ${severidad(f)}">
   <h3>${esc(a?.block ?? "?")} · ${esc(a?.tracker ?? "?")}${a?.row ? " " + esc(a.row) : ""} · modulo ${esc(a?.module ?? "?")}</h3>
   <dl>
     <dt>String</dt><dd>${esc(a?.stringNumber ?? "—")}</dd>
     <dt>Caja DC</dt><dd>${esc(a?.dcBoxLabel ?? "—")}</dd>
     <dt>Se cuenta desde</dt><dd>${a ? (a.countedFrom === "near-dc" ? "la caja DC" : "la punta lejana") : "—"}</dd>
-    <dt>ΔT</dt><dd>${f.deltaT != null ? `<strong>${f.deltaT >= 0 ? "+" : ""}${f.deltaT} °C</strong>` : "—"}</dd>
+    <dt>ΔT</dt><dd>${dt != null ? `<strong>${grados(dt)}</strong>` : "—"}</dd>
+    ${m ? `<dt>Medicion</dt><dd>${m.celsius.toFixed(1)} °C · <strong>${grados(m.deltaT)}</strong> contra ${m.vecinos} ${
+      m.ambito === "string" ? "vecinos de su mismo string" : `vecinos (comparado por ${esc(m.ambito)} — vecindario flojo)`
+    }</dd>` : ""}
+    ${m?.deltaInterno != null ? `<dt>Punto caliente</dt><dd>${grados(m.deltaInterno)} por encima del propio modulo${
+      m.origen === "celda" ? " — eso es una celda, no el modulo entero" : ""
+    }</dd>` : ""}
     <dt>Anomalia</dt><dd>${esc(f.anomaly ?? "sin clasificar")}${f.klass ? ` (clase ${f.klass})` : ""}</dd>
     <dt>Archivo</dt><dd><code>${esc(f.fileName)}</code></dd>
   </dl>
@@ -280,6 +393,22 @@ export function aInformeHtml(
   ${img ? `<img src="${img}" alt="${esc(f.fileName)}">` : `<p class="sinfoto">Sin la foto: no estaba en la carpeta elegida.</p>`}
 </article>`;
   };
+
+  /*
+    Lo que este vuelo NO permite afirmar, arriba de todo y no en una nota al pie.
+
+    Es lo que separa un informe defendible de una lista de defectos. Los
+    modulos que no cayeron en ninguna foto y los que aparecieron solo cortados
+    por el borde del cuadro NO estan sanos: no se miraron. Callarlo convierte
+    un informe parcial en uno que parece completo, y eso es lo que se rompe
+    cuando alguien lo usa para un reclamo.
+  */
+  const limitaciones = i.cobertura?.limitaciones ?? [];
+  const noAfirma = limitaciones.length
+    ? `<section class="limites"><h2>Lo que este vuelo no permite afirmar</h2>${
+        limitaciones.map((l) => `<p>${esc(l)}</p>`).join("")
+      }</section>`
+    : "";
 
   const bloques = [...porBloque.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -310,14 +439,98 @@ export function aInformeHtml(
   .nota { background: #f6f6f6; padding: .5rem .7rem; border-radius: 4px; margin: 0 0 .6rem; }
   .h img { max-width: 100%; border-radius: 4px; display: block; }
   .sinfoto { color: #888; font-style: italic; margin: 0; }
+  .limites { background: #fdf6e3; border: 1px solid #e6d9a8; border-radius: 6px; padding: .8rem 1.1rem; }
+  .limites h2 { margin-top: 0; border: 0; font-size: 1.05rem; }
+  .limites p { margin: .4rem 0; }
   code { font-size: .88em; background: #f2f2f2; padding: .1em .35em; border-radius: 3px; }
   @media print { body { max-width: none; padding: 0; } .h { border-left-width: 4px; } }
 </style></head><body>
 <h1>${esc(i.name)}</h1>
 <p class="sub">${esc(i.farmName)} · ${esc(lista.length)} hallazgo${lista.length === 1 ? "" : "s"} en ${porBloque.size} bloque${porBloque.size === 1 ? "" : "s"}</p>
 <table class="cond"><tbody>${condiciones(i, addressing).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</tbody></table>
+${noAfirma}
 ${bloques}
 </body></html>`;
+}
+
+// ---------------------------------------------------------------------------
+// CSV
+// ---------------------------------------------------------------------------
+
+function csvCell(v: unknown): string {
+  if (v == null) return "";
+  const s = String(v);
+  return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/**
+ * Las condiciones del vuelo, arriba de la tabla.
+ *
+ * La pantalla dice "la norma de termografia exige documentarlas en el reporte"
+ * y despues las guardaba en la base y nada mas: el CSV, que ES el reporte que
+ * se entrega, no las llevaba. Se cargaban seis campos en el campo, con frio,
+ * para nada.
+ *
+ * Van como encabezado con una linea en blanco antes de la tabla: Excel lo abre
+ * igual y el que recibe el archivo las ve sin tener que preguntar.
+ *
+ * Las claves van en minuscula y con guion bajo, y no con las etiquetas del
+ * Excel: este archivo es el que alguien mete en su propio sistema, y ahi una
+ * clave estable vale mas que una linda.
+ */
+function cabeceraDeCondiciones(i: Inspection): string[] {
+  const c = i.conditions;
+  const filas: Array<[string, unknown]> = [
+    ["inspeccion", i.name],
+    ["parque", i.farmName],
+    ["fecha", i.createdAt],
+    ["irradiancia_wm2", c.irradianceWm2],
+    ["temperatura_ambiente_c", c.ambientC],
+    ["viento_ms", c.windMs],
+    ["cielo", c.sky],
+    ["piloto", c.pilot],
+    ["equipo", c.equipment],
+  ];
+  const cob = i.cobertura;
+  if (cob) {
+    filas.push(
+      ["fotos_del_vuelo", cob.fotos],
+      ["fotos_con_temperatura", cob.fotosTermicas],
+      ["cm_por_pixel", cob.gsdCm.toFixed(1)],
+      ["modulos_del_parque", cob.totalModulos],
+      ["modulos_medidos", cob.modulosMedidos],
+      ["modulos_sin_medir", cob.sinMedir],
+      ["modulos_cortados_por_el_borde", cob.soloEnElBorde],
+      ["umbral_leve_c", cob.umbrales.leve],
+      ["umbral_moderada_c", cob.umbrales.moderada],
+      ["umbral_critica_c", cob.umbrales.critica],
+    );
+    // Lo que el vuelo no permite afirmar, una fila numerada por frase. Un
+    // informe que no dice que NO miro no sirve para un reclamo, y este es el
+    // formato que se importa a otro sistema: si no esta como fila, se pierde.
+    cob.limitaciones.forEach((l, n) => filas.push([`no_se_puede_afirmar_${n + 1}`, l]));
+  }
+  return [
+    ...filas.map(([k, v]) => [k, v == null || v === "" ? "sin registrar" : v].map(csvCell).join(",")),
+    "",
+  ];
+}
+
+/**
+ * Exporta los hallazgos a CSV. Solo los descartados quedan afuera.
+ *
+ * Vivia en `inspection.ts` con su propia lista de columnas, al lado de la de
+ * este archivo. Dos listas para la misma tabla: el mismo vuelo salia con una
+ * columna de diferencia segun por que boton se lo pidiera, y en el primer
+ * cambio que tocara una sola de las dos, con datos distintos. Ahora los cuatro
+ * formatos arman la fila con la misma funcion.
+ */
+export function toCsv(inspection: Inspection): string {
+  const rows = [...cabeceraDeCondiciones(inspection), [...COLUMNAS].join(",")];
+  for (const f of entregables(inspection)) {
+    rows.push(filaDe(f).map(csvCell).join(","));
+  }
+  return rows.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +566,7 @@ export async function aExcel(
     llamadas con argumentos distintos dejarian todos los links corridos una
     fila, apuntando cada uno a la foto del hallazgo de arriba.
   */
-  const meta = condiciones(i, addressing);
+  const meta = [...condiciones(i, addressing), ...limitacionesComoFilas(i)];
 
   const filas: Array<Array<string | number>> = [
     ...meta.map(([k, v]) => [k, v]),

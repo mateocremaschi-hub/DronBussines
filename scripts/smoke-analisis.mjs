@@ -33,8 +33,15 @@ await page.getByRole("button", { name: "Siguiente" }).click();
 await page.getByRole("button", { name: "Guardar el parque" }).click();
 await page.getByRole("heading", { name: "Parques" }).waitFor();
 
-await page.getByRole("button", { name: "Analizar un vuelo" }).first().click();
-await page.getByRole("heading", { name: "Analizar un vuelo" }).waitFor();
+/*
+  Antes habia dos entradas —"Analizar un vuelo" e "Inspecciones"— que cargaban
+  las mismas fotos por caminos que no se cruzaban. Ahora hay una sola: "Vuelos",
+  y adentro se crea el vuelo y se le cargan las fotos. La deteccion corre sola
+  al cargarlas.
+*/
+await page.getByRole("button", { name: "Vuelos" }).first().click();
+await page.getByRole("heading", { name: "Vuelos" }).waitFor();
+await page.getByRole("button", { name: /Crear el primero|Nuevo vuelo/ }).first().click();
 
 // Todas las termicas de una.
 const nombres = readdirSync("public/termicas").filter((f) => f.endsWith(".jpg")).sort();
@@ -50,24 +57,49 @@ await page.getByRole("heading", { name: "Que encontro" }).waitFor({ timeout: 600
 const stats = (await page.locator(".stats").first().innerText()).replace(/\n/g, " ");
 console.log("Resumen:", stats);
 
-const camara = await page.locator(".muted.small").first().innerText();
+/*
+  La linea de la camara. Se la busca POR SU TEXTO y no por su clase: al unificar
+  las dos pantallas aparecieron otros parrafos `.muted.small` antes que este
+  —las condiciones del vuelo— y `.first()` empezo a leer el equivocado. El texto
+  "campo horizontal" solo lo escribe esta linea.
+*/
+const camara = await page.getByText(/campo horizontal/).first().innerText();
 console.log("Camara deducida:", camara.replace(/\n/g, " ").slice(0, 110));
 if (!/45\.8/.test(camara)) { console.error("ESPERABA que dedujera 45.8 grados de la foto"); process.exitCode = 1; }
 
-// La tabla de hallazgos: el mas caliente tiene que ser del tracker esperado.
-await page.getByRole("heading", { name: "Los hallazgos" }).scrollIntoViewIfNeeded();
-const filas = await page.locator("table").last().locator("tbody tr").allInnerTexts();
+/*
+  La lista de hallazgos, que ahora vive en la misma pantalla que la revision.
+
+  Antes esto miraba una tabla en "Analizar un vuelo", una pantalla aparte que
+  guardaba en su propio lugar y no se cruzaba con la revision. Al unificarlas,
+  el hallazgo dejo de ser una fila de tabla y paso a ser la tarjeta que se
+  revisa — con su foto, su medicion y sus botones. Se busca por el texto de la
+  direccion, que es lo que el operador lee.
+*/
+await page.getByRole("heading", { name: "Resumen" }).scrollIntoViewIfNeeded();
+const resumen = (await page.locator(".stats").last().innerText()).replace(/\n/g, " ");
+console.log("Resumen del vuelo:", resumen);
+/*
+  Las direcciones de los hallazgos. Cada tarjeta escribe la suya con
+  `formatAddress` en el parrafo `.answer`: "Bloque 05, tracker 05-004 R1,
+  string 3, modulo 12 (contando desde la punta norte)". Antes esto miraba una
+  tabla y partia por tabuladores; la tabla ya no existe, asi que se saca el
+  tracker del propio texto.
+*/
+const filas = await page.locator(".hallazgo .answer").allInnerTexts();
 console.log(`Hallazgos listados: ${filas.length}`);
-filas.slice(0, 5).forEach((f) => console.log("   " + f.replace(/\t/g, " · ")));
+filas.slice(0, 5).forEach((f) => console.log("   " + f.replace(/\s+/g, " ").trim()));
+
+const trackerDe = (t) => t.match(/tracker\s+(\S+)/)?.[1] ?? null;
 
 if (!filas.length) { console.error("ERROR: no encontro ningun hallazgo"); process.exitCode = 1; }
 else {
-  const tracker = filas[0].split("\t")[1];
+  const tracker = trackerDe(filas[0]);
   console.log(`Tracker mas caliente: ${tracker}  (esperado ${TRACKER_CALIENTE})`);
   if (tracker !== TRACKER_CALIENTE) {
     console.error(`ERROR: el parche estaba en ${TRACKER_CALIENTE}`); process.exitCode = 1;
   }
-  const otros = new Set(filas.map((f) => f.split("\t")[1]));
+  const otros = new Set(filas.map(trackerDe).filter(Boolean));
   console.log(`Trackers marcados: ${[...otros].join(", ")}`);
 }
 

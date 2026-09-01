@@ -5,7 +5,6 @@ import { Locate } from "./screens/Locate";
 import { Setup } from "./screens/Setup";
 import { StringList } from "./screens/StringList";
 import { Flight } from "./screens/Flight";
-import { Analysis } from "./screens/Analysis";
 import { listFarms, type StoredFarm } from "./storage";
 import { detalleDe, registrarOffline, type Offline } from "./offline";
 
@@ -16,8 +15,7 @@ type View =
   | { name: "locate"; farm: StoredFarm }
   | { name: "inspection"; farm: StoredFarm }
   | { name: "strings"; farm: StoredFarm }
-  | { name: "flight"; farm: StoredFarm }
-  | { name: "analysis"; farm: StoredFarm };
+  | { name: "flight"; farm: StoredFarm };
 
 export function App() {
   const [farms, setFarms] = useState<StoredFarm[]>([]);
@@ -96,7 +94,6 @@ export function App() {
           onParams={(farm) => setView({ name: "params", farm })}
           onStrings={(farm) => setView({ name: "strings", farm })}
           onFlight={(farm) => setView({ name: "flight", farm })}
-          onAnalysis={(farm) => setView({ name: "analysis", farm })}
           onOpen={(farm) => setView({ name: "locate", farm })}
           onInspect={(farm) => setView({ name: "inspection", farm })}
           onChanged={() => void refresh()}
@@ -122,9 +119,6 @@ export function App() {
       )}
       {view.name === "inspection" && (
         <Inspection farm={view.farm} onBack={() => setView({ name: "farms" })} />
-      )}
-      {view.name === "analysis" && (
-        <Analysis farm={view.farm} onBack={() => setView({ name: "farms" })} />
       )}
       {view.name === "flight" && (
         <Flight farm={view.farm} onBack={() => setView({ name: "farms" })} />

@@ -14,11 +14,10 @@ interface Props {
   onParams: (farm: StoredFarm) => void;
   onStrings: (farm: StoredFarm) => void;
   onFlight: (farm: StoredFarm) => void;
-  onAnalysis: (farm: StoredFarm) => void;
   onChanged: () => void;
 }
 
-export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams, onStrings, onFlight, onAnalysis, onChanged }: Props) {
+export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams, onStrings, onFlight, onChanged }: Props) {
   const [problema, setProblema] = useState<string | null>(null);
   const [plano, setPlano] = useState<{ farm: string; notas: string[]; avisos: string[] } | null>(null);
   // El problema del plano va aparte del de importar un parque: son dos botones
@@ -221,10 +220,18 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
                     <button className="link" onClick={() => onStrings(f)}>Lista de strings</button>
                   </div>
 
+                  {/*
+                    Una sola opcion despues de volar, y no dos.
+                    ===============================================
+                    Habia "Analizar un vuelo" y "Inspecciones", que cargaban
+                    las mismas fotos y daban dos listas que no se conocian: la
+                    deteccion buena en una pantalla y la revision buena en la
+                    otra. No habia forma de explicar la diferencia porque no
+                    era una diferencia, era un defecto de diseno.
+                  */}
                   <div className="grupo">
                     <span className="grupo-tit">Despues de volar</span>
-                    <button className="link" onClick={() => onAnalysis(f)}>Analizar un vuelo</button>
-                    <button className="link" onClick={() => onInspect(f)}>Inspecciones</button>
+                    <button className="link" onClick={() => onInspect(f)}>Vuelos</button>
                   </div>
 
                   <div className="grupo">

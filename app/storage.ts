@@ -60,11 +60,17 @@ export async function deleteFarm(id: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * El resultado de un analisis, guardado.
+ * El resultado de un analisis, guardado. FORMATO VIEJO: ya no se escribe.
  *
- * Se guardan solo los hallazgos que no son normales. Un parque entero son
- * cientos de miles de modulos y no tiene sentido guardar los sanos: lo que se
- * necesita despues es la lista corta, la que se clasifica a mano.
+ * Cuando habia dos caminos paralelos, el automatico guardaba esto —un analisis
+ * por parque, con los hallazgos medidos y ninguna revision humana— y el
+ * manual guardaba una `Inspection` con la revision y ninguna medicion. Eran
+ * las dos mitades del mismo trabajo en dos claves distintas de la misma base,
+ * sin forma de juntarlas.
+ *
+ * Ahora las dos mitades viven en el vuelo. Esto queda solo para LEER lo que
+ * haya quedado escrito antes: `vueloDesdeAnalisis` lo convierte en un vuelo
+ * normal y despues se borra la clave. Nadie escribe mas aca.
  */
 export interface StoredAnalysis {
   farmId: string;
@@ -74,12 +80,13 @@ export interface StoredAnalysis {
   savedAt: string;
 }
 
-export async function saveAnalysis(a: StoredAnalysis): Promise<void> {
-  await set(ANALISIS + a.farmId, a);
-}
-
 export async function loadAnalysis(farmId: string): Promise<StoredAnalysis | undefined> {
   return get<StoredAnalysis>(ANALISIS + farmId);
+}
+
+/** Se borra despues de convertirlo en un vuelo, para no importarlo dos veces. */
+export async function deleteAnalysis(farmId: string): Promise<void> {
+  await del(ANALISIS + farmId);
 }
 
 /** Exporta un parque a un archivo, para pasarlo a otro dispositivo o guardarlo. */

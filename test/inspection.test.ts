@@ -7,7 +7,11 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { summarize, toCsv, type Finding, type Inspection } from "../app/inspection";
+import { summarize, type Finding, type Inspection } from "../app/inspection";
+// El CSV se mudo a `informe.ts` junto con los otros tres formatos: tenia su
+// propia lista de columnas al lado de la de ellos, y el mismo vuelo salia con
+// una columna de diferencia segun por que boton se lo pidiera.
+import { toCsv } from "../app/informe";
 import type { Address } from "../src/types.js";
 
 const dir = (over: Partial<Address> = {}): Address => ({
@@ -90,18 +94,20 @@ describe("export CSV", () => {
   it("escribe la direccion en columnas separadas, no en un texto", () => {
     const csv = toCsv(insp([hallazgo({ address: dir({ module: 23, countedFrom: "far-end" }) })]));
     const fila = tabla(csv)[1]!.split(",");
-    expect(fila[5]).toBe("05");        // bloque
-    expect(fila[6]).toBe("05-042");    // tracker
-    expect(fila[9]).toBe("23");        // modulo
-    expect(fila[10]).toBe("punta lejana");
+    // Los indices corrieron uno: la columna `foto` —el nombre nuevo del
+    // archivo, que es lo que hace al entregable— es ahora la segunda.
+    expect(fila[6]).toBe("05");        // bloque
+    expect(fila[7]).toBe("05-042");    // tracker
+    expect(fila[10]).toBe("23");       // modulo
+    expect(fila[11]).toBe("punta lejana");
   });
 
   it("un hallazgo sin ubicar sale igual, con las columnas vacias", () => {
     const csv = toCsv(insp([hallazgo({ address: null, candidates: [] })]));
     const fila = tabla(csv)[1]!.split(",");
     expect(fila[0]).toBe("DJI_0001.JPG");
-    expect(fila[5]).toBe(""); // sin bloque
-    expect(fila[9]).toBe(""); // sin modulo
+    expect(fila[6]).toBe("");  // sin bloque
+    expect(fila[10]).toBe(""); // sin modulo
   });
 
   // Si el tecnico corrige el modulo mirando la foto, tiene que quedar aparte
@@ -109,9 +115,8 @@ describe("export CSV", () => {
   it("guarda el modulo corregido sin pisar el calculado", () => {
     const csv = toCsv(insp([hallazgo({ address: dir({ module: 7 }), moduleCorregido: 9 })]));
     const fila = tabla(csv)[1]!.split(",");
-    expect(fila[9]).toBe("7");
-    // La columna 11 es ahora la caja de continua; el modulo corregido corrio a la 12.
-    expect(fila[12]).toBe("9");
+    expect(fila[10]).toBe("7");
+    expect(fila[13]).toBe("9");
   });
 
   it("escapa comas y comillas de las notas", () => {
