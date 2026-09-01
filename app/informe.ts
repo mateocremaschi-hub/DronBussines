@@ -23,6 +23,7 @@
  *   CSV       para el que lo mete en su propio sistema.
  */
 
+import type { Cardinal, FarmProfile } from "@locator";
 import type { Finding, Inspection } from "./inspection";
 
 // ---------------------------------------------------------------------------
@@ -110,7 +111,83 @@ export function entregables(i: Inspection): Finding[] {
   return i.findings.filter((f) => f.status !== "descartado");
 }
 
-export function condiciones(i: Inspection): Array<[string, string]> {
+// ---------------------------------------------------------------------------
+// El datum del numero de modulo
+// ---------------------------------------------------------------------------
+
+const RUMBOS: Record<Cardinal, string> = {
+  north: "norte",
+  south: "sur",
+  east: "este",
+  west: "oeste",
+};
+
+/**
+ * Desde que punta se cuentan los modulos, dicho para el que recibe el informe.
+ *
+ * El numero de modulo no es un nombre grabado en el panel: es una POSICION
+ * contada desde una punta. Sin decir cual, "modulo 19" no se puede verificar
+ * contra nada — el que camina la fila con el papel en la mano no sabe de que
+ * lado empezar a contar, y dos informes del mismo parque hechos con reglas
+ * distintas se leen exactamente iguales.
+ *
+ * Eso dejo de ser teorico cuando el parque paso a contar desde el extremo
+ * norte: los parques ya cargados conservan su regla vieja a proposito, asi que
+ * conviven informes del mismo sitio numerados al reves entre si. La unica cosa
+ * que los distingue es esta linea.
+ *
+ * La frase sale de `addressing` y no esta escrita a mano: si el parque cuenta
+ * desde la caja de continua, el papel dice eso. Un informe que declara una
+ * convencion que el parque no usa es peor que uno que no declara ninguna.
+ *
+ * Sin `addressing` devuelve `null` y el informe sale como salia. Un llamador
+ * que no tenga el perfil a mano no puede terminar declarando una regla falsa.
+ */
+export function convencionDeConteo(addressing?: FarmProfile["addressing"]): string | null {
+  if (!addressing) return null;
+
+  let frase: string;
+  switch (addressing.originStrategy) {
+    case "fixed-end": {
+      const rumbo = addressing.fixedEnd ? RUMBOS[addressing.fixedEnd] : null;
+      // Un `fixed-end` sin rumbo es un perfil roto: el motor tampoco sabe de
+      // que punta contar y avisa. Antes que declarar una punta inventada en el
+      // entregable, no se declara ninguna.
+      if (!rumbo) return null;
+      frase = `Los modulos se numeran desde el extremo ${rumbo} de cada string.`;
+      break;
+    }
+    case "dc-box-end":
+      frase =
+        "Los modulos se numeran desde el extremo de cada string mas cercano a su caja de continua.";
+      break;
+    case "per-row-flag":
+      frase =
+        "Los modulos se numeran desde el extremo que el relevamiento declara para cada fila.";
+      break;
+  }
+
+  /*
+    La inversion va en la misma frase, y no es un detalle interno: decide de que
+    punta se cuenta la mitad de los strings del parque. Declarar solo la regla
+    del origen y callarse esto dejaria la linea mintiendo en todas las filas de
+    mas de un string, que es justo donde el error cuesta 65 metros de caminata.
+  */
+  if (addressing.inversionStrategy === "piercing-chain") {
+    frase +=
+      " En las filas con mas de un string, el string mas lejano al origen se cuenta al reves," +
+      " desde la punta opuesta: es donde esta su conexion.";
+  } else if (addressing.inversionStrategy === "per-string-flag") {
+    frase += " Los strings marcados en el relevamiento se cuentan al reves, desde la punta opuesta.";
+  }
+
+  return frase;
+}
+
+export function condiciones(
+  i: Inspection,
+  addressing?: FarmProfile["addressing"],
+): Array<[string, string]> {
   const c = i.conditions;
   const filas: Array<[string, unknown]> = [
     ["Inspeccion", i.name],
@@ -123,6 +200,14 @@ export function condiciones(i: Inspection): Array<[string, string]> {
     ["Piloto", c.pilot],
     ["Equipo", c.equipment],
   ];
+  /*
+    La convencion va aca, con los metadatos, y no como una columna al lado de
+    cada hallazgo: es una propiedad del parque, no del defecto. Repetirla en 400
+    filas no la hace mas cierta y esconde que es UNA declaracion —la del
+    contrato— que vale para el archivo entero.
+  */
+  const convencion = convencionDeConteo(addressing);
+  if (convencion) filas.push(["Numeracion de modulos", convencion]);
   return filas.map(([k, v]) => [k, v == null || v === "" ? "sin registrar" : String(v)]);
 }
 
@@ -152,8 +237,18 @@ export interface FotoEmbebida {
  *
  * Sin fotos igual sale: un informe sin imagenes sigue siendo util, y fallar
  * porque falta una foto seria peor.
+ *
+ * `addressing` llega desde afuera —la inspeccion guardada no lo tiene, guarda
+ * el nombre del parque y nada mas— y es opcional para no romper a nadie que ya
+ * llame a esta funcion. Si no viene, el encabezado sale sin la linea de la
+ * convencion, que es como salia antes; lo que no puede pasar es que salga con
+ * una linea inventada.
  */
-export function aInformeHtml(i: Inspection, fotos: FotoEmbebida[] = []): string {
+export function aInformeHtml(
+  i: Inspection,
+  fotos: FotoEmbebida[] = [],
+  addressing?: FarmProfile["addressing"],
+): string {
   const porNombre = new Map(fotos.map((f) => [f.fileName, f.dataUrl]));
   const lista = entregables(i);
 
@@ -220,7 +315,7 @@ export function aInformeHtml(i: Inspection, fotos: FotoEmbebida[] = []): string 
 </style></head><body>
 <h1>${esc(i.name)}</h1>
 <p class="sub">${esc(i.farmName)} · ${esc(lista.length)} hallazgo${lista.length === 1 ? "" : "s"} en ${porBloque.size} bloque${porBloque.size === 1 ? "" : "s"}</p>
-<table class="cond"><tbody>${condiciones(i).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</tbody></table>
+<table class="cond"><tbody>${condiciones(i, addressing).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</tbody></table>
 ${bloques}
 </body></html>`;
 }
@@ -241,12 +336,27 @@ ${bloques}
  * termografia exige documentarlas, y un entregable que las pide en la pantalla
  * y despues no las lleva hace cargar seis campos para nada.
  */
-export async function aExcel(i: Inspection, carpeta = "fotos"): Promise<Uint8Array<ArrayBuffer>> {
+export async function aExcel(
+  i: Inspection,
+  carpeta = "fotos",
+  addressing?: FarmProfile["addressing"],
+): Promise<Uint8Array<ArrayBuffer>> {
   const XLSX = await import("xlsx");
   const lista = entregables(i);
 
+  /*
+    Las condiciones se arman UNA vez y se guardan.
+
+    Se llamaban dos veces —una para escribirlas y otra para contar cuantas
+    filas ocupan y ubicar el hipervinculo—. Mientras la lista era fija daba lo
+    mismo, pero ahora tiene una fila que aparece o no segun el parque: dos
+    llamadas con argumentos distintos dejarian todos los links corridos una
+    fila, apuntando cada uno a la foto del hallazgo de arriba.
+  */
+  const meta = condiciones(i, addressing);
+
   const filas: Array<Array<string | number>> = [
-    ...condiciones(i).map(([k, v]) => [k, v]),
+    ...meta.map(([k, v]) => [k, v]),
     [],
     [...COLUMNAS],
     ...lista.map(filaDe),
@@ -261,7 +371,7 @@ export async function aExcel(i: Inspection, carpeta = "fotos"): Promise<Uint8Arr
     Excel ve el nombre legible y al hacer click se le abre la foto. Sin esto la
     columna seria texto y habria que buscar el archivo a mano.
   */
-  const filaCabecera = condiciones(i).length + 1; // 0-based: condiciones + linea en blanco
+  const filaCabecera = meta.length + 1; // 0-based: condiciones + linea en blanco
   const colFoto = COLUMNAS.indexOf("foto");
   lista.forEach((f, n) => {
     const ref = XLSX.utils.encode_cell({ r: filaCabecera + 1 + n, c: colFoto });

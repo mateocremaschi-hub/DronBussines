@@ -9,7 +9,7 @@ import { useMemo, useState, useEffect } from "react";
 import { compileFarm, ProfileError } from "@locator";
 import { crsAparente, reproyectar } from "../../src/geo/utm";
 import { cuadreDeFila } from "../rowbalance";
-import type { CompiledFarm, FarmProfile, TrackerRow } from "@locator";
+import type { Cardinal, CompiledFarm, FarmProfile, TrackerRow } from "@locator";
 import {
   buildRows,
   capabilityReport,
@@ -27,6 +27,7 @@ import {
   type Mapping,
   type Sheet,
 } from "../ingest";
+import { convencionDeConteo } from "../informe";
 import { forwardFill } from "../strings";
 import { saveFarm, type StoredFarm } from "../storage";
 import { boundsSummary, GeometryPlot } from "../components/GeometryPlot";
@@ -147,6 +148,59 @@ export function traducirError(err: string): string {
   }
   return [...dichas].join(" ");
 }
+
+// ---------------------------------------------------------------------------
+// Como se dice, en pantalla, desde que punta cuenta un parque
+// ---------------------------------------------------------------------------
+
+const RUMBO: Record<Cardinal, string> = {
+  north: "norte",
+  south: "sur",
+  east: "este",
+  west: "oeste",
+};
+
+/**
+ * La regla de conteo del parque, en una frase.
+ *
+ * Sale de `addressing` y no de una lista de opciones escrita a mano: si el
+ * parque quedo con una regla que esta pantalla no ofrece —`per-row-flag`, o un
+ * `fixed-end` al sur— igual hay que poder decir cual es antes de proponer
+ * cambiarla. Mostrar "desde la caja de continua" para todo lo que no es el
+ * norte seria mentirle al que decide.
+ */
+function comoCuenta(a: FarmProfile["addressing"]): string {
+  switch (a.originStrategy) {
+    case "fixed-end":
+      return a.fixedEnd
+        ? `desde el extremo ${RUMBO[a.fixedEnd]} de la fila`
+        : "desde una punta fija que el perfil no llega a declarar";
+    case "dc-box-end":
+      return "desde la caja de continua";
+    case "per-row-flag":
+      return "desde la punta que el relevamiento declara fila por fila";
+  }
+}
+
+/** Lo que la regla arrastra ademas del origen: donde van las cajas y que se invierte. */
+function detalleDeLaRegla(a: FarmProfile["addressing"]): string {
+  const partes: string[] = [];
+  if (a.originStrategy === "dc-box-end") {
+    partes.push(
+      (a.dcBoxPlacement ?? "center-road") === "center-road"
+        ? "las cajas van en la calle del medio, así que cada fila cuenta desde la punta que da a esa calle"
+        : "las cajas van contra el borde de afuera, así que cada fila cuenta desde su punta exterior",
+    );
+  }
+  if (a.inversionStrategy === "piercing-chain") {
+    partes.push("el string lejano se numera al revés, por la regla del piercing connector");
+  } else if (a.inversionStrategy === "per-string-flag") {
+    partes.push("los strings marcados en el relevamiento se numeran al revés");
+  }
+  return partes.join("; ");
+}
+
+const conMayuscula = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 const slug = (s: string) =>
   s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
@@ -1119,6 +1173,151 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
               </div>
             );
           })()}
+
+          {/*
+            Desde que punta se numeran los modulos, en un parque YA CARGADO.
+            ===================================================================
+            Los parques nuevos arrancan contando desde el extremo norte: es un
+            dato que sale de las dos picas del relevamiento y no depende de leer
+            ningun plano. Los que ya estaban conservan su regla vieja a
+            proposito. Darla vuelta en silencio al abrir la app le cambiaria el
+            numero de modulo a un parque que puede tener informes entregados con
+            la regla anterior, y el operador se enteraria el dia que el cliente
+            le discuta un numero — que es el peor lugar posible para enterarse.
+
+            Asi que el cambio existe, pero se pide a mano: se ve cual esta activa
+            antes de tocar nada y se dice que rompe. No se bloquea, porque hay
+            parques donde pasar al norte es exactamente lo correcto y la app no
+            tiene como saber cual es cual.
+
+            La otra opcion NO se inventa. Se ofrece la que el parque ya tiene
+            guardada, con su `dcBoxPlacement` y su `inversionStrategy` tal cual:
+            armar una regla "desde la caja" de cero pediria saber de que lado de
+            la calle estan las cajas, y eso lo dice el plano de interconexion.
+            Una opcion adivinada seria peor que no tener opcion.
+          */}
+          {soloParametros && existing && (() => {
+            const guardado = existing.profile.addressing;
+            const alNorte = (a: FarmProfile["addressing"]) =>
+              a.originStrategy === "fixed-end" && a.fixedEnd === "north";
+            const eligeNorte = alNorte(profileDraft.addressing);
+            const cambia = eligeNorte !== alNorte(guardado);
+            const detalle = detalleDeLaRegla(guardado);
+            const frase = convencionDeConteo(profileDraft.addressing);
+
+            return (
+              <div className="note">
+                <h3>Desde qué punta se numeran los módulos</h3>
+                <p>
+                  El número de módulo no es un nombre grabado en el panel: es una posición contada
+                  desde una punta de la fila. Cuál es esa punta lo decide este parque, y el informe
+                  lo declara en una línea.
+                </p>
+                <p>
+                  Hoy este parque cuenta <strong>{comoCuenta(guardado)}</strong>
+                  {detalle ? ` (${detalle})` : ""}.
+                </p>
+
+                {alNorte(guardado) ? (
+                  <p className="help">
+                    {/*
+                      Un parque que ya cuenta desde el norte pero que ademas
+                      invierte strings no es "nada que cambiar": es una
+                      contradiccion. Con el modulo 1 atado al extremo norte, la
+                      inversion numera la mitad de los strings desde el sur
+                      diciendo que cuentan desde el norte. Se dice, y se manda al
+                      control que lo arregla en vez de callarlo.
+                    */}
+                    {guardado.inversionStrategy === "none"
+                      ? "Es la regla recomendada, así que acá no hay nada que cambiar."
+                      : "El origen ya es el recomendado, pero este parque además invierte strings, y con el conteo arrancando en el norte eso contradice la convención que el informe declara: la mitad de los strings quedaría numerada desde el sur. Se saca más abajo, en «Inversión de strings»."}{" "}
+                    La otra opción —numerar desde la caja de continua— no se ofrece: para armarla
+                    habría que decidir de qué lado de la calle están las cajas, y eso lo dice el
+                    plano de interconexión, no esta pantalla.
+                  </p>
+                ) : (
+                  <>
+                    <label className="check">
+                      <input
+                        type="radio"
+                        name="origen-del-conteo"
+                        checked={eligeNorte}
+                        onChange={() => setProfileDraft((d) => ({
+                          ...d,
+                          addressing: {
+                            originStrategy: "fixed-end",
+                            fixedEnd: "north",
+                            inversionStrategy: "none",
+                          },
+                        }))}
+                      />
+                      <span>
+                        Desde el extremo norte de la fila — <strong>recomendada</strong>
+                        <em>
+                          La punta norte sale de las dos picas del relevamiento y no depende de leer
+                          ningún plano, así que no se puede equivocar por un plano mal leído. En un
+                          parque de trackers la fila corre siempre norte-sur, porque el eje tiene que
+                          girar de este a oeste para seguir al sol.
+                        </em>
+                      </span>
+                    </label>
+
+                    <label className="check">
+                      <input
+                        type="radio"
+                        name="origen-del-conteo"
+                        checked={!eligeNorte}
+                        onChange={() => setProfileDraft((d) => ({ ...d, addressing: guardado }))}
+                      />
+                      <span>
+                        {conMayuscula(comoCuenta(guardado))}
+                        <em>
+                          Es la regla con la que se cargó este parque y se conserva tal cual
+                          {detalle ? `: ${detalle}` : ""}. Para saber cuál es esa punta hace falta
+                          el plano de interconexión; si el plano se leyó mal, se va mal el número de
+                          módulo y la ubicación del panel.
+                        </em>
+                      </span>
+                    </label>
+                  </>
+                )}
+
+                {cambia && (
+                  <div className="warnbox">
+                    <h3>Esto le cambia el número de módulo a las filas de todo el parque</h3>
+                    <p>
+                      Las {existing.rows.length} filas se vuelven a numerar con la regla nueva. Donde
+                      las dos reglas apuntan a la misma punta no cambia nada; en las demás el módulo
+                      1 pasa a ser el último de su string y al revés. El panel no se movió: cambió
+                      desde dónde se lo cuenta.
+                    </p>
+                    <p>
+                      <strong>
+                        Un informe ya entregado con la regla anterior no va a coincidir con los que
+                        salgan de acá en adelante
+                      </strong>{" "}
+                      — ni los números de la tabla, ni los nombres de las fotos, que llevan el módulo
+                      adentro. Si de este parque ya salió una entrega, avisalo: el informe declara la
+                      convención en una línea y esa línea va a decir otra cosa.
+                    </p>
+                    <p>
+                      Las inspecciones que ya están cargadas conservan los números que se calcularon
+                      al importar las fotos: no se recalculan solas. Si vas a volver a entregar una
+                      de esas, cargale de nuevo las fotos del vuelo.
+                    </p>
+                    <p className="small">No se aplica hasta que guardes.</p>
+                  </div>
+                )}
+
+                {frase && (
+                  <p className="help">
+                    En el informe va a salir declarado así: <em>«{frase}»</em>
+                  </p>
+                )}
+              </div>
+            );
+          })()}
+
           {!existing && (
             <div className="field">
               <label htmlFor="farm-name">Nombre del parque</label>

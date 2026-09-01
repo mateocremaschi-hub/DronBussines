@@ -19,10 +19,23 @@ import {
   saveInspection,
   summarize,
   toCsv,
+  descargarBytes,
   type Finding,
   type Inspection as Insp,
 } from "../inspection";
 import type { StoredFarm } from "../storage";
+import { aExcel, aInformeHtml, entregables, nombreDeFoto } from "../informe";
+import { zip } from "../zip";
+
+/** El JPEG como data URL, para meterlo adentro del HTML del informe. */
+function comoDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(new Error(`No pude leer ${file.name}`));
+    r.readAsDataURL(file);
+  });
+}
 
 /**
  * Un identificador de hallazgo que no se repite entre sesiones.
@@ -54,6 +67,17 @@ function numeroOVacio(texto: string): number | undefined {
 export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack: () => void }) {
   const [list, setList] = useState<Insp[]>([]);
   const [current, setCurrent] = useState<Insp | null>(null);
+  /*
+    La exportacion con fotos.
+
+    Las fotos no viven en la base —un vuelo son miles de JPEG— asi que se piden
+    al momento de exportar. `pedido` guarda que hacer con la carpeta cuando el
+    usuario la elige: sin eso habria que duplicar el input de archivos por cada
+    formato.
+  */
+  const inputFotos = useRef<HTMLInputElement>(null);
+  const pedido = useRef<((fs: File[]) => void) | null>(null);
+  const [exportando, setExportando] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [problemas, setProblemas] = useState<Array<{ fileName: string; error: string }>>([]);
   const [filtro, setFiltro] = useState<"todos" | "pendiente" | "confirmado" | "sin-ubicar">("todos");
@@ -134,6 +158,106 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
     setProblemas((p) => [...p, ...fallos]);
     setCurrent((c) => (c ? { ...c, findings: [...c.findings, ...nuevos] } : c));
     setProgress(null);
+  }
+
+  /** Pide la carpeta de fotos y resuelve cuando el usuario elige. */
+  function pedirFotos(): Promise<File[]> {
+    return new Promise((resolve) => {
+      pedido.current = resolve;
+      inputFotos.current?.click();
+    });
+  }
+
+  /**
+   * Las fotos de los hallazgos, emparejadas por nombre.
+   *
+   * Solo las que hacen falta: un vuelo son miles de fotos y el entregable son
+   * decenas. Meter el vuelo entero haria un ZIP de gigabytes que nadie abre.
+   */
+  function fotosDeLosHallazgos(archivos: File[]): Map<string, File> {
+    const porNombre = new Map(archivos.map((f) => [f.name, f]));
+    const salida = new Map<string, File>();
+    for (const f of entregables(current!)) {
+      const file = porNombre.get(f.fileName);
+      if (file) salida.set(f.fileName, file);
+    }
+    return salida;
+  }
+
+  async function exportarExcel() {
+    if (!current) return;
+    setExportando("Armando el Excel…");
+    try {
+      /*
+        El perfil del parque va al entregable, no solo la inspeccion.
+
+        La inspeccion guarda el nombre del parque y nada mas, asi que el Excel
+        no tenia con que decir desde que punta se numeran los modulos: salia un
+        "modulo 19" que el cliente no podia verificar contra nada. Lo que falta
+        esta a mano —esta pantalla ya recibe el parque entero— y de ahi sale la
+        linea que declara la convencion.
+      */
+      const bytes = await aExcel(current, "fotos", stored.profile.addressing);
+      descargarBytes(
+        `${current.name}.xlsx`,
+        bytes,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      );
+    } finally {
+      setExportando(null);
+    }
+  }
+
+  async function exportarFotos() {
+    if (!current) return;
+    const archivos = await pedirFotos();
+    if (!archivos.length) return;
+    setExportando("Renombrando las fotos…");
+    try {
+      const encontradas = fotosDeLosHallazgos(archivos);
+      const entradas = [];
+      for (const f of entregables(current)) {
+        const file = encontradas.get(f.fileName);
+        if (!file) continue;
+        entradas.push({
+          ruta: `fotos/${nombreDeFoto(f)}`,
+          contenido: new Uint8Array(await file.arrayBuffer()),
+        });
+      }
+      if (!entradas.length) {
+        setExportando(
+          `Ninguna de las ${archivos.length} fotos que elegiste coincide con los hallazgos. ` +
+          "Fijate que sea la carpeta de ESTE vuelo.",
+        );
+        return;
+      }
+      descargarBytes(`${current.name}-fotos.zip`, zip(entradas, new Date()), "application/zip");
+      setExportando(null);
+    } catch (e) {
+      setExportando(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function exportarInforme() {
+    if (!current) return;
+    const archivos = await pedirFotos();
+    setExportando("Armando el informe…");
+    try {
+      const encontradas = fotosDeLosHallazgos(archivos);
+      const fotos = [];
+      for (const [nombre, file] of encontradas) {
+        fotos.push({ fileName: nombre, dataUrl: await comoDataUrl(file) });
+      }
+      const html = aInformeHtml(current, fotos, stored.profile.addressing);
+      descargarBytes(`${current.name}.html`, html, "text/html;charset=utf-8");
+      setExportando(
+        fotos.length
+          ? null
+          : "Salio sin fotos: ninguna de las que elegiste coincide con los hallazgos.",
+      );
+    } catch (e) {
+      setExportando(e instanceof Error ? e.message : String(e));
+    }
   }
 
   function patch(id: string, cambio: Partial<Finding>) {
@@ -326,10 +450,49 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
                 {f === "sin-ubicar" ? "Sin ubicar" : f[0]!.toUpperCase() + f.slice(1)}
               </button>
             ))}
+          </div>
+
+          {/*
+            Los formatos de entrega.
+            ===================================================================
+            Habia uno solo, un CSV, y el proveedor con el que compite este
+            trabajo entrega un Excel con link a la foto de cada hallazgo. Un
+            CSV con nombres de archivo al lado de una carpeta de 4000 fotos es
+            menos que eso.
+
+            Las fotos NO se guardan en la base: un vuelo son miles de JPEG y
+            meterlos en IndexedDB llenaria el disco del telefono. Se piden al
+            exportar y se usan las de los hallazgos nomas.
+          */}
+          <h3>Entregar</h3>
+          <div className="acciones-entrega">
+            <button onClick={() => void exportarExcel()}>Excel + link a las fotos</button>
+            <button onClick={() => void exportarFotos()}>Carpeta de fotos renombradas</button>
+            <button onClick={() => void exportarInforme()}>Informe visual (HTML / PDF)</button>
             <button className="ghost" onClick={() => download(`${current.name}.csv`, toCsv(current), "text/csv")}>
-              Exportar CSV
+              CSV
             </button>
           </div>
+          {exportando && <p className="note ok">{exportando}</p>}
+          <p className="help">
+            El Excel y la carpeta de fotos van juntos: dejalos en la misma carpeta y el link de
+            cada fila abre su foto. El informe visual es un solo archivo con las imagenes adentro
+            — se abre en cualquier navegador y con <strong>Cmd+P → Guardar como PDF</strong> sale
+            el PDF, sin carpeta al lado.
+          </p>
+          <input
+            ref={inputFotos}
+            type="file"
+            multiple
+            accept="image/jpeg"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const fs = [...(e.target.files ?? [])];
+              e.target.value = "";
+              pedido.current?.(fs);
+              pedido.current = null;
+            }}
+          />
         </section>
       )}
 

@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 import { aExcel, aInformeHtml, COLUMNAS, entregables, filaDe, nombreDeFoto } from "../app/informe";
+import type { FarmProfile } from "@locator";
 import type { Finding, Inspection } from "../app/inspection";
 
 function hallazgo(over: Partial<Finding> = {}): Finding {
@@ -175,5 +176,104 @@ describe("el informe visual", () => {
     expect(html).toContain('class="h critica"');
     expect(html).toContain('class="h moderada"');
     expect(html).toContain('class="h leve"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * El informe declara desde que punta se cuentan los modulos.
+ *
+ * Es el contrato del entregable. El numero de modulo es una POSICION contada
+ * desde una punta, y sin decir cual "modulo 19" no se puede verificar contra
+ * nada: el que camina la fila no sabe de que lado arrancar a contar.
+ *
+ * No es teorico. Los parques nuevos cuentan desde el extremo norte y los que ya
+ * estaban conservan su regla vieja a proposito, asi que del mismo sitio pueden
+ * salir dos informes numerados al reves entre si. La unica cosa que los
+ * distingue es esta linea — y por eso la frase tiene que salir de la
+ * configuracion real del parque, no estar escrita a mano.
+ */
+describe("la convencion de conteo, declarada en el entregable", () => {
+  const desdeElNorte: FarmProfile["addressing"] = {
+    originStrategy: "fixed-end",
+    fixedEnd: "north",
+    inversionStrategy: "none",
+  };
+  const desdeLaCaja: FarmProfile["addressing"] = {
+    originStrategy: "dc-box-end",
+    dcBoxPlacement: "center-road",
+    inversionStrategy: "piercing-chain",
+  };
+
+  const excelComoTexto = async (addressing?: FarmProfile["addressing"]) => {
+    const XLSX = await import("xlsx");
+    const bytes = await aExcel(inspeccion([hallazgo()]), "fotos", addressing);
+    const libro = XLSX.read(bytes, { type: "array" });
+    return XLSX.utils.sheet_to_csv(libro.Sheets[libro.SheetNames[0]!]!);
+  };
+
+  it("el informe HTML dice que se cuenta desde el norte", () => {
+    const html = aInformeHtml(inspeccion([hallazgo()]), [], desdeElNorte);
+    expect(html).toContain("Los modulos se numeran desde el extremo norte de cada string.");
+  });
+
+  it("y dice la otra frase cuando el parque cuenta desde la caja", () => {
+    const html = aInformeHtml(inspeccion([hallazgo()]), [], desdeLaCaja);
+    expect(html).toContain("mas cercano a su caja de continua");
+    expect(html).not.toContain("extremo norte");
+  });
+
+  it("el Excel la lleva con los metadatos, arriba de la tabla", async () => {
+    expect(await excelComoTexto(desdeElNorte)).toContain(
+      "Los modulos se numeran desde el extremo norte de cada string.",
+    );
+  });
+
+  it("y el Excel del parque que cuenta desde la caja dice eso", async () => {
+    const texto = await excelComoTexto(desdeLaCaja);
+    expect(texto).toContain("mas cercano a su caja de continua");
+    expect(texto).not.toContain("extremo norte");
+  });
+
+  /*
+    La inversion cambia de que punta se cuenta la mitad de los strings. Una
+    linea que declara solo la regla del origen y se calla esto estaria mintiendo
+    en todas las filas de mas de un string.
+  */
+  it("cuando hay strings invertidos, lo dice en la misma frase", () => {
+    const html = aInformeHtml(inspeccion([hallazgo()]), [], desdeLaCaja);
+    expect(html).toContain("se cuenta al reves");
+  });
+
+  /*
+    Un llamador que no tenga el perfil a mano no puede terminar declarando una
+    regla falsa: es peor que no declarar ninguna.
+  */
+  it("sin el perfil del parque no inventa ninguna convencion", async () => {
+    expect(aInformeHtml(inspeccion([hallazgo()]))).not.toContain("Los modulos se numeran");
+    expect(await excelComoTexto()).not.toContain("Los modulos se numeran");
+  });
+
+  /*
+    La linea nueva corre una fila para abajo toda la tabla del Excel. El
+    hipervinculo de la foto se ubica contando las filas de metadatos, asi que si
+    esa cuenta no la contempla, cada link queda apuntando a la foto del hallazgo
+    de arriba — y el link es justamente lo que hace al entregable.
+  */
+  it("el link de la foto sigue cayendo en su fila con la linea agregada", async () => {
+    const XLSX = await import("xlsx");
+    const f = hallazgo();
+    const bytes = await aExcel(inspeccion([f]), "fotos", desdeElNorte);
+    const hoja = XLSX.read(bytes, { type: "array" }).Sheets.Hallazgos!;
+    const conLink = Object.entries(hoja).filter(
+      ([, c]) => c && typeof c === "object" && "l" in (c as object),
+    ) as Array<[string, { v: string; l: { Target: string } }]>;
+    expect(conLink).toHaveLength(1);
+    const [ref, celda] = conLink[0]!;
+    expect(celda.l.Target).toBe(`fotos/${nombreDeFoto(f)}`);
+    // Y sobre la celda que tiene el nombre nuevo, no sobre la de al lado.
+    expect(celda.v).toBe(nombreDeFoto(f));
+    expect(XLSX.utils.decode_cell(ref).c).toBe(COLUMNAS.indexOf("foto"));
   });
 });
