@@ -332,6 +332,39 @@ export interface MissionOptions {
  * El numero de al lado es el desnivel tipico dentro de un bloque — no el del
  * parque entero, porque cada vuelo es un bloque.
  */
+/**
+ * La altura mas alta a la que este vuelo todavia resuelve una celda.
+ *
+ * Es LA altura, no una preferencia. Mas alto la pasada es mas ancha, o sea
+ * menos pasadas y menos horas; el unico limite es que la celda —que es donde
+ * nace el punto caliente— siga entrando en pixeles suficientes. Justo debajo de
+ * ese limite esta el vuelo mas rapido que todavia sirve.
+ *
+ * Era un deslizador que arrancaba en 50 porque escribi 50. Con el Matrice 4T y
+ * celdas de 16 cm, el numero que sale es 53: se estaba volando mas bajo que lo
+ * necesario, o sea mas lento, sin ganar nada.
+ */
+export function alturaQueResuelveLaCelda(
+  camera: Camera,
+  celdaM: number,
+  /**
+   * Pixeles POR LADO de la celda, no de area.
+   *
+   * La distincion importa y ya me hizo equivocar: la constante del motor
+   * —`PIXELES_POR_CELDA_MINIMO`— son cuatro pixeles de AREA, o sea dos de lado.
+   * Metida aca como si fuera el lado, esta funcion mandaba a volar a la mitad
+   * de la altura que corresponde: mas lento, mas pasadas, mas dias, sin ver
+   * nada mejor.
+   */
+  pixelesPorLado: number,
+): number {
+  // gsd = 2*h*tan(hfov/2)/ancho, y se pide celdaM/gsd >= pixelesPorCelda.
+  const porMetro = (2 * Math.tan((camera.hfovDeg * RAD) / 2)) / camera.imageW;
+  const h = celdaM / (pixelesPorLado * porMetro);
+  // Redondeada para abajo: quedarse un metro corto no cuesta nada, pasarse si.
+  return Math.max(20, Math.min(120, Math.floor(h)));
+}
+
 export const TERRENOS = [
   { id: "plano", nombre: "Plano, como una mesa", desnivelM: 2 },
   { id: "lomadas", nombre: "Con lomadas suaves", desnivelM: 6 },

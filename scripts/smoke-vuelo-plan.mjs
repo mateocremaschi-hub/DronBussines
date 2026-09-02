@@ -50,11 +50,19 @@ const dron = await page.locator("#f-cam option:checked").innerText();
 console.log("Dron por defecto:", dron);
 if (!/Matrice 4T/.test(dron)) { console.error("ESPERABA que viniera elegido el Matrice 4T"); process.exitCode = 1; }
 
-// La velocidad se calcula sola y se dice de donde sale.
-const comoVuela = await page.locator("section.card", { hasText: "Cómo vas a volar" }).innerText();
-const vel = comoVuela.match(/son ([\d.]+) m\/s/)?.[1];
-console.log("Velocidad que calcula la app:", vel, "m/s");
-if (!vel || Number(vel) > 5) { console.error("ESPERABA una velocidad calculada y por debajo del techo del M4T"); process.exitCode = 1; }
+/*
+  Lo que la app decide sola.
+
+  La pantalla se podo: pedia once cosas y ahora pide dos —el dron y el
+  terreno—, y la altura, la velocidad y el solape se calculan y se resumen en
+  una linea. Lo que se prueba es esa linea: que los tres numeros salgan, y que
+  la velocidad este por debajo del techo del M4T.
+*/
+const decidido = await page.locator("section.card", { hasText: "Tu equipo y el parque" }).innerText();
+const [, alt, vel, sol] = decidido.match(/a ([\d.]+) m de altura, ([\d.]+) m\/s y ([\d.]+) % de solape/) ?? [];
+console.log(`La app eligio: ${alt} m, ${vel} m/s, ${sol} % de solape`);
+if (!alt || !vel || !sol) { console.error("ESPERABA la linea con la altura, la velocidad y el solape calculados"); process.exitCode = 1; }
+else if (Number(vel) > 5) { console.error("ESPERABA una velocidad por debajo del techo del M4T"); process.exitCode = 1; }
 
 // Y las dos figuras que contestan si el vuelo sirve, antes de elegir bloques.
 const figuras = await page.locator(".loqueve .figura").count();
@@ -82,10 +90,6 @@ for (const b of ["Seleccionar todo", "Limpiar", /Sumar los que comparten pasada/
   }
 }
 
-const agrupar = page.getByText("Contar el parque juntando los bloques que comparten pasada");
-if (await agrupar.count()) console.log("Opcion de agrupar: presente");
-else { console.error("ESPERABA la opcion de agrupar bloques"); process.exitCode = 1; }
-
 await page.getByRole("button", { name: "Seleccionar todo" }).click();
 await page.waitForTimeout(400);
 const marcadas = await casillas.evaluateAll((els) => els.filter((e) => e.checked).length);
@@ -104,7 +108,12 @@ console.log("  " + await leer());
   dibuja. Lo que se prueba sigue siendo lo mismo — que mover la altura cambie el
   plan de verdad y no solo el numero de la pantalla.
 */
+await page.getByRole("button", { name: "ver los números" }).click();
+await page.waitForTimeout(300);
 const altura = page.locator("#f-alt");
+// Sale del automatico para poder moverla: en automatico el control esta
+// deshabilitado a proposito, porque la altura la decide la app.
+await page.locator(".field", { has: altura }).getByRole("checkbox").uncheck();
 const antes = await leer();
 await altura.fill("20");
 await page.waitForTimeout(400);

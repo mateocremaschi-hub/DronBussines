@@ -394,6 +394,29 @@ export const UMBRALES_INTERNOS: Umbrales = { leve: 8, moderada: 15, critica: 25 
  */
 export const PIXELES_POR_CELDA_MINIMO = 4;
 
+/**
+ * Lo mismo, en pixeles POR LADO. Son dos: la raiz de los cuatro de area.
+ *
+ * Existe porque la constante de arriba se presta a un error que ya cometi: es
+ * un area —"cuatro pixeles, dos de lado"— y usada como si fuera el lado da una
+ * altura de vuelo la mitad de la que corresponde. Al planificar se razona por
+ * lado, asi que el numero por lado se declara en vez de deducirse en cada uso.
+ */
+export const PIXELES_POR_LADO_MINIMO = Math.sqrt(PIXELES_POR_CELDA_MINIMO);
+
+/**
+ * Con cuantos pixeles de lado se PLANIFICA un vuelo.
+ *
+ * El minimo de arriba es el piso del motor: por debajo no se emite ningun
+ * hallazgo de celda. Pero planificar justo sobre el piso deja el vuelo entero
+ * sin margen — basta que los trackers esten un poco inclinados, o que el
+ * terreno suba, para caer abajo y perder las celdas del dia.
+ *
+ * Tres por lado es el numero de planificacion: un escalon arriba del piso, y
+ * todavia bastante mas alto —o sea mas rapido— que planificar a ojo.
+ */
+export const PIXELES_POR_LADO_OBJETIVO = 3;
+
 /** Minimo de vecinos para que una mediana signifique algo. */
 const VECINOS_MINIMOS = 5;
 

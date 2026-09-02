@@ -26,6 +26,7 @@ import {
   DERIVA_SIN_RTK,
   SOLAPES,
   TERRENOS,
+  alturaQueResuelveLaCelda,
   solapeLateral,
   type TerrenoId,
   toKml,
@@ -34,7 +35,7 @@ import {
 } from "../mission";
 import { avisosDeKmz, PERFILES_DJI, toKmz } from "../wpml";
 import { huella, pasoEntreFilas, velocidades } from "../mission";
-import { PIXELES_POR_CELDA_MINIMO, CELDA_M } from "../detect";
+import { PIXELES_POR_CELDA_MINIMO, PIXELES_POR_LADO_OBJETIVO, CELDA_M } from "../detect";
 import { LoQueVeElDron } from "../components/LoQueVeElDron";
 import { ZonaQueSeMide } from "../components/ZonaQueSeMide";
 import { celdaDelParque, largoDelModulo } from "../vuelo";
@@ -63,8 +64,17 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
    * salia de ella.
    */
   const [solapeAuto, setSolapeAuto] = useState(true);
-  /** Hasta que fraccion del cuadro se acepta medir un modulo. */
+  /**
+   * Hasta que fraccion del cuadro se acepta medir un modulo.
+   *
+   * Deja de ser una pregunta de la pantalla principal. Tiene una respuesta
+   * buena —70 %— y moverla cambia falsos hallazgos por horas de vuelo: no es
+   * una decision que se tome vuelo por vuelo, es una politica. Queda abajo de
+   * "ver los numeros" para el dia que haya que discutirla.
+   */
   const [fraccionDelCuadro, setFraccionDelCuadro] = useState(0.7);
+  /** Si la altura la pone la app o la persona. */
+  const [alturaAuto, setAlturaAuto] = useState(true);
   const [terreno, setTerreno] = useState<TerrenoId>("plano");
   /** Los numeros finos, escondidos hasta que alguien los pida. */
   const [verNumeros, setVerNumeros] = useState(false);
@@ -80,7 +90,6 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
    * cargador en la camioneta eso es falso: las baterias circulan.
    */
   const [cargaEnElCampo, setCargaEnElCampo] = useState(true);
-  const [agrupar, setAgrupar] = useState(true);
   /**
    * Los bloques marcados para este vuelo. Varios, los que uno quiera.
    *
@@ -108,13 +117,25 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   const camara = CAMARAS[camIndex]!;
 
   /*
+    La altura mas alta que todavia resuelve una celda.
+
+    Mas alto, la pasada es mas ancha: menos pasadas, menos horas. El unico
+    limite es que la celda siga entrando en pixeles suficientes, porque es donde
+    nace el punto caliente. Justo debajo de ese limite esta el vuelo mas rapido
+    que todavia sirve — y era un deslizador que arrancaba en 50 porque escribi
+    50. Con el M4T y celdas de 16 cm da 53: se volaba mas lento sin ganar nada.
+  */
+  const alturaBuena = alturaQueResuelveLaCelda(camara, celdaDelParque(stored), PIXELES_POR_LADO_OBJETIVO);
+  const altura = alturaAuto ? alturaBuena : o.altitudeM;
+
+  /*
     El solape que hace falta, calculado. Va antes del plan porque, en
     automatico, es el que entra al plan.
   */
   const desnivelM = (TERRENOS.find((t) => t.id === terreno) ?? TERRENOS[0]).desnivelM;
   const solape = solapeLateral({
     camera: camara,
-    altitudeM: o.altitudeM,
+    altitudeM: altura,
     fraccionDelCuadro,
     derivaM: o.rtk ? DERIVA_CON_RTK : DERIVA_SIN_RTK,
     desnivelM,
@@ -128,14 +149,14 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     entra al plan: si se calculara despues, el plan diria una cosa y el aviso
     otra.
   */
-  const techo = velocidades(camara, o.altitudeM, o.frontOverlap, o.speedMps);
+  const techo = velocidades(camara, altura, o.frontOverlap, o.speedMps);
   // Redondeada para abajo a medio metro por segundo: un numero redondo que se
   // puede tipear en el control del dron, y del lado seguro del limite.
   const velocidadElegida = velocidadAuto
     ? Math.max(1, Math.floor(techo.maximaMps * 2) / 2)
     : o.speedMps;
 
-  const opts: MissionOptions = { camera: camara, ...o, speedMps: velocidadElegida, sideOverlap: solapeElegido };
+  const opts: MissionOptions = { camera: camara, ...o, altitudeM: altura, speedMps: velocidadElegida, sideOverlap: solapeElegido };
 
   /*
     Lo que hace falta para DIBUJAR, que no es lo mismo que para volar.
@@ -145,7 +166,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     para ver que pasa, y no pasaba nada porque todavia no habia elegido que
     volar. La pregunta "¿voy a ver la celda?" no depende de que bloque vueles.
   */
-  const anchoDeHuella = huella(o.altitudeM, camara.hfovDeg);
+  const anchoDeHuella = huella(altura, camara.hfovDeg);
   const separacionDeHuella = Math.max(0.5, anchoDeHuella * (1 - o.sideOverlap));
   const gsdCmDeHuella = (anchoDeHuella * 100) / camara.imageW;
 
@@ -215,7 +236,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   );
 
   // Como quedaria organizado el parque entero, para las cuentas de arriba.
-  const organizacion = agrupar ? agrupado : plan;
+  const organizacion = agrupado;
 
   /*
     Cuanto se vuela en un dia, y que lo limita.
@@ -232,7 +253,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     minutosDeSol: horasBuenas.length * 30,   // la ventana viene en medias horas
     minutosDelParque: organizacion.totalMinutos,
   });
-  const vuelos = agrupar ? agrupado.grupos.length : plan.bloques.length;
+  const vuelos = agrupado.grupos.length;
 
   /**
    * Con quien comparte pasada cada bloque, segun el agrupamiento automatico.
@@ -298,44 +319,6 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   const slug = todosMarcados
     ? "todo"
     : marcados.map((b) => b.block).join("+").replace(/[^\w+-]/g, "") || "sin-bloques";
-
-  /**
-   * Que cuesta cada configuracion, en horas.
-   *
-   * Sin esto hay que ir tocando numeros de a uno para descubrir que el solape
-   * lateral es el que manda. Con la tabla se ve de una.
-   */
-  const alternativas = useMemo(() => {
-    const casos: Array<[string, Partial<typeof o>]> = [
-      ["Como esta ahora", {}],
-      ["Con RTK: solape 45 %", SOLAPES.conRtk],
-      ["Con RTK + 8 m/s", { ...SOLAPES.conRtk, speedMps: 8 }],
-      ["Con RTK + 8 m/s, a 60 m", { ...SOLAPES.conRtk, speedMps: 8, altitudeM: 60 }],
-    ];
-    return casos.map(([nombre, cambio]) => {
-      const p = agrupar
-        ? planByGroup(stored.rows, stored.profile, { ...opts, ...cambio }, baterias)
-        : planByBlock(stored.rows, stored.profile, { ...opts, ...cambio }, baterias);
-      const m = planMission(stored.rows.slice(0, 1), stored.profile, { ...opts, ...cambio });
-      return {
-        nombre,
-        horas: p.totalMinutos / 60,
-        // Lo que de verdad se paga son los DIAS, no las horas de vuelo: un dia
-        // de campo es un viaje, un jornal y a veces alojamiento. Y el dia sale
-        // de las horas de vuelo contra lo que se puede volar por jornada — que
-        // casi siempre lo manda el sol, no las baterias.
-        dias: jornadaDeCampo({
-          camera: camara, baterias, cargaEnElCampo,
-          minutosDeSol: horasBuenas.length * 30,
-          minutosDelParque: p.totalMinutos,
-        }).jornadas,
-        baterias: p.totalBaterias,
-        gsdCm: m?.stats.gsdCm ?? 0,
-      };
-    });
-    // `agrupar` estaba usado adentro y faltaba aca: destildar la casilla no
-    // recalculaba la tabla, asi que seguia mostrando las horas del otro modo.
-  }, [stored.rows, stored.profile, opts.camera, o, baterias, agrupar, cargaEnElCampo, camara, horasBuenas.length]);
 
   if (!farm) {
     return (
@@ -415,109 +398,46 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
       </header>
 
       {/*
-        Una sola tarjeta, y en castellano.
+        Lo que de verdad hay que elegir, y nada mas.
         ====================================================================
-        Habia dos —"La camara" y "El vuelo"— y entre las dos pedian: sensor,
-        altura, velocidad, solape lateral, solape frontal y margen. Seis
-        numeros, cuatro de los cuales solo significan algo si hiciste
-        fotogrametria. El que va a volar esto no tiene por que haberla hecho:
-        "solape frontal 0.7" no le dice a nadie si el vuelo va a servir.
+        Esta tarjeta llego a pedir once cosas, una por cada pregunta que fue
+        apareciendo: sensor, altura, velocidad, RTK, terreno, solape, hasta
+        donde medir, agrupar bloques, baterias, carga y dia. "Siento que esa
+        seccion tiene mil cosas y me termino perdiendo" — y es cierto.
 
-        Ahora se eligen DOS cosas —el dron y la altura— y todo lo demas se
-        calcula y se DIBUJA. Los seis numeros siguen estando, abajo, para el
-        dia que alguien quiera discutirlos.
+        Lo que quedo arriba son las UNICAS dos que la app no puede contestar:
+        que dron tenes y como es el parque donde volas. Las dos se contestan una
+        vez y no se vuelven a tocar.
+
+        Todo lo demas tenia una respuesta correcta que la app puede calcular, y
+        pasa a calcularse: la altura (la mas alta que todavia resuelve una
+        celda), la velocidad (la maxima que aguanta la camara), el solape (el
+        que hace falta para no medir en el borde del cuadro). Un numero con una
+        respuesta correcta no es una opcion: es trabajo que se le esta pasando
+        a la persona.
       */}
       <section className="card">
-        <h2>Cómo vas a volar</h2>
+        <h2>Tu equipo y el parque</h2>
 
-        <div className="field">
-          <label htmlFor="f-cam">Tu dron</label>
-          <select id="f-cam" value={camIndex} onChange={(e) => setCamIndex(Number(e.target.value))}>
-            {CAMARAS.map((c, i) => (<option key={c.name} value={i}>{c.name}</option>))}
-          </select>
-          <span className="help">
-            Se planifica con la <strong>térmica</strong>, no con la cámara visible. La térmica ve
-            una franja mucho más angosta: un vuelo planificado con la visible deja huecos en la
-            térmica, que es la que importa.
-          </span>
-        </div>
-
-        <div className="field">
-          <label htmlFor="f-alt">Altura sobre el terreno: <strong>{o.altitudeM} m</strong></label>
-          <input
-            id="f-alt" type="range" min={20} max={120} step={1} value={o.altitudeM}
-            onChange={(e) => setO((p) => ({ ...p, altitudeM: Number(e.target.value) }))}
-          />
-          <span className="help">
-            Más bajo ves más detalle y tardás más, porque la franja de cada pasada es más angosta.
-            Movelo y mirá las dos figuras de abajo: son lo que vas a tener.
-          </span>
-        </div>
-
-        {/*
-          La velocidad, que hasta ahora era un numero suelto que nadie miraba.
-
-          No se pregunta: se calcula, y se dice de donde sale. Poner un numero
-          aca exige saber el intervalo de disparo de la camara y el tiempo de
-          integracion del microbolometro — o sea, exige ser la persona que ya
-          no necesita esta pantalla.
-        */}
-        <label className="check">
-          <input
-            type="checkbox" checked={velocidadAuto}
-            onChange={(e) => setVelocidadAuto(e.target.checked)}
-          />
-          <span>
-            Que la app ponga la velocidad
-            <em>
-              La más rápida que esta cámara aguanta a esta altura. Ahora mismo son{" "}
-              <strong>{velocidadElegida} m/s</strong>, y el techo lo pone{" "}
-              {techo.manda === "obturador"
-                ? `el disparo: el plan pide una foto cada ${techo.disparoCadaM.toFixed(1)} m y esta cámara no baja de ${techo.intervaloMinimoS} s entre foto y foto.`
-                : "el barrido de la imagen: una térmica no tiene obturador, cada píxel tarda unos milisegundos en leerse y mientras tanto el dron se movió. Pasado un píxel de arrastre se empieza a aplanar el pico de la celda caliente, que es justo lo que se mide."}
-            </em>
-          </span>
-        </label>
-
-        {!velocidadAuto && (
+        <div className="grid-2">
           <div className="field">
-            <label htmlFor="f-vel">
-              Velocidad: <strong>{o.speedMps} m/s</strong>{" "}
-              {o.speedMps > techo.maximaMps && <span className="mal">— pasada de {techo.maximaMps.toFixed(1)}</span>}
-            </label>
-            <input
-              id="f-vel" type="range" min={1} max={15} step={0.5} value={o.speedMps}
-              onChange={(e) => setO((p) => ({ ...p, speedMps: Number(e.target.value) }))}
-            />
-            <span className="help">
-              El máximo que aguanta esta cámara a {o.altitudeM} m es{" "}
-              <strong>{techo.maximaMps.toFixed(1)} m/s</strong>. Más rápido que eso{" "}
-              {techo.manda === "obturador"
-                ? "el dron no llega a sacar todas las fotos y quedan franjas sin cubrir."
-                : "la imagen se barre y el punto caliente se aplana."}
-            </span>
+            <label htmlFor="f-cam">Tu dron</label>
+            <select id="f-cam" value={camIndex} onChange={(e) => setCamIndex(Number(e.target.value))}>
+              {CAMARAS.map((c, i) => (<option key={c.name} value={i}>{c.name}</option>))}
+            </select>
           </div>
-        )}
 
-        {/*
-          La cobertura, que era dos numeros escritos a mano.
-          ===================================================================
-          "¿Por que con el RTK se tiene que solapar tanto la foto, si se supone
-          que es ultra preciso? ¿Por que no un diez por ciento y ahi seria mucho
-          mas rapido todo?"
+          <div className="field">
+            <label htmlFor="f-terreno">¿Cómo es el terreno?</label>
+            <select
+              id="f-terreno" value={terreno}
+              onChange={(e) => setTerreno(e.target.value as TerrenoId)}
+            >
+              {TERRENOS.map((t) => (<option key={t.id} value={t.id}>{t.nombre}</option>))}
+            </select>
+          </div>
+        </div>
 
-          Porque en esta app el solape no compra COBERTURA, compra MEDICION: de
-          todas las fotos donde sale un modulo, el motor se queda con la que lo
-          tiene mas cerca del centro del cuadro, porque en el borde la termica
-          miente varios grados y los umbrales son de dos o tres. Con pasadas
-          separadas `ancho * (1 - solape)`, el modulo peor ubicado queda a
-          `(1 - solape)` del centro hacia el borde: con 10 % de solape hay
-          modulos medidos al 90 % del camino al borde.
-
-          Asi que la pregunta no es cuanto solapar: es hasta donde se acepta
-          medir. Eso se elige aca, y el solape sale de ahi mas lo que obligan la
-          deriva del dron y el terreno.
-        */}
         <label className="check">
           <input
             type="checkbox" checked={o.rtk}
@@ -525,91 +445,10 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
           />
           <span>
             El dron tiene RTK
-            <em>
-              Clava la posicion del dron en centimetros, asi que el solape no
-              tiene que absorber que se corra de la linea. Es lo que mas mueve las horas.
-            </em>
+            <em>Es lo que más mueve las horas de vuelo de todo el parque.</em>
           </span>
         </label>
 
-        <div className="field">
-          <label htmlFor="f-terreno">¿Cómo es el terreno del parque?</label>
-          <select
-            id="f-terreno" value={terreno}
-            onChange={(e) => setTerreno(e.target.value as TerrenoId)}
-          >
-            {TERRENOS.map((t) => (<option key={t.id} value={t.id}>{t.nombre}</option>))}
-          </select>
-          <span className="help">
-            El dron vuela a una altura sobre el punto de despegue, no sobre el suelo: donde el
-            terreno sube {desnivelM} m estás volando {desnivelM} m más bajo, y la franja de esa
-            pasada se angosta sola. Es lo único de acá que el RTK no arregla.
-          </span>
-        </div>
-
-        <label className="check">
-          <input
-            type="checkbox" checked={solapeAuto}
-            onChange={(e) => setSolapeAuto(e.target.checked)}
-          />
-          <span>
-            Que la app calcule cuánto solapar
-            <em>
-              Ahora mismo da <strong>{Math.round(solapeElegido * 100)} %</strong>: {" "}
-              {Math.round(solape.porCalidad * 100)} % para que ningún módulo se mida más allá del{" "}
-              {Math.round(fraccionDelCuadro * 100)} % del cuadro,{" "}
-              {Math.round(solape.porDeriva * 100)} % por lo que se corre el dron de la línea, y{" "}
-              {Math.round(solape.porTerreno * 100)} % por el terreno.{" "}
-              {solape.manda === "calidad"
-                ? "Lo que más pesa es la regla de medición: para ir más rápido hay que aceptar medir más cerca del borde."
-                : solape.manda === "deriva"
-                  ? "Lo que más pesa es que el dron se corre de la línea: acá el RTK te ahorra horas de verdad."
-                  : "Lo que más pesa es el terreno, y eso no lo arregla el RTK: volando más alto pesa menos."}
-            </em>
-          </span>
-        </label>
-
-        {solapeAuto && (
-          <div className="field">
-            {/*
-              Esto decia "no medir ningun modulo mas alla del 65 % del cuadro" y
-              la respuesta fue "esto no entiendo que es". Con razon: es una idea
-              espacial escrita en palabras, y encima en mi idioma. Ahora se
-              dibuja, y el texto pasa a explicar POR QUE, que es lo unico que un
-              dibujo no puede decir solo.
-            */}
-            <label htmlFor="f-cuadro">Qué parte de cada foto se usa para medir</label>
-            <ZonaQueSeMide fraccionDelCuadro={fraccionDelCuadro} />
-            <input
-              id="f-cuadro" type="range" min={0.5} max={0.95} step={0.05} value={fraccionDelCuadro}
-              onChange={(e) => setFraccionDelCuadro(Number(e.target.value))}
-            />
-            <span className="help">
-              Los costados de la foto se tiran. Ahí la térmica <strong>miente</strong>: el barril de
-              la lente irradia sobre las esquinas y el vidrio del panel visto de costado refleja el
-              cielo, así que un módulo medido ahí puede dar varios grados de diferencia contra sus
-              vecinos — y esa diferencia no es un defecto, es el borde de la foto. Con umbrales de
-              2 o 3 °C, eso son hallazgos falsos.
-              {" "}<strong>Los módulos tachados no se pierden</strong>: los levanta la pasada de al
-              lado, donde caen en el medio. Para eso es el solape. Correr el control a la derecha
-              usa más de cada foto y el vuelo tarda menos, pero se mide más cerca del borde.
-            </span>
-          </div>
-        )}
-
-        {/*
-          Lo que hay que saber ANTES de comprar, no despues.
-          ===================================================================
-          Esta casilla decide la mitad de las horas de vuelo del parque, y no
-          decia en ningun lado que el RTK NO viene con el dron: hay que
-          conseguirlo aparte, de una de dos formas, y una de las dos no anda sin
-          señal de celular. Alguien que planifica con la casilla tildada, compra
-          el dron y llega al parque sin torre y sin señal, se entera ahi.
-
-          Y la otra mitad, que tambien hay que decir: sin RTK NO se pierde el
-          trabajo. La direccion de cada modulo sale de las picas del
-          relevamiento, no del GPS del dron. Se tarda el doble; no se pierde.
-        */}
         {o.rtk && (
           <div className="note">
             <p>
@@ -639,6 +478,20 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             </p>
           </div>
         )}
+
+        {/*
+          Y esto es el resultado, no una pregunta: lo que la app decidio con lo
+          de arriba. Se muestra porque hay que poder desmentirlo de un vistazo,
+          no para que se toque.
+        */}
+        <p className="note ok">
+          Con eso, el vuelo sale a <strong>{altura} m</strong> de altura,{" "}
+          <strong>{velocidadElegida} m/s</strong> y <strong>{Math.round(solapeElegido * 100)} % de
+          solape</strong>.{" "}
+          {alturaAuto && <>Es la altura más alta a la que todavía se ve una celda caliente: más
+          arriba la pasada sería más ancha y el vuelo más corto, pero el defecto más chico dejaría
+          de verse.</>}
+        </p>
       </section>
 
       {/*
@@ -660,6 +513,48 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             pasoDeFilaM={pasoDeFila ?? 5}
           />
 
+
+          {/*
+            La hora, que era una tarjeta aparte y es la misma pregunta.
+
+            "¿Se va a ver una celda?" y "¿a que hora volar?" son lo mismo: los
+            trackers giran siguiendo al sol y un modulo inclinado se ve mas
+            angosto, asi que la celda se achica con la hora igual que con la
+            altura. Tenerlas en dos tarjetas obligaba a leer dos veces la misma
+            explicacion. Del bloque viejo quedaron los tres numeros que
+            contestan algo; el parrafo del backtracking y el huso —que se deduce
+            solo de la longitud— se fueron abajo, con el resto de los numeros.
+          */}
+          <div className="row">
+            <label className="inline">
+              Día del vuelo
+              <input type="date" value={diaDeVuelo} onChange={(e) => setDiaDeVuelo(e.target.value)} />
+            </label>
+          </div>
+
+          {ventana.length === 0 ? (
+            <p className="note bad">No se pudo calcular el día. Revisá la fecha.</p>
+          ) : (
+            <>
+              <div className="stats">
+                <div>
+                  <b>{horasBuenas.length ? `${horasBuenas[0]!.hora}–${horasBuenas[horasBuenas.length - 1]!.hora}` : "—"}</b>
+                  <span>la ventana para volar ese día</span>
+                </div>
+                <div><b>{mejorHora?.hora ?? "—"}</b><span>la hora más plana</span></div>
+                <div className={celdaEnLaVentana > 0 && celdaEnLaVentana < PIXELES_POR_CELDA_MINIMO ? "alerta" : ""}>
+                  <b>{celdaEnLaVentana > 0 ? celdaEnLaVentana.toFixed(1) : "—"}</b>
+                  <span>píxeles por celda en esa ventana</span>
+                </div>
+              </div>
+              <p className="help">
+                Fuera de esa ventana los trackers están demasiado inclinados —un módulo a{" "}
+                {TOPE_TRACKER_DEG}° se ve un 43 % más angosto y la celda se achica igual— o el sol
+                está tan bajo que no se llega a los 600 W/m² que pide la norma.
+              </p>
+            </>
+          )}
+
           <button className="link" onClick={() => setVerNumeros((v) => !v)}>
             {verNumeros ? "ocultar los números" : "ver los números"}
           </button>
@@ -671,9 +566,105 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
                 12 ms de tiempo de integración, que es el número conservador de un microbolómetro
                 sin refrigerar — si medís el de tu cámara y es menor, se puede volar más rápido.
               </p>
+              {/* Las tres cosas que la app decide, con su perilla al lado. */}
+              <div className="field">
+                <label htmlFor="f-alt">
+                  Altura: <strong>{altura} m</strong>{" "}
+                  {alturaAuto && <span className="muted">— la más alta que resuelve una celda</span>}
+                </label>
+                <input
+                  id="f-alt" type="range" min={20} max={120} step={1}
+                  value={altura} disabled={alturaAuto}
+                  onChange={(e) => setO((p) => ({ ...p, altitudeM: Number(e.target.value) }))}
+                />
+                <label className="check">
+                  <input type="checkbox" checked={alturaAuto}
+                         onChange={(e) => {
+                           setAlturaAuto(e.target.checked);
+                           if (!e.target.checked) setO((p) => ({ ...p, altitudeM: alturaBuena }));
+                         }} />
+                  <span>Que la ponga la app</span>
+                </label>
+              </div>
+
+              <div className="field">
+                <label htmlFor="f-vel">
+                  Velocidad: <strong>{velocidadElegida} m/s</strong>{" "}
+                  {!velocidadAuto && o.speedMps > techo.maximaMps &&
+                    <span className="mal">— pasada de {techo.maximaMps.toFixed(1)}</span>}
+                </label>
+                <input
+                  id="f-vel" type="range" min={1} max={15} step={0.5}
+                  value={velocidadElegida} disabled={velocidadAuto}
+                  onChange={(e) => setO((p) => ({ ...p, speedMps: Number(e.target.value) }))}
+                />
+                <label className="check">
+                  <input type="checkbox" checked={velocidadAuto}
+                         onChange={(e) => setVelocidadAuto(e.target.checked)} />
+                  <span>
+                    Que la ponga la app
+                    <em>
+                      El techo lo pone{" "}
+                      {techo.manda === "obturador"
+                        ? `el disparo: el plan pide una foto cada ${techo.disparoCadaM.toFixed(1)} m y esta cámara no baja de ${techo.intervaloMinimoS} s.`
+                        : "el barrido de la imagen: cada píxel de la térmica tarda milisegundos en leerse y el dron se movió. Pasado un píxel de arrastre se aplana el pico de la celda caliente."}
+                    </em>
+                  </span>
+                </label>
+              </div>
+
+              <div className="field">
+                <label htmlFor="f-cuadro">
+                  Solape lateral: <strong>{Math.round(solapeElegido * 100)} %</strong>{" "}
+                  <span className="muted">
+                    — {Math.round(solape.porCalidad * 100)} % por la regla de medición,{" "}
+                    {Math.round(solape.porDeriva * 100)} % por la deriva del dron,{" "}
+                    {Math.round(solape.porTerreno * 100)} % por el terreno
+                  </span>
+                </label>
+                <ZonaQueSeMide fraccionDelCuadro={fraccionDelCuadro} />
+                <input
+                  id="f-cuadro" type="range" min={0.5} max={0.95} step={0.05}
+                  value={fraccionDelCuadro} disabled={!solapeAuto}
+                  onChange={(e) => setFraccionDelCuadro(Number(e.target.value))}
+                />
+                <span className="help">
+                  Los costados de la foto se tiran: ahí la térmica <strong>miente</strong> —el barril
+                  de la lente irradia sobre las esquinas y el vidrio visto de costado refleja el
+                  cielo— y con umbrales de 2 o 3 °C eso son hallazgos falsos. Los módulos tachados
+                  no se pierden: los levanta la pasada de al lado, donde caen en el medio. Para eso
+                  es el solape.
+                </span>
+                <label className="check">
+                  <input type="checkbox" checked={solapeAuto}
+                         onChange={(e) => {
+                           setSolapeAuto(e.target.checked);
+                           if (!e.target.checked) setO((p) => ({ ...p, sideOverlap: solapeElegido }));
+                         }} />
+                  <span>Que lo calcule la app</span>
+                </label>
+              </div>
+
+              <div className="row">
+                <label className="inline">
+                  Huso del parque (UTC)
+                  <input
+                    type="number" min={-12} max={14} step={1} value={huso}
+                    onChange={(e) => setHuso(Math.max(-12, Math.min(14, Number(e.target.value) || 0)))}
+                  />
+                </label>
+              </div>
+              <p className="help">
+                El huso sale de la longitud del parque, así que casi siempre está bien; corregilo si
+                el lugar tiene horario de verano. Y la cuenta de la ventana es pesimista a propósito:
+                no incluye el <em>backtracking</em>, la maniobra con la que los trackers se aplanan
+                de más al amanecer y al atardecer para no darse sombra. Con backtracking el ángulo
+                real es igual o MENOR, nunca mayor.
+              </p>
+
               <div className="grid-2">
-                {num("sideOverlap", "Solape lateral (0 a 1)", 0.3, 0.95, 0.05, "Entre lineas vecinas.")}
-                {num("frontOverlap", "Solape frontal (0 a 1)", 0.3, 0.95, 0.05, "Entre fotos de la misma linea.")}
+                {!solapeAuto && num("sideOverlap", "Solape lateral a mano (0 a 1)", 0.05, 0.95, 0.05)}
+                {num("frontOverlap", "Solape frontal (0 a 1)", 0.3, 0.95, 0.05, "Entre fotos de la misma linea. No mueve las horas: cuesta fotos, no pasadas.")}
                 {num("marginM", "Margen alrededor (m)", 0, 60, 5)}
               </div>
               <div className="stats">
@@ -696,91 +687,6 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
               </label>
             </>
           )}
-      </section>
-
-      {/* --------------------------------------------------------------- */}
-      <section className="card">
-        <h2>A que hora volar</h2>
-        <p>
-          Los trackers no estan planos: giran de -{TOPE_TRACKER_DEG}° a +{TOPE_TRACKER_DEG}°
-          siguiendo al sol. Desde arriba, un modulo inclinado {TOPE_TRACKER_DEG}° se ve un{" "}
-          <strong>43 % mas angosto</strong> de lo que es, y la celda se achica igual. Un vuelo que
-          a mediodia resuelve una celda, a las siete de la manana no.
-        </p>
-
-        <div className="row">
-          <label className="inline">
-            Dia del vuelo
-            <input type="date" value={diaDeVuelo} onChange={(e) => setDiaDeVuelo(e.target.value)} />
-          </label>
-          <label className="inline">
-            Huso del parque (UTC)
-            <input
-              type="number" min={-12} max={14} step={1} value={huso}
-              onChange={(e) => setHuso(Math.max(-12, Math.min(14, Number(e.target.value) || 0)))}
-            />
-          </label>
-        </div>
-        <p className="help">
-          El huso sale de la longitud del parque, asi que suele estar bien. Corregilo si el lugar
-          tiene horario de verano — Queensland no tiene, la mayor parte de Australia si.
-        </p>
-
-        {ventana.length === 0 ? (
-          <p className="note bad">
-            No se pudo calcular el dia. Revisá la fecha.
-          </p>
-        ) : (
-          <>
-            <div className="stats">
-              <div>
-                <b>{mejorHora?.hora ?? "—"}</b>
-                <span>la hora mas plana</span>
-              </div>
-              <div>
-                <b>{horasBuenas.length ? `${horasBuenas[0]!.hora}–${horasBuenas[horasBuenas.length - 1]!.hora}` : "—"}</b>
-                <span>ventana con los trackers a menos de 25°</span>
-              </div>
-              <div className={celdaEnLaVentana > 0 && celdaEnLaVentana < PIXELES_POR_CELDA_MINIMO ? "alerta" : ""}>
-                <b>{celdaEnLaVentana > 0 ? celdaEnLaVentana.toFixed(1) : "—"}</b>
-                <span>pixeles por celda en esa ventana</span>
-              </div>
-            </div>
-
-            <div className="tablewrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Hora local</th><th>Sol</th><th>Tracker</th>
-                    <th>Modulo visto desde arriba</th><th>Pixeles por celda</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ventana.filter((_, i) => i % 2 === 0).map((h) => {
-                    const px = pixelesPorCelda(h.factorDeAcortamiento);
-                    return (
-                      <tr key={h.hora} className={h.hora === mejorHora?.hora ? "top" : ""}>
-                        <td>{h.hora}</td>
-                        <td className="num">{h.alturaSolarDeg.toFixed(0)}°</td>
-                        <td className="num">{Math.abs(h.anguloDeg).toFixed(0)}° {h.anguloDeg > 0 ? "al este" : h.anguloDeg < 0 ? "al oeste" : ""}</td>
-                        <td className="num">{(h.factorDeAcortamiento * 100).toFixed(0)} % de su ancho</td>
-                        <td className="num">{px > 0 ? px.toFixed(1) : "—"}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            <p className="help">
-              La cuenta es pesimista a proposito: no incluye el <em>backtracking</em>, la maniobra
-              con la que los trackers se aplanan de mas al amanecer y al atardecer para no darse
-              sombra entre filas. Con backtracking el angulo real es igual o MENOR que este, nunca
-              mayor. Y la irradiancia manda igual: la norma pide 600 W/m², que con el sol a menos de
-              30° de altura no se alcanza aunque los trackers esten planos.
-            </p>
-          </>
-        )}
       </section>
 
       <section className="card">
@@ -882,62 +788,24 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
           </span>
         </div>
 
-        <label className="check">
-          <input
-            type="checkbox" checked={agrupar}
-            onChange={(e) => setAgrupar(e.target.checked)}
-          />
-          <span>
-            Contar el parque juntando los bloques que comparten pasada
-            <em>
-              Los bloques de una planta no son rectangulos prolijos: se escalonan y se meten unos
-              entre otros. Dos que ocupan la misma franja repiten las mismas pasadas si se vuelan
-              por separado. Esta casilla cambia las cuentas de arriba; lo que vas a volar de verdad
-              lo elegis vos en la tabla de abajo.
-            </em>
-          </span>
-        </label>
-
-        <h3>Que cuesta cada configuracion</h3>
-        <p className="help">
-          Las horas las manda el solape lateral, no la altura ni la velocidad. Cada pasada de menos
-          es un kilometro de menos.
-        </p>
-        <div className="tablewrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Configuracion</th><th>cm/px</th><th>Horas</th>
-                <th>Cargas de bateria</th><th>Dias de campo</th>
-              </tr>
-            </thead>
-            <tbody>
-              {alternativas.map((a, i) => (
-                <tr key={a.nombre} className={i === 0 ? "top" : ""}>
-                  <td>{a.nombre}</td>
-                  <td className="num">{a.gsdCm.toFixed(1)}</td>
-                  <td className="num"><strong>{a.horas.toFixed(1)} h</strong></td>
-                  <td className="num">{a.baterias}</td>
-                  <td className="num">{a.dias}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
         {/*
-          La conclusion en plata, no en horas. Las horas de vuelo son un numero
-          abstracto; los dias de campo son viajes, jornales y a veces alojamiento.
+          Era una casilla y no tendria que haberlo sido nunca.
+
+          Los bloques de una planta no son rectangulos prolijos: se escalonan y
+          se meten unos entre otros, asi que dos que ocupan la misma franja
+          repiten las mismas pasadas si se vuelan por separado. Juntarlos no es
+          una preferencia, es la cuenta CORRECTA de lo que cuesta el parque —
+          destildarla solo daba un numero peor. Ahora se juntan siempre y, si
+          hay bloques que se pisan, se dice cuanto se ahorra por juntarlos.
         */}
-        {alternativas[1] && alternativas[0] && !o.rtk && (
-          <p className="note">
-            En este parque, pasar de 70 % a 45 % de solape —o sea, volar con RTK— son{" "}
-            <strong>{(alternativas[0].horas - alternativas[1].horas).toFixed(1)} horas</strong>,{" "}
-            <strong>{alternativas[0].baterias - alternativas[1].baterias} baterias</strong> y{" "}
-            <strong>{alternativas[0].dias - alternativas[1].dias} dias de campo</strong>{" "}
-            menos. Eso es lo que compra el RTK: no precision, tiempo. Y ojo, que no viene con el
-            dron — mirá la nota de la casilla de RTK, mas arriba.
-          </p>
-        )}
+
+        {/*
+          Aca habia una tabla que comparaba cuatro configuraciones —con RTK, a
+          8 m/s, a 60 m— para que se viera que el solape lateral es el que manda
+          las horas. Servia cuando el solape y la velocidad eran numeros que uno
+          tocaba a ciegas. Ahora los dos se calculan y cada uno dice de donde
+          sale, asi que la tabla era cuatro filas de aritmetica repetida.
+        */}
       </section>
 
       {/*

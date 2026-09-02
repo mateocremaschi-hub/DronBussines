@@ -34,85 +34,62 @@ await page.getByRole("button", { name: "Guardar el parque" }).click();
 await page.getByRole("heading", { name: "Parques" }).waitFor();
 
 await page.getByRole("button", { name: "Planificar vuelo" }).click();
-await page.getByRole("heading", { name: "A que hora volar" }).waitFor();
+await page.getByRole("heading", { name: "Qué vas a poder ver con este vuelo" }).waitFor();
 
-// Un dia de verano austral, para que la diferencia entre las 7 y el mediodia
-// sea grande y se vea si el calculo esta vivo.
+/*
+  Esta prueba miraba una tabla de diez renglones —hora, altura del sol, angulo
+  del tracker, ancho aparente, pixeles por celda— que ya no existe: no cambiaba
+  ninguna decision y se podo junto con el resto de la pantalla.
+
+  La FISICA de esos renglones se prueba donde corresponde, sin navegador, en
+  test/sol.test.ts: que temprano el tracker este contra el tope, que al mediodia
+  quede plano, que a la mañana miren al este. Lo que le queda a esta prueba es
+  lo otro, que un test unitario no puede ver: que la pantalla muestre la ventana
+  util y que reaccione al dia que se elija.
+*/
+const tarjeta = page.locator(".card", { hasText: "Qué vas a poder ver con este vuelo" });
+
+const leer = async () => {
+  const t = (await tarjeta.locator(".stats").last().innerText()).replace(/\n/g, " ");
+  return {
+    texto: t,
+    ventana: t.match(/(\d\d:\d\d)[–-](\d\d:\d\d)/)?.[0] ?? null,
+    px: Number(t.match(/([\d.]+)\s+p[ií]xeles por celda/)?.[1] ?? NaN),
+  };
+};
+
+// Un dia de verano austral: ventana larga y trackers planos buena parte del dia.
 await page.locator('input[type="date"]').fill("2025-12-21");
-await page.waitForTimeout(300);
+await page.waitForTimeout(400);
+const verano = await leer();
+console.log("21 de diciembre:", verano.texto);
+if (!verano.ventana) { console.error("ESPERABA una ventana de vuelo en verano"); process.exitCode = 1; }
 
-const tarjeta = page.locator(".card", { hasText: "A que hora volar" });
-const texto = await tarjeta.innerText();
-console.log(texto.split("\n").slice(0, 12).map((l) => "   " + l).join("\n"));
+// Y uno de invierno: el sol nunca sube tanto, asi que la ventana se achica.
+await page.locator('input[type="date"]').fill("2025-06-21");
+await page.waitForTimeout(400);
+const invierno = await leer();
+console.log("21 de junio:   ", invierno.texto);
 
-// El huso tiene que haber salido de la longitud del parque, no de un default.
-const huso = await tarjeta.getByLabel(/Huso/).inputValue();
-console.log("Huso deducido de la longitud:", huso);
-if (huso !== "10") { console.error("ESPERABA UTC+10 para Queensland, salio", huso); process.exitCode = 1; }
-
-// Las filas de la tabla: hora, sol, tracker, acortamiento, pixeles.
-const filas = await tarjeta.locator("tbody tr").evaluateAll((trs) =>
-  trs.map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent.trim())));
-
-if (filas.length < 5) {
-  console.error("ESPERABA una tabla de horas, salieron", filas.length, "filas");
-  process.exitCode = 1;
-}
-
-const porHora = new Map(filas.map((f) => [f[0], f]));
-const temprano = porHora.get("07:00");
-const mediodia = porHora.get("12:00");
-console.log("A las 07:00:", temprano?.join(" · "));
-console.log("A las 12:00:", mediodia?.join(" · "));
-
-const pct = (s) => Number(String(s).match(/(\d+)\s*%/)?.[1] ?? NaN);
-if (!(pct(temprano?.[3]) < 70)) {
-  console.error("ESPERABA que a las 07:00 el modulo se viera bastante mas angosto");
-  process.exitCode = 1;
-}
-if (!(pct(mediodia?.[3]) > 95)) {
-  console.error("ESPERABA que al mediodia el modulo se viera casi entero");
+const minutos = (r) => {
+  if (!r.ventana) return 0;
+  const [a, b] = r.ventana.split(/[–-]/).map((h) => { const [hh, mm] = h.split(":").map(Number); return hh * 60 + mm; });
+  return b - a;
+};
+console.log(`Ventana: ${minutos(verano)} min en verano contra ${minutos(invierno)} en invierno.`);
+if (!(minutos(verano) > minutos(invierno))) {
+  console.error("ESPERABA que la ventana de verano fuera mas larga que la de invierno");
   process.exitCode = 1;
 }
 
 /*
-  Lo que de verdad decide el viaje: a las 07:00 la celda NO entra en pixeles
-  suficientes y al mediodia si. Si las dos horas dieran lo mismo, toda esta
-  tarjeta seria decorado.
+  Y que los pixeles por celda de la ventana sean los del vuelo que la app
+  eligio, no un numero suelto: la altura la decide la app para que la celda
+  entre justo, asi que este numero tiene que dar por encima del minimo.
 */
-const px = (s) => Number(s);
-console.log(`Pixeles por celda: ${temprano?.[4]} a las 07:00 contra ${mediodia?.[4]} al mediodia`);
-if (!(px(temprano?.[4]) < px(mediodia?.[4]))) {
-  console.error("ESPERABA menos pixeles por celda temprano que al mediodia");
-  process.exitCode = 1;
-}
-/*
-  Cuanto se pierde por volar temprano, medido en la propia tabla.
-
-  Antes esto exigia que la celda CRUZARA el minimo de 4 pixeles entre las 07:00
-  y el mediodia. Eso valia para el Mavic 3T, que a 50 m da 6.6 cm por pixel y
-  se queda corto apenas el tracker se inclina. Con el Matrice 4T —la termica es
-  mas angosta, o sea mejor resolucion: 5.0 cm por pixel— la celda resuelve a las
-  dos horas, y el test fallaba por una MEJORA de la camara.
-
-  Atar la prueba a un umbral que depende del equipo la vuelve una prueba del
-  equipo. Lo que esta tarjeta promete no es "a las 7 no se puede volar": es
-  cuanto peor se ve temprano. Eso se mide como fraccion, y vale para cualquier
-  camara.
-*/
-const perdida = 1 - px(temprano?.[4]) / px(mediodia?.[4]);
-console.log(`Volando a las 07:00 se pierde el ${(perdida * 100).toFixed(0)} % de los pixeles por celda.`);
-if (!(perdida > 0.25)) {
-  console.error(
-    "ESPERABA que volar a las 07:00 costara al menos un cuarto de la resolucion sobre la celda; " +
-    "salio " + temprano?.[4] + " contra " + mediodia?.[4],
-  );
-  process.exitCode = 1;
-}
-
-// Y la conclusion practica: la hora mas plana y la ventana util.
-if (!/1[12]:\d\d|1[23]:\d\d/.test(texto)) {
-  console.error("ESPERABA que la hora mas plana cayera cerca del mediodia");
+console.log(`Pixeles por celda en la ventana: ${verano.px}`);
+if (!(verano.px >= 2)) {
+  console.error("ESPERABA que en la ventana la celda entrara en al menos 2 pixeles de lado");
   process.exitCode = 1;
 }
 

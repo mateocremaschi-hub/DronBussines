@@ -38,6 +38,8 @@ interface Props {
   pasoDeFilaM: number;
 }
 
+import { PIXELES_POR_LADO_MINIMO, PIXELES_POR_LADO_OBJETIVO } from "../detect";
+
 const TINTA = "#7B8794";
 const ACENTO = "#0E6F72";
 const CALIENTE = "#c0392b";
@@ -47,8 +49,16 @@ export function LoQueVeElDron({
 }: Props) {
   const gsdM = gsdCm / 100;
   const pxPorCelda = celdaM / gsdM;
-  const alcanza = pxPorCelda >= 3;
-  const regular = pxPorCelda >= 2 && pxPorCelda < 3;
+  /*
+    Los dos umbrales salen del motor, no de este archivo.
+
+    Estaban escritos aca a mano —"3" y "2"— y el motor tiene los suyos. Dos
+    listas del mismo numero se separan el primer dia que alguien toca una: la
+    figura diria que el vuelo sirve y la deteccion no emitiria ni un hallazgo
+    de celda, o al reves.
+  */
+  const alcanza = pxPorCelda >= PIXELES_POR_LADO_OBJETIVO;
+  const regular = pxPorCelda >= PIXELES_POR_LADO_MINIMO && pxPorCelda < PIXELES_POR_LADO_OBJETIVO;
 
   // --- figura 1: el modulo, y una celda ampliada ---------------------------
   const celdasAncho = Math.max(1, Math.round(moduloLargoM / celdaM));
@@ -135,10 +145,10 @@ export function LoQueVeElDron({
           con la <strong>grilla de píxeles</strong> de tu térmica encima. Cada cuadradito blanco es
           un píxel — todo lo que hay adentro se promedia en un solo número.
           {alcanza
-            ? " Con tres o más píxeles por celda, el punto caliente sobrevive al promedio."
+            ? ` Con ${PIXELES_POR_LADO_OBJETIVO} o más píxeles por celda, el punto caliente sobrevive al promedio.`
             : regular
-              ? " Con dos está al límite: un punto caliente chico se puede diluir."
-              : " Con menos de dos, el promedio se lo come. El módulo entero se sigue midiendo bien; lo que no vas a ver es la celda."}
+              ? ` Con ${PIXELES_POR_LADO_MINIMO} está en el límite: el motor todavía lo mide, pero un punto caliente chico se puede diluir.`
+              : ` Con menos de ${PIXELES_POR_LADO_MINIMO} el promedio se lo come, y el motor no emite ningún hallazgo de celda. El módulo entero se sigue midiendo bien; lo que no vas a ver es la celda.`}
         </p>
       </div>
 
