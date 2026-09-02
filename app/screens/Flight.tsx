@@ -36,6 +36,7 @@ import { avisosDeKmz, PERFILES_DJI, toKmz } from "../wpml";
 import { huella, pasoEntreFilas, velocidades } from "../mission";
 import { PIXELES_POR_CELDA_MINIMO, CELDA_M } from "../detect";
 import { LoQueVeElDron } from "../components/LoQueVeElDron";
+import { ZonaQueSeMide } from "../components/ZonaQueSeMide";
 import { celdaDelParque, largoDelModulo } from "../vuelo";
 import type { StoredFarm } from "../storage";
 
@@ -570,18 +571,28 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
 
         {solapeAuto && (
           <div className="field">
-            <label htmlFor="f-cuadro">
-              No medir ningún módulo más allá del{" "}
-              <strong>{Math.round(fraccionDelCuadro * 100)} %</strong> del cuadro
-            </label>
+            {/*
+              Esto decia "no medir ningun modulo mas alla del 65 % del cuadro" y
+              la respuesta fue "esto no entiendo que es". Con razon: es una idea
+              espacial escrita en palabras, y encima en mi idioma. Ahora se
+              dibuja, y el texto pasa a explicar POR QUE, que es lo unico que un
+              dibujo no puede decir solo.
+            */}
+            <label htmlFor="f-cuadro">Qué parte de cada foto se usa para medir</label>
+            <ZonaQueSeMide fraccionDelCuadro={fraccionDelCuadro} />
             <input
               id="f-cuadro" type="range" min={0.5} max={0.95} step={0.05} value={fraccionDelCuadro}
               onChange={(e) => setFraccionDelCuadro(Number(e.target.value))}
             />
             <span className="help">
-              Correrlo a la derecha acepta medir módulos más cerca del borde del cuadro, donde la
-              térmica lee peor, y a cambio el vuelo tarda menos. A la izquierda, al revés. Es la
-              decisión que antes estaba escondida adentro del 45 % / 70 %.
+              Los costados de la foto se tiran. Ahí la térmica <strong>miente</strong>: el barril de
+              la lente irradia sobre las esquinas y el vidrio del panel visto de costado refleja el
+              cielo, así que un módulo medido ahí puede dar varios grados de diferencia contra sus
+              vecinos — y esa diferencia no es un defecto, es el borde de la foto. Con umbrales de
+              2 o 3 °C, eso son hallazgos falsos.
+              {" "}<strong>Los módulos tachados no se pierden</strong>: los levanta la pasada de al
+              lado, donde caen en el medio. Para eso es el solape. Correr el control a la derecha
+              usa más de cada foto y el vuelo tarda menos, pero se mide más cerca del borde.
             </span>
           </div>
         )}

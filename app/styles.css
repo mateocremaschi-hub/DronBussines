@@ -455,6 +455,9 @@ button:not(.ghost):not(.link) kbd { border-color: rgba(255,255,255,.5); color: #
 /* Los deslizadores: el control que no pide saber el numero de antemano. */
 input[type="range"] { width: 100%; accent-color: var(--accent); padding: 0; }
 
+.zona { margin: 6px 0 10px; }
+.zona .figura { max-width: 480px; }
+
 /* ---------- el mapa de navegacion ---------- */
 .mapa { border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; margin: 8px 0 4px; }
 .mapa canvas { display: block; }
