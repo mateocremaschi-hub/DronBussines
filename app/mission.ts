@@ -59,6 +59,16 @@ export interface Camera {
    * supone. No da error: deja huecos.
    */
   intervalosS?: number[];
+  /**
+   * Minutos que vuela una bateria llena, sin viento, segun la ficha.
+   *
+   * Es el numero de la ficha y no el util: el util se deriva abajo, para que
+   * la reserva y el traslado se vean como decisiones y no queden escondidos
+   * adentro de una constante.
+   */
+  minutosDeVuelo?: number;
+  /** Minutos que tarda el cargador en dejar una bateria lista para volar. */
+  minutosDeCarga?: number;
 }
 
 /**
@@ -139,9 +149,15 @@ export const CAMARAS: Camera[] = [
   {
     ...desdeDiagonal("Matrice 4T · termica 640x512 (DFOV 45°)", 45, 640, 512, "m4t"),
     intervalosS: [0.7, 1, 2, 3, 5, 7, 10, 15, 20, 30, 60],
+    // Ficha DJI: 49 min con helices estandar. El hub carga de a UNA bateria por
+    // vez: 78 min al 100 %, o 60 min al 90 % en modo "lista para volar", que es
+    // el que se usa en el campo.
+    minutosDeVuelo: 49,
+    minutosDeCarga: 60,
   },
   { ...camaraDesdeEquivalente35("Mavic 3T · termica 640x512 (40 mm eq)", 40, 640, 512, "m3t"),
-    intervalosS: [2, 3, 5, 7, 10, 15, 20, 30, 60] },
+    intervalosS: [2, 3, 5, 7, 10, 15, 20, 30, 60],
+    minutosDeVuelo: 45, minutosDeCarga: 70 },
   // El H30T no lleva id: va colgado de un Matrice 350 o 400, que no estan en
   // PERFILES_DJI. Inventarle uno seria peor que no tenerlo.
   desdeDiagonal("Zenmuse H30T · termica 1280x1024 (DFOV 45.2°)", 45.2, 1280, 1024),
@@ -738,8 +754,115 @@ export interface BlockPlanSet {
   salidas: number;
 }
 
-/** Minutos de vuelo util por bateria, ya descontada la reserva y el traslado. */
+/**
+ * Cuanto de la bateria NO se vuela.
+ *
+ * Se declaran los dos descuentos por separado, en vez de escribir un "20
+ * minutos utiles" ya masticado, porque son cosas distintas y se discuten
+ * distinto: la reserva es una regla de seguridad y el traslado depende de
+ * donde se despegue.
+ */
+export const RESERVA_DE_BATERIA = 0.25;
+/** El respaldo para una camara que no declara su autonomia. */
 export const MINUTOS_POR_BATERIA = 20;
+/** Minutos de ir hasta el bloque y volver, que se pagan de la misma bateria. */
+export const MINUTOS_DE_TRASLADO = 4;
+
+/**
+ * Minutos de vuelo util que da una bateria de este dron.
+ *
+ * Habia un `MINUTOS_POR_BATERIA = 20` fijo, de la epoca en que el unico dron a
+ * la vista era un Mavic 3T. El Matrice 4T da 49 minutos de ficha: con la
+ * reserva y el traslado descontados quedan unos 32, no 20. Con la constante
+ * vieja el parque entero pedia un 60 % mas de baterias de las que necesita — y
+ * de ahi salian viajes al campo que no hacen falta.
+ */
+export function minutosUtiles(camera: Camera): number {
+  // Sin ficha no se deriva nada: se usa el numero conservador de siempre. Es
+  // mejor sobrar baterias que quedarse en el campo con el trabajo a medias.
+  if (camera.minutosDeVuelo == null) return MINUTOS_POR_BATERIA;
+  return Math.max(
+    5,
+    Math.round(camera.minutosDeVuelo * (1 - RESERVA_DE_BATERIA) - MINUTOS_DE_TRASLADO),
+  );
+}
+
+export interface Jornada {
+  /** Vuelo util por bateria, en minutos. */
+  minutosPorBateria: number;
+  /** Lo que se puede volar en un dia con las baterias que hay. */
+  minutosPorBaterias: number;
+  /** Lo que deja volar el sol ese dia. */
+  minutosDeSol: number;
+  /** El menor de los dos: lo que de verdad se vuela en una jornada. */
+  minutosPorJornada: number;
+  /** Cual de los dos manda. Es lo unico que hay que hacer distinto. */
+  limita: "baterias" | "sol";
+  /** Si cargando en el campo el cargador llega a seguirle el ritmo al dron. */
+  elCargadorAlcanza: boolean;
+  /** Cuantas jornadas sale el parque entero. */
+  jornadas: number;
+}
+
+/**
+ * Cuanto se vuela en un dia de campo, y que es lo que lo limita.
+ *
+ * El modelo anterior contaba las baterias como si fueran de un solo uso:
+ * `viajes = baterias que gasta el parque / baterias que llevas`. El operador lo
+ * volteo con una frase — "puedo estar cargando las baterias que vienen vacias
+ * mientras el dron vuela" — y tiene razon: con un cargador en la camioneta las
+ * baterias no se gastan, CIRCULAN.
+ *
+ * Con carga en el campo lo que manda es el balance entre lo que el dron quema
+ * y lo que el cargador repone:
+ *
+ *     quema     1 bateria cada `minutosPorBateria`
+ *     repone    1 bateria cada `minutosDeCarga`
+ *
+ * Si el cargador repone mas rapido de lo que el dron quema, no hay techo: se
+ * vuela hasta que se acabe el sol. Si no —y con el hub del Matrice 4T no
+ * alcanza: carga de a una, 60 minutos, contra 32 de vuelo— las baterias que se
+ * llevan son un COLCHON que se vacia despacio, y dura mucho mas que sin cargar.
+ *
+ * Y despues esta el otro techo, que casi siempre es el que manda de verdad: el
+ * sol. La norma pide 600 W/m² y los trackers tienen que estar casi planos, y
+ * eso deja unas pocas horas al mediodia. De nada sirve tener bateria para seis
+ * horas si la ventana util son tres y media.
+ */
+export function jornadaDeCampo(args: {
+  camera: Camera;
+  baterias: number;
+  cargaEnElCampo: boolean;
+  /** Minutos de ventana util del dia, del calculo del sol. */
+  minutosDeSol: number;
+  /** Minutos de vuelo que pide el parque entero. */
+  minutosDelParque: number;
+}): Jornada {
+  const minutosPorBateria = minutosUtiles(args.camera);
+  const minutosDeCarga = args.camera.minutosDeCarga ?? 70;
+  const baterias = Math.max(1, args.baterias);
+
+  const quema = 1 / minutosPorBateria;
+  const repone = args.cargaEnElCampo ? 1 / minutosDeCarga : 0;
+  const elCargadorAlcanza = repone >= quema;
+
+  const minutosPorBaterias = elCargadorAlcanza
+    ? Infinity
+    : baterias / (quema - repone);
+
+  const minutosDeSol = Math.max(0, args.minutosDeSol);
+  const minutosPorJornada = Math.max(1, Math.min(minutosPorBaterias, minutosDeSol));
+
+  return {
+    minutosPorBateria,
+    minutosPorBaterias,
+    minutosDeSol,
+    minutosPorJornada,
+    limita: minutosPorBaterias < minutosDeSol ? "baterias" : "sol",
+    elCargadorAlcanza,
+    jornadas: Math.max(1, Math.ceil(args.minutosDelParque / minutosPorJornada)),
+  };
+}
 
 export function planByBlock(
   rows: TrackerRow[],
@@ -760,7 +883,7 @@ export function planByBlock(
       block,
       filas: group.length,
       mission,
-      baterias: Math.max(1, Math.ceil(mission.stats.minutos / MINUTOS_POR_BATERIA)),
+      baterias: Math.max(1, Math.ceil(mission.stats.minutos / minutosUtiles(opts.camera))),
     });
   }
 
@@ -905,7 +1028,7 @@ export function planByGroup(
       bloques: lista,
       filas: filas.length,
       mission,
-      baterias: Math.max(1, Math.ceil(mission.stats.minutos / MINUTOS_POR_BATERIA)),
+      baterias: Math.max(1, Math.ceil(mission.stats.minutos / minutosUtiles(opts.camera))),
     });
   }
 

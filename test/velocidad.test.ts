@@ -17,7 +17,10 @@ import {
   CAMARAS,
   OPCIONES_POR_DEFECTO,
   SEGUNDOS_DE_INTEGRACION,
+  MINUTOS_POR_BATERIA,
   huella,
+  jornadaDeCampo,
+  minutosUtiles,
   pasoEntreFilas,
   velocidades,
 } from "../app/mission";
@@ -134,5 +137,102 @@ describe("el paso entre filas, medido del parque", () => {
 
   it("sin filas suficientes no inventa un numero", () => {
     expect(pasoEntreFilas([fila(0), fila(5)])).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * La jornada de campo: lo que se puede volar en un dia, y que lo limita.
+ *
+ * El modelo anterior contaba las baterias como si fueran de un solo uso —
+ * `viajes = baterias que gasta el parque / baterias que llevas`. El operador lo
+ * volteo con una frase: "puedo estar cargando las baterias que vienen vacias
+ * mientras el dron vuela". Tiene razon: con cargador las baterias circulan, no
+ * se gastan.
+ */
+describe("cuanto se vuela en un dia de campo", () => {
+  const base = { camera: m4t, minutosDeSol: 210, minutosDelParque: 19 * 60 };
+
+  /*
+    Los 20 minutos por bateria eran de la epoca del Mavic 3T y encima cortos.
+    El Matrice 4T da 49 de ficha: con 25 % de reserva y 4 minutos de traslado
+    quedan 32. Contar 20 pedia un 60 % mas de baterias de las que hacen falta.
+  */
+  it("los minutos utiles salen del dron y no de una constante", () => {
+    expect(minutosUtiles(m4t)).toBe(Math.round(49 * 0.75 - 4));
+    expect(minutosUtiles(m4t)).toBeGreaterThan(30);
+    expect(minutosUtiles(m3t)).toBeLessThan(minutosUtiles(m4t));
+  });
+
+  it("una camara sin ficha cae en el respaldo conservador", () => {
+    expect(minutosUtiles({ ...m4t, minutosDeVuelo: undefined })).toBe(MINUTOS_POR_BATERIA);
+  });
+
+  it("sin cargador, las baterias son lo unico que hay", () => {
+    const j = jornadaDeCampo({ ...base, baterias: 5, cargaEnElCampo: false });
+    expect(j.minutosPorBaterias).toBe(5 * minutosUtiles(m4t));
+    expect(j.elCargadorAlcanza).toBe(false);
+  });
+
+  /*
+    El caso que motivo el cambio: las mismas cinco baterias rinden mucho mas si
+    se cargan mientras el dron vuela, aunque el cargador no llegue a seguirle
+    el ritmo.
+  */
+  it("cargando en el campo las mismas baterias rinden mas", () => {
+    const sin = jornadaDeCampo({ ...base, baterias: 5, cargaEnElCampo: false });
+    const con = jornadaDeCampo({ ...base, baterias: 5, cargaEnElCampo: true });
+    expect(con.minutosPorBaterias).toBeGreaterThan(sin.minutosPorBaterias);
+  });
+
+  /*
+    Pero no es magia: el hub del Matrice 4T carga de a UNA bateria y tarda 60
+    minutos en dejarla lista, contra 32 minutos de vuelo. Repone a la mitad de
+    velocidad de la que se quema, asi que el colchon igual se vacia.
+  */
+  it("el hub del M4T no le sigue el ritmo al dron", () => {
+    const j = jornadaDeCampo({ ...base, baterias: 5, cargaEnElCampo: true });
+    expect(j.elCargadorAlcanza).toBe(false);
+    expect(Number.isFinite(j.minutosPorBaterias)).toBe(true);
+  });
+
+  it("un cargador que repone mas rapido de lo que se quema saca el techo", () => {
+    const rapido = { ...m4t, minutosDeCarga: 20 };
+    const j = jornadaDeCampo({ ...base, camera: rapido, baterias: 3, cargaEnElCampo: true });
+    expect(j.elCargadorAlcanza).toBe(true);
+    expect(j.minutosPorBaterias).toBe(Infinity);
+    // Y ahi lo unico que queda limitando es el sol.
+    expect(j.limita).toBe("sol");
+    expect(j.minutosPorJornada).toBe(210);
+  });
+
+  /*
+    Lo que de verdad manda casi siempre. La norma pide 600 W/m² y los trackers
+    tienen que estar casi planos: son unas pocas horas al mediodia. Tener
+    bateria para seis horas no sirve si la ventana son tres y media.
+  */
+  it("con baterias de sobra, el que limita es el sol", () => {
+    const j = jornadaDeCampo({ ...base, baterias: 12, cargaEnElCampo: true });
+    expect(j.limita).toBe("sol");
+    expect(j.minutosPorJornada).toBe(210);
+  });
+
+  it("con pocas baterias, el que limita son las baterias", () => {
+    const j = jornadaDeCampo({ ...base, baterias: 2, cargaEnElCampo: false });
+    expect(j.limita).toBe("baterias");
+    expect(j.minutosPorJornada).toBe(2 * minutosUtiles(m4t));
+  });
+
+  it("las jornadas salen de lo que se vuela por dia, no de las baterias sueltas", () => {
+    const j = jornadaDeCampo({ ...base, baterias: 12, cargaEnElCampo: true });
+    // 19 h de parque con 3.5 h utiles por dia.
+    expect(j.jornadas).toBe(Math.ceil((19 * 60) / 210));
+  });
+
+  it("un dia sin ventana util no da una jornada de cero minutos", () => {
+    const j = jornadaDeCampo({ ...base, baterias: 5, cargaEnElCampo: true, minutosDeSol: 0 });
+    expect(j.minutosPorJornada).toBeGreaterThan(0);
+    expect(Number.isFinite(j.jornadas)).toBe(true);
   });
 });

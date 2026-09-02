@@ -16,7 +16,8 @@ import { GeometryPlot } from "../components/GeometryPlot";
 import { descargarBytes, download } from "../inspection";
 import {
   CAMARAS,
-  MINUTOS_POR_BATERIA,
+  jornadaDeCampo,
+  minutosUtiles,
   OPCIONES_POR_DEFECTO,
   planByBlock,
   planByGroup,
@@ -51,6 +52,15 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   /** Lo que se esta tipeando, mientras no sea todavia un numero valido. */
   const [crudos, setCrudos] = useState<Partial<Record<keyof typeof OPCIONES_POR_DEFECTO, string>>>({});
   const [baterias, setBaterias] = useState(4);
+  /**
+   * Si se cargan las baterias vacias en el campo mientras el dron vuela.
+   *
+   * Lo levanto el: "puedo estar cargando las baterias que vienen vacias
+   * mientras el dron vuela". La app las contaba como de un solo uso —
+   * viajes = baterias que gasta el parque / baterias que llevas— y con un
+   * cargador en la camioneta eso es falso: las baterias circulan.
+   */
+  const [cargaEnElCampo, setCargaEnElCampo] = useState(true);
   const [agrupar, setAgrupar] = useState(true);
   /**
    * Los bloques marcados para este vuelo. Varios, los que uno quiera.
@@ -173,6 +183,22 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
 
   // Como quedaria organizado el parque entero, para las cuentas de arriba.
   const organizacion = agrupar ? agrupado : plan;
+
+  /*
+    Cuanto se vuela en un dia, y que lo limita.
+
+    La ventana util del sol ya estaba calculada dos tarjetas mas arriba y no la
+    usaba nadie para planificar el trabajo: las "salidas de campo" salian de
+    dividir baterias por baterias. Son los dos techos de la misma jornada y hay
+    que mirarlos juntos, porque el que manda casi siempre es el sol.
+  */
+  const jornada = jornadaDeCampo({
+    camera: camara,
+    baterias,
+    cargaEnElCampo,
+    minutosDeSol: horasBuenas.length * 30,   // la ventana viene en medias horas
+    minutosDelParque: organizacion.totalMinutos,
+  });
   const vuelos = agrupar ? agrupado.grupos.length : plan.bloques.length;
 
   /**
@@ -261,17 +287,22 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
       return {
         nombre,
         horas: p.totalMinutos / 60,
-        salidas: p.salidas,
-        // Las baterias y las salidas son lo que de verdad se paga: horas de
-        // vuelo son un numero, pero cuatro salidas de campo menos son cuatro
-        // viajes menos y varios dias de alguien.
+        // Lo que de verdad se paga son los DIAS, no las horas de vuelo: un dia
+        // de campo es un viaje, un jornal y a veces alojamiento. Y el dia sale
+        // de las horas de vuelo contra lo que se puede volar por jornada — que
+        // casi siempre lo manda el sol, no las baterias.
+        dias: jornadaDeCampo({
+          camera: camara, baterias, cargaEnElCampo,
+          minutosDeSol: horasBuenas.length * 30,
+          minutosDelParque: p.totalMinutos,
+        }).jornadas,
         baterias: p.totalBaterias,
         gsdCm: m?.stats.gsdCm ?? 0,
       };
     });
     // `agrupar` estaba usado adentro y faltaba aca: destildar la casilla no
     // recalculaba la tabla, asi que seguia mostrando las horas del otro modo.
-  }, [stored.rows, stored.profile, opts.camera, o, baterias, agrupar]);
+  }, [stored.rows, stored.profile, opts.camera, o, baterias, agrupar, cargaEnElCampo, camara, horasBuenas.length]);
 
   if (!farm) {
     return (
@@ -633,67 +664,91 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         <div className="stats">
           <div><b>{vuelos}</b><span>vuelos</span></div>
           <div><b>{(organizacion.totalMinutos / 60).toFixed(1)} h</b><span>de vuelo en total</span></div>
-          <div><b>{organizacion.totalBaterias}</b><span>{organizacion.totalBaterias === 1 ? "carga de bateria" : "cargas de bateria"}</span></div>
-          <div><b>{organizacion.salidas}</b><span>{organizacion.salidas === 1 ? "viaje al parque" : "viajes al parque"}</span></div>
+          <div><b>{(jornada.minutosPorJornada / 60).toFixed(1)} h</b><span>que se vuelan por dia</span></div>
+          <div className={jornada.jornadas > 1 ? "alerta" : ""}>
+            <b>{jornada.jornadas}</b>
+            <span>{jornada.jornadas === 1 ? "dia de campo" : "dias de campo"}</span>
+          </div>
         </div>
 
         {/*
-          El unico dato que pone la PERSONA en toda esta tarjeta.
+          Lo que la persona contesta, y la cuenta al lado.
+          ==================================================================
+          Antes esto era una division: baterias que gasta el parque sobre
+          baterias que llevas. Contaba las baterias como de un solo uso, y con
+          un cargador en la camioneta eso es falso — las baterias CIRCULAN.
 
-          Estaba abajo del todo, con la misma pinta que los numeros que calcula
-          la app, y con un texto de ayuda que explicaba los 20 minutos por
-          bateria pero no decia para que servia el numero. "Baterias que llevas
-          por salida: 5" no significa nada suelto: es cuantas baterias cargadas
-          entran en el auto, y lo unico que decide es en cuantos viajes al
-          parque se hace el trabajo.
+          Y aun con el cargador, el techo que manda casi siempre es otro: el
+          sol. La norma pide 600 W/m² y los trackers tienen que estar casi
+          planos, asi que la ventana util son unas pocas horas al mediodia.
+          Tener bateria para seis horas no sirve si el sol da tres y media.
 
-          Va pegado al resultado que mueve, y con la cuenta escrita al lado.
+          Por eso los dos numeros van juntos y la app dice CUAL manda: es lo
+          unico que cambia lo que hay que hacer.
         */}
         <div className="field pregunta">
-          <label htmlFor="f-bat">¿Cuántas baterías cargadas llevás cada vez que vas al parque?</label>
+          <label htmlFor="f-bat">¿Cuántas baterías tenés?</label>
           <input
             id="f-bat" type="number" min={1} max={20} value={baterias}
             onChange={(e) => setBaterias(Math.max(1, Number(e.target.value) || 1))}
           />
-          <span className="help">
-            Volar {stored.profile.name} entero gasta{" "}
-            <strong>
-              {organizacion.totalBaterias} {organizacion.totalBaterias === 1 ? "carga de batería" : "cargas de batería"}
-            </strong>. Llevando <strong>{baterias}</strong> por viaje, son{" "}
-            <strong>
-              {organizacion.salidas} {organizacion.salidas === 1 ? "viaje" : "viajes"} al parque
-            </strong>.
-            {/*
-              La sugerencia solo cuando sirve. En un parque que entra en un
-              viaje, "si conseguís dos baterías más seguís igual" es ruido.
-            */}
-            {Math.max(1, Math.ceil(organizacion.totalBaterias / (baterias + 2))) < organizacion.salidas && (
-              <> Con {baterias + 2} baterías bajás a{" "}
-                <strong>{Math.max(1, Math.ceil(organizacion.totalBaterias / (baterias + 2)))}</strong>.</>
-            )}
-            {" "}Se cuentan {MINUTOS_POR_BATERIA} minutos de vuelo útil por batería, ya descontada la
-            reserva de aterrizaje y el traslado hasta el bloque.
-          </span>
-        </div>
+          <label className="check">
+            <input
+              type="checkbox" checked={cargaEnElCampo}
+              onChange={(e) => setCargaEnElCampo(e.target.checked)}
+            />
+            <span>Las cargo en el campo mientras el dron vuela</span>
+          </label>
 
-        {agrupado.bloquesAgrupados > 0 && (
-          <p className={agrupar ? "note good" : "note bad"}>
-            {agrupar ? (
+          <span className="help">
+            Cada batería da <strong>{jornada.minutosPorBateria} minutos</strong> de vuelo útil, ya
+            descontados el 25 % de reserva y los 4 minutos de ir hasta el bloque y volver.{" "}
+            {cargaEnElCampo && !jornada.elCargadorAlcanza && (
               <>
-                {agrupado.bloquesAgrupados} bloques comparten pasada con algun vecino. Mandandolos
-                en el mismo vuelo se ahorran{" "}
-                <strong>{(agrupado.ahorroMinutos / 60).toFixed(1)} horas</strong> contra volarlos
-                por separado. En la tabla de abajo se ve con quien comparte cada uno.
+                El cargador repone más despacio de lo que el dron gasta —{" "}
+                {camara.minutosDeCarga} minutos por batería contra {jornada.minutosPorBateria} de
+                vuelo — así que las baterías no son infinitas: son un colchón que se vacía despacio.{" "}
+              </>
+            )}
+            {cargaEnElCampo && jornada.elCargadorAlcanza && (
+              <>El cargador repone más rápido de lo que el dron gasta, así que las baterías no te
+              van a frenar nunca.{" "}</>
+            )}
+
+            {jornada.limita === "sol" ? (
+              <>
+                <strong>Lo que te limita es el sol, no las baterías.</strong> La ventana con los
+                trackers casi planos y el sol arriba de 30° son{" "}
+                <strong>{(jornada.minutosDeSol / 60).toFixed(1)} h</strong> ese día
+                {Number.isFinite(jornada.minutosPorBaterias) && (
+                  <> y con {baterias} baterías te alcanza para{" "}
+                    {(jornada.minutosPorBaterias / 60).toFixed(1)} h</>
+                )}
+                . Conseguir más baterías no te ahorra ningún día.
               </>
             ) : (
               <>
-                {agrupado.bloquesAgrupados} bloques se pisan con algun vecino. Volandolos por
-                separado se repiten las mismas pasadas:{" "}
-                <strong>{(agrupado.ahorroMinutos / 60).toFixed(1)} horas de mas</strong>.
+                <strong>Lo que te limita son las baterías.</strong> El sol te da{" "}
+                <strong>{(jornada.minutosDeSol / 60).toFixed(1)} h</strong> útiles ese día y con{" "}
+                {baterias} solo llegás a{" "}
+                <strong>{(jornada.minutosPorBaterias / 60).toFixed(1)} h</strong>: estás dejando
+                pasar sol bueno.{" "}
+                {(() => {
+                  const conMas = jornadaDeCampo({
+                    camera: camara, baterias: baterias + 2, cargaEnElCampo,
+                    minutosDeSol: jornada.minutosDeSol,
+                    minutosDelParque: organizacion.totalMinutos,
+                  });
+                  return conMas.jornadas < jornada.jornadas
+                    ? <>Con {baterias + 2} baterías el parque baja a{" "}
+                        <strong>{conMas.jornadas} {conMas.jornadas === 1 ? "día" : "días"}</strong>.</>
+                    : <>Con {baterias + 2} baterías seguirías en {jornada.jornadas}{" "}
+                        {jornada.jornadas === 1 ? "día" : "días"}.</>;
+                })()}
               </>
             )}
-          </p>
-        )}
+          </span>
+        </div>
 
         <label className="check">
           <input
@@ -721,7 +776,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             <thead>
               <tr>
                 <th>Configuracion</th><th>cm/px</th><th>Horas</th>
-                <th>Cargas de bateria</th><th>Viajes al parque</th>
+                <th>Cargas de bateria</th><th>Dias de campo</th>
               </tr>
             </thead>
             <tbody>
@@ -731,7 +786,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
                   <td className="num">{a.gsdCm.toFixed(1)}</td>
                   <td className="num"><strong>{a.horas.toFixed(1)} h</strong></td>
                   <td className="num">{a.baterias}</td>
-                  <td className="num">{a.salidas}</td>
+                  <td className="num">{a.dias}</td>
                 </tr>
               ))}
             </tbody>
@@ -739,14 +794,14 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         </div>
         {/*
           La conclusion en plata, no en horas. Las horas de vuelo son un numero
-          abstracto; los viajes al parque son dias, combustible y alojamiento.
+          abstracto; los dias de campo son viajes, jornales y a veces alojamiento.
         */}
         {alternativas[1] && alternativas[0] && !o.rtk && (
           <p className="note">
             En este parque, pasar de 70 % a 45 % de solape —o sea, volar con RTK— son{" "}
             <strong>{(alternativas[0].horas - alternativas[1].horas).toFixed(1)} horas</strong>,{" "}
             <strong>{alternativas[0].baterias - alternativas[1].baterias} baterias</strong> y{" "}
-            <strong>{alternativas[0].salidas - alternativas[1].salidas} viajes al parque</strong>{" "}
+            <strong>{alternativas[0].dias - alternativas[1].dias} dias de campo</strong>{" "}
             menos. Eso es lo que compra el RTK: no precision, tiempo. Y ojo, que no viene con el
             dron — mirá la nota de la casilla de RTK, mas arriba.
           </p>
@@ -878,7 +933,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             ) : (
               <p className="note good">
                 El plan cierra: cada modulo va a quedar cubierto con {s.pixelesPorModulo.toFixed(0)} pixeles
-                de ancho, y el vuelo entra en {Math.max(1, Math.ceil(s.minutos / MINUTOS_POR_BATERIA))} bateria(s).
+                de ancho, y el vuelo entra en {Math.max(1, Math.ceil(s.minutos / jornada.minutosPorBateria))} bateria(s).
               </p>
             )}
           </>
