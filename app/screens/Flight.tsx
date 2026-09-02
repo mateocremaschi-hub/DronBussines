@@ -633,8 +633,47 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         <div className="stats">
           <div><b>{vuelos}</b><span>vuelos</span></div>
           <div><b>{(organizacion.totalMinutos / 60).toFixed(1)} h</b><span>de vuelo en total</span></div>
-          <div><b>{organizacion.totalBaterias}</b><span>baterias</span></div>
-          <div><b>{organizacion.salidas}</b><span>salidas de campo</span></div>
+          <div><b>{organizacion.totalBaterias}</b><span>{organizacion.totalBaterias === 1 ? "carga de bateria" : "cargas de bateria"}</span></div>
+          <div><b>{organizacion.salidas}</b><span>{organizacion.salidas === 1 ? "viaje al parque" : "viajes al parque"}</span></div>
+        </div>
+
+        {/*
+          El unico dato que pone la PERSONA en toda esta tarjeta.
+
+          Estaba abajo del todo, con la misma pinta que los numeros que calcula
+          la app, y con un texto de ayuda que explicaba los 20 minutos por
+          bateria pero no decia para que servia el numero. "Baterias que llevas
+          por salida: 5" no significa nada suelto: es cuantas baterias cargadas
+          entran en el auto, y lo unico que decide es en cuantos viajes al
+          parque se hace el trabajo.
+
+          Va pegado al resultado que mueve, y con la cuenta escrita al lado.
+        */}
+        <div className="field pregunta">
+          <label htmlFor="f-bat">¿Cuántas baterías cargadas llevás cada vez que vas al parque?</label>
+          <input
+            id="f-bat" type="number" min={1} max={20} value={baterias}
+            onChange={(e) => setBaterias(Math.max(1, Number(e.target.value) || 1))}
+          />
+          <span className="help">
+            Volar {stored.profile.name} entero gasta{" "}
+            <strong>
+              {organizacion.totalBaterias} {organizacion.totalBaterias === 1 ? "carga de batería" : "cargas de batería"}
+            </strong>. Llevando <strong>{baterias}</strong> por viaje, son{" "}
+            <strong>
+              {organizacion.salidas} {organizacion.salidas === 1 ? "viaje" : "viajes"} al parque
+            </strong>.
+            {/*
+              La sugerencia solo cuando sirve. En un parque que entra en un
+              viaje, "si conseguís dos baterías más seguís igual" es ruido.
+            */}
+            {Math.max(1, Math.ceil(organizacion.totalBaterias / (baterias + 2))) < organizacion.salidas && (
+              <> Con {baterias + 2} baterías bajás a{" "}
+                <strong>{Math.max(1, Math.ceil(organizacion.totalBaterias / (baterias + 2)))}</strong>.</>
+            )}
+            {" "}Se cuentan {MINUTOS_POR_BATERIA} minutos de vuelo útil por batería, ya descontada la
+            reserva de aterrizaje y el traslado hasta el bloque.
+          </span>
         </div>
 
         {agrupado.bloquesAgrupados > 0 && (
@@ -655,20 +694,6 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             )}
           </p>
         )}
-
-        <div className="grid-2">
-          <div className="field">
-            <label htmlFor="f-bat">Baterias que llevas por salida</label>
-            <input
-              id="f-bat" type="number" min={1} max={20} value={baterias}
-              onChange={(e) => setBaterias(Math.max(1, Number(e.target.value) || 1))}
-            />
-            <span className="help">
-              Se cuentan {MINUTOS_POR_BATERIA} minutos utiles por bateria, ya descontada la reserva
-              y el traslado hasta el bloque.
-            </span>
-          </div>
-        </div>
 
         <label className="check">
           <input
@@ -696,7 +721,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             <thead>
               <tr>
                 <th>Configuracion</th><th>cm/px</th><th>Horas</th>
-                <th>Baterias</th><th>Salidas de campo</th>
+                <th>Cargas de bateria</th><th>Viajes al parque</th>
               </tr>
             </thead>
             <tbody>
@@ -714,14 +739,14 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         </div>
         {/*
           La conclusion en plata, no en horas. Las horas de vuelo son un numero
-          abstracto; las salidas de campo son viajes, dias y alojamiento.
+          abstracto; los viajes al parque son dias, combustible y alojamiento.
         */}
         {alternativas[1] && alternativas[0] && !o.rtk && (
           <p className="note">
             En este parque, pasar de 70 % a 45 % de solape —o sea, volar con RTK— son{" "}
             <strong>{(alternativas[0].horas - alternativas[1].horas).toFixed(1)} horas</strong>,{" "}
             <strong>{alternativas[0].baterias - alternativas[1].baterias} baterias</strong> y{" "}
-            <strong>{alternativas[0].salidas - alternativas[1].salidas} salidas de campo</strong>{" "}
+            <strong>{alternativas[0].salidas - alternativas[1].salidas} viajes al parque</strong>{" "}
             menos. Eso es lo que compra el RTK: no precision, tiempo. Y ojo, que no viene con el
             dron — mirá la nota de la casilla de RTK, mas arriba.
           </p>
@@ -790,7 +815,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             <thead>
               <tr>
                 <th></th><th>Bloque</th><th>Filas</th><th>Pasadas</th><th>Fotos</th>
-                <th>Minutos</th><th>Baterias</th><th>Comparte pasada con</th>
+                <th>Minutos</th><th>Cargas de bateria</th><th>Comparte pasada con</th>
               </tr>
             </thead>
             <tbody>
