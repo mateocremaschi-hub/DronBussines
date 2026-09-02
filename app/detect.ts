@@ -21,7 +21,7 @@
 import { modulesOfRow } from "@locator";
 import type { CompiledFarm, LocalFrame, ModuleRef } from "@locator";
 import { medirCaja, percentil, retratoDeCaja, type Radiometric } from "./thermal";
-import { clasificarPatron } from "./patron";
+import { claseSugerida, clasificarPatron } from "./patron";
 import { aplicarAjuste, footprint, pixelOf, type Ajuste, type PhotoPose } from "./projection";
 import type { Camera } from "./mission";
 import { SIN_AJUSTE } from "./projection";
@@ -380,6 +380,14 @@ export interface Hallazgo extends Muestra {
    * a mano y revisar una muestra de los que ya vienen clasificados.
    */
   patron?: import("./patron").Clasificacion;
+  /**
+   * Que tan urgente es, sugerido.
+   *
+   * Sale de la forma Y del numero, con los MISMOS umbrales con los que se
+   * clasifica la severidad del vuelo — asi que mover un umbral mueve las dos
+   * cosas juntas, en vez de dejar un informe que se contradice consigo mismo.
+   */
+  clase?: import("./patron").ClaseSugerida;
 }
 
 /**
@@ -595,6 +603,20 @@ export function comparar(
       ambito,
       ...(patron ? { patron } : {}),
       ...clasificar({ ...m, deltaT }, umbrales, internos),
+    };
+  }).map((h) => {
+    // La clase necesita el delta interno, que lo pone `clasificar`: por eso va
+    // en una segunda pasada y no adentro de la primera.
+    if (!h.patron) return h;
+    return {
+      ...h,
+      clase: claseSugerida({
+        patron: h.patron.patron,
+        deltaT: h.deltaT,
+        ...(h.deltaInterno != null ? { deltaInterno: h.deltaInterno } : {}),
+        criticaModulo: umbrales.critica,
+        criticaInterna: internos.critica,
+      }),
     };
   });
 }

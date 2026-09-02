@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { clasificarPatron, type Retrato } from "../app/patron";
+import { claseSugerida, clasificarPatron, type Retrato } from "../app/patron";
 
 const FILAS = 12, COLUMNAS = 6;
 
@@ -331,5 +331,83 @@ describe("el umbral", () => {
       ......`, 45, 1), 0.2);
     expect(c.fraccionCaliente).toBe(0);
     expect(c.patron).toBe("sin-patron");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Que tan urgente es: la clase IEC.
+ *
+ * "Esta parte no la entiendo para que sirve." Sirve para lo mas util del
+ * entregable: la anomalia dice QUE tiene el panel, la clase dice QUE HACER y
+ * CUANDO. El que recibe el informe no sale a caminar por "diodo de bypass";
+ * sale por los de clase 3.
+ *
+ * Lo que se prueba es que salga de lo MEDIDO y no de una tabla por tipo — que
+ * es como la resuelve la empresa de al lado, donde Severity e IEC salen 1 a 1
+ * del Anomaly Type en las 3.156 filas, sin una sola excepcion, y por eso un
+ * multi hotspot de 22 K les queda "Minor".
+ */
+describe("que tan urgente es", () => {
+  const base = { deltaT: 4, criticaModulo: 20, criticaInterna: 25 };
+
+  it("sin patron no hay nada que hacer", () => {
+    expect(claseSugerida({ ...base, patron: "sin-patron", deltaT: 0.2 }).klass).toBe(1);
+  });
+
+  it("un modulo entero perdido se arregla en el proximo mantenimiento", () => {
+    const c = claseSugerida({ ...base, patron: "modulo-completo", deltaT: 6 });
+    expect(c.klass).toBe(2);
+    expect(c.porQue).toMatch(/no entrega corriente/);
+  });
+
+  /*
+    El nucleo: la temperatura manda sobre el tipo. Una celda muy caliente es
+    riesgo fisico —degrada el encapsulante y puede terminar en incendio— y eso
+    no depende de si la mancha es una celda o tres.
+  */
+  it("una celda muy caliente es accion inmediata aunque sea un punto chico", () => {
+    const c = claseSugerida({ ...base, patron: "punto-caliente", deltaInterno: 30 });
+    expect(c.klass).toBe(3);
+    expect(c.porQue).toMatch(/incendio/);
+  });
+
+  it("y la misma forma con poca temperatura, no", () => {
+    const c = claseSugerida({ ...base, patron: "punto-caliente", deltaInterno: 6 });
+    expect(c.klass).toBe(2);
+  });
+
+  /*
+    La prueba de que NO es una tabla por tipo: dos hallazgos del MISMO tipo con
+    temperaturas distintas caen en clases distintas. Con la tabla fija de la
+    otra empresa esto seria imposible.
+  */
+  it("dos hallazgos del mismo tipo pueden caer en clases distintas", () => {
+    const frio = claseSugerida({ ...base, patron: "celda-multiple", deltaInterno: 5 });
+    const caliente = claseSugerida({ ...base, patron: "celda-multiple", deltaInterno: 40 });
+    expect(frio.klass).not.toBe(caliente.klass);
+  });
+
+  it("un modulo muy por encima de su string tambien es inmediato", () => {
+    expect(claseSugerida({ ...base, patron: "modulo-completo", deltaT: 25 }).klass).toBe(3);
+  });
+
+  /*
+    La clase usa los MISMOS umbrales con los que se clasifica la severidad del
+    vuelo. Si tuviera los suyos, mover un umbral dejaria un informe que se
+    contradice: severidad critica y clase 2 en la misma fila.
+  */
+  it("mover el umbral del vuelo mueve la clase", () => {
+    const conUmbralAlto = claseSugerida({ ...base, patron: "punto-caliente", deltaInterno: 30, criticaInterna: 50 });
+    const conUmbralBajo = claseSugerida({ ...base, patron: "punto-caliente", deltaInterno: 30, criticaInterna: 25 });
+    expect(conUmbralAlto.klass).toBe(2);
+    expect(conUmbralBajo.klass).toBe(3);
+  });
+
+  it("siempre dice por que, para poder desmentirla", () => {
+    for (const p of ["sin-patron", "diodo", "modulo-completo", "punto-caliente", "celda-multiple"] as const) {
+      expect(claseSugerida({ ...base, patron: p }).porQue.length).toBeGreaterThan(20);
+    }
   });
 });

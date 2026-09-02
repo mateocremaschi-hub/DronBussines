@@ -139,6 +139,8 @@ export interface Finding {
    * por muestreo en vez de uno por uno.
    */
   patron?: import("./patron").Clasificacion;
+  /** Que clase propuso el motor, y por que. No se pisa con la de la persona. */
+  clase?: import("./patron").ClaseSugerida;
 }
 
 /**

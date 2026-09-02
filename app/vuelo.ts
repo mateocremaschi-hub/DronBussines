@@ -413,7 +413,9 @@ export function hallazgosAFindings(
         tener que clasificarlo de cero.
       */
       ...(h.patron?.anomalia ? { anomaly: h.patron.anomalia } : {}),
+      ...(h.clase ? { klass: h.clase.klass } : {}),
       ...(h.patron ? { patron: h.patron } : {}),
+      ...(h.clase ? { clase: h.clase } : {}),
       status: "pendiente" as const,
     };
   });
@@ -431,7 +433,7 @@ export function hallazgosAFindings(
 const revisado = (f: Finding): boolean =>
   f.status !== "pendiente" ||
   (f.anomaly != null && f.anomaly !== f.patron?.anomalia) ||
-  f.klass != null ||
+  (f.klass != null && f.klass !== f.clase?.klass) ||
   f.note != null ||
   f.deltaT != null ||
   f.moduleCorregido != null;
@@ -467,11 +469,12 @@ export function fusionarRevision(nuevos: Finding[], viejos: Finding[]): Finding[
       alguien la hubiera confirmado.
     */
     const humano = v.anomaly != null && v.anomaly !== v.patron?.anomalia;
+    const claseHumana = v.klass != null && v.klass !== v.clase?.klass;
     return {
       ...n,
       status: v.status,
       ...(humano ? { anomaly: v.anomaly! } : {}),
-      ...(v.klass != null ? { klass: v.klass } : {}),
+      ...(claseHumana ? { klass: v.klass! } : {}),
       ...(v.deltaT != null ? { deltaT: v.deltaT } : {}),
       ...(v.note != null ? { note: v.note } : {}),
       ...(v.moduleCorregido != null ? { moduleCorregido: v.moduleCorregido } : {}),

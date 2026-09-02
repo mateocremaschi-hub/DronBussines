@@ -205,11 +205,13 @@ export function Revisor({ findings, archivos, seleccion, onSeleccion, onPatch }:
               <p className={`note ${actual.patron.confianza === "alta" ? "ok" : ""}`}>
                 <strong>
                   {actual.patron.anomalia ?? "Sin clasificar"}
+                  {actual.clase && <> · clase {actual.clase.klass}</>}
                   {actual.patron.confianza !== "alta" && (
                     <> — {actual.patron.confianza === "media" ? "a confirmar" : "poco confiable"}</>
                   )}
                 </strong>{" "}
                 {actual.patron.porQue}
+                {actual.clase && <> {actual.clase.porQue}</>}
               </p>
             )}
 
@@ -264,7 +266,17 @@ export function Revisor({ findings, archivos, seleccion, onSeleccion, onPatch }:
               </select>
             </div>
 
+            {/*
+              La clase, que ya viene puesta.
+
+              "Esta parte no la entiendo para que sirve." Sirve para lo mas util
+              del entregable —la anomalia dice QUE tiene el panel y la clase dice
+              QUE HACER y CUANDO— pero estaba mal puesta: se la preguntaba a la
+              persona, tres mil veces, cuando sale de lo que ya esta medido. Los
+              botones quedan para desmentirla, con el motivo escrito arriba.
+            */}
             <div className="row chips">
+              <span className="muted small">Qué hacer:</span>
               {CLASES.map((c) => (
                 <button
                   key={c.id}
@@ -273,6 +285,9 @@ export function Revisor({ findings, archivos, seleccion, onSeleccion, onPatch }:
                   onClick={() => onPatch(actual.id, { klass: actual.klass === c.id ? undefined : c.id })}
                 >
                   <kbd>{c.id}</kbd> {c.label}
+                  {actual.clase?.klass === c.id && actual.klass === c.id && (
+                    <span className="muted"> · la puso la app</span>
+                  )}
                 </button>
               ))}
             </div>

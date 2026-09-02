@@ -287,3 +287,114 @@ export function clasificarPatron(
       `sin cruzar de lado a lado. Mirá la foto: una mancha de tierra se ve igual en la térmica.`,
   };
 }
+
+
+// ---------------------------------------------------------------------------
+// Que tan urgente es
+// ---------------------------------------------------------------------------
+
+/**
+ * La clase IEC, que es lo que el cliente de verdad usa.
+ *
+ * La pregunta fue "esta parte no la entiendo para que sirve", y la respuesta es
+ * que es la columna mas util de todo el entregable — y estaba mal puesta.
+ *
+ * La anomalia dice QUE tiene el panel; la clase dice QUE HACER y CUANDO:
+ *
+ *     1  no hay nada que hacer, queda de linea de base
+ *     2  se arregla en el proximo mantenimiento programado
+ *     3  hay que ir ahora
+ *
+ * El que recibe el informe no sale a caminar por "diodo de bypass": sale por
+ * los de clase 3. Es lo que convierte una lista de defectos en un plan de
+ * trabajo.
+ *
+ * Por que dejo de preguntarse
+ * ---------------------------
+ * Porque no es una decision: sale de lo que ya esta medido. La forma dice
+ * cuanto del modulo se perdio y el ΔT dice si ademas hay riesgo. Pedirla a mano
+ * en tres mil paneles es el mismo trabajo que se acaba de sacar con la anomalia
+ * — y encima invita a lo que hace la empresa de al lado, que la resuelve con
+ * una tabla fija por tipo de anomalia: en sus 3.156 filas, Severity e IEC salen
+ * 1 a 1 del Anomaly Type, sin una sola excepcion. O sea que su columna no
+ * aporta NADA que no estuviera en la anterior: un multi hotspot de 22 K les
+ * queda "Minor" y un isolated de 0,6 K "Critical". No sirve para priorizar en
+ * campo, que es para lo unico que existe la columna.
+ *
+ * Aca sale de la forma Y del numero, asi que dos hallazgos del mismo tipo con
+ * temperaturas distintas pueden caer en clases distintas — que es justamente lo
+ * que se le pide.
+ */
+export interface ClaseSugerida {
+  klass: 1 | 2 | 3;
+  porQue: string;
+}
+
+export function claseSugerida(args: {
+  patron: Patron;
+  /** Cuanto se despega el modulo de sus hermanos de string. */
+  deltaT: number;
+  /** Cuanto se despega el punto mas caliente del propio modulo. */
+  deltaInterno?: number;
+  /** Los mismos umbrales con los que se clasifica la severidad del vuelo. */
+  criticaModulo: number;
+  criticaInterna: number;
+}): ClaseSugerida {
+  const { patron, deltaT, deltaInterno, criticaModulo, criticaInterna } = args;
+
+  if (patron === "sin-patron") {
+    return {
+      klass: 1,
+      porQue: "No se le encontró ningún patrón ni diferencia sostenida contra sus vecinos.",
+    };
+  }
+
+  /*
+    Clase 3 por TEMPERATURA, no por tipo.
+
+    Una celda muy caliente es un riesgo fisico —se degrada el encapsulante y
+    puede terminar en incendio—, y eso no depende de si la mancha es una celda o
+    tres. Por eso el umbral manda sobre la forma.
+  */
+  if (deltaInterno != null && deltaInterno >= criticaInterna) {
+    return {
+      klass: 3,
+      porQue:
+        `El punto más caliente está ${deltaInterno.toFixed(0)} °C por encima del propio módulo. ` +
+        `A esa temperatura el defecto no solo produce menos: degrada el panel y es riesgo de ` +
+        `incendio. Hay que ir ahora.`,
+    };
+  }
+  if (deltaT >= criticaModulo) {
+    return {
+      klass: 3,
+      porQue:
+        `El módulo está ${deltaT.toFixed(0)} °C por encima de sus hermanos de string, que es ` +
+        `mucho más que una diferencia de producción. Hay que ir ahora.`,
+    };
+  }
+
+  if (patron === "modulo-completo") {
+    return {
+      klass: 2,
+      porQue:
+        "El módulo no entrega corriente: se perdió entero, pero sin riesgo agudo. Se reemplaza en " +
+        "el próximo mantenimiento programado.",
+    };
+  }
+  if (patron === "diodo") {
+    return {
+      klass: 2,
+      porQue:
+        "Con el diodo puenteando, ese tercio del módulo dejó de producir y no se recupera solo. " +
+        "Se arregla en el próximo mantenimiento programado.",
+    };
+  }
+
+  return {
+    klass: 2,
+    porQue:
+      "Hay una diferencia sostenida contra sus vecinos, pero sin llegar al umbral de acción " +
+      "inmediata. Se revisa en el próximo mantenimiento.",
+  };
+}
