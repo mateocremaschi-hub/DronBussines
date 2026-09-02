@@ -33,6 +33,16 @@ export interface FotoTermica {
   fileName: string;
   pose: PhotoPose;
   radio: Radiometric;
+  /**
+   * Cuando se saco, en milisegundos. Sale del EXIF de la propia foto.
+   *
+   * Parece un dato de archivo y es de MEDICION. Los trackers giran y el parque
+   * se calienta durante la mañana: el mismo modulo sano leido a las 9 y a las
+   * 11 da dos temperaturas distintas. Comparar un modulo contra vecinos
+   * fotografiados dos horas despues no mide un defecto, mide el paso del
+   * tiempo.
+   */
+  cuando?: number;
 }
 
 export interface Muestra {
@@ -44,6 +54,8 @@ export interface Muestra {
   /** Cuantos pixeles cubre una celda en esta foto. Menos de 2 y no se resuelve. */
   pixelesPorCelda?: number;
   fileName: string;
+  /** Cuando se saco la foto de la que salio esta medicion, en milisegundos. */
+  cuando?: number;
   /** Distancia del modulo al centro del cuadro. Cerca del borde la termica miente mas. */
   distanciaAlCentroM: number;
   /**
@@ -248,6 +260,7 @@ export class Acumulador {
         medidos++;
         this.mejor.set(clave, {
           modulo: m,
+          ...(foto.cuando != null ? { cuando: foto.cuando } : {}),
           celsius: hit.celsius,
           pixeles: hit.pixeles,
           puntoCalienteC: hit.puntoCalienteC,
@@ -384,6 +397,75 @@ export const PIXELES_POR_CELDA_MINIMO = 4;
 /** Minimo de vecinos para que una mediana signifique algo. */
 const VECINOS_MINIMOS = 5;
 
+/**
+ * Cuanto puede pasar entre dos fotos y seguir siendo "el mismo momento".
+ *
+ * Diez minutos. Adentro de una pasada las fotos salen cada pocos segundos, asi
+ * que una pasada entera cae siempre en una sola tanda aunque el bloque sea
+ * largo. Y en diez minutos ni los trackers giran lo suficiente ni el parque se
+ * calienta lo suficiente como para mover el ΔT.
+ *
+ * El numero es de trabajo, no de norma: lo que importa es que separe dos
+ * pasadas de un mismo string hechas con una carga de bateria de por medio.
+ */
+export const MINUTOS_DE_LA_MISMA_TANDA = 10;
+
+/**
+ * A que tanda pertenece cada muestra: string + pasaje del dron.
+ *
+ * Las muestras sin hora quedan todas juntas en la tanda del string, que es
+ * exactamente como se comportaba antes. Sin fecha en el EXIF no se puede hacer
+ * nada mejor, y romper el vecindario por las dudas seria peor.
+ */
+export function tandasPorString(muestras: Muestra[]): Map<Muestra, string> {
+  const porString = new Map<string, Muestra[]>();
+  for (const m of muestras) {
+    const k = `${m.modulo.rowId}#${m.modulo.chunkIndex}`;
+    const lista = porString.get(k);
+    if (lista) lista.push(m); else porString.set(k, [m]);
+  }
+
+  const salida = new Map<Muestra, string>();
+  const corte = MINUTOS_DE_LA_MISMA_TANDA * 60_000;
+  for (const [k, lista] of porString) {
+    const conHora = lista.filter((m) => m.cuando != null).sort((a, b) => a.cuando! - b.cuando!);
+    const sinHora = lista.filter((m) => m.cuando == null);
+    for (const m of sinHora) salida.set(m, k);
+
+    let tanda = 0;
+    let anterior: number | null = null;
+    for (const m of conHora) {
+      if (anterior != null && m.cuando! - anterior > corte) tanda++;
+      anterior = m.cuando!;
+      // Con una sola tanda la clave queda igual que antes: nada cambia en los
+      // vuelos de una pasada, que son casi todos.
+      salida.set(m, tanda === 0 ? k : `${k}@${tanda}`);
+    }
+  }
+  return salida;
+}
+
+/**
+ * Cuantos strings quedaron medidos en mas de una pasada.
+ *
+ * Se cuenta aparte de `tandasPorString` porque son dos preguntas: una es contra
+ * quien comparar cada modulo —que ya se resuelve sola— y la otra es cuanto de
+ * este vuelo hay que declarar como flojo en el informe.
+ */
+export function stringsEnVariasTandas(muestras: Muestra[]): number {
+  const tandas = tandasPorString(muestras);
+  const porString = new Map<string, Set<string>>();
+  for (const m of muestras) {
+    const k = `${m.modulo.rowId}#${m.modulo.chunkIndex}`;
+    const set = porString.get(k) ?? new Set<string>();
+    set.add(tandas.get(m) ?? k);
+    porString.set(k, set);
+  }
+  let n = 0;
+  for (const set of porString.values()) if (set.size > 1) n++;
+  return n;
+}
+
 export function comparar(
   muestras: Muestra[],
   umbrales: Umbrales = UMBRALES,
@@ -394,7 +476,33 @@ export function comparar(
   const porFila = new Map<string, number[]>();
   const todo: number[] = [];
 
-  const claveString = (m: Muestra) => `${m.modulo.rowId}#${m.modulo.chunkIndex}`;
+  /**
+   * Contra quien se compara un modulo: sus hermanos de string, medidos EN LA
+   * MISMA PASADA.
+   *
+   * El vecindario era solo `fila#string`, sin mirar la hora, y ahi habia un
+   * error que no daba ningun sintoma. La pregunta que lo destapo: "¿que pasa si
+   * vuelo por un lado del bloque con los paneles en una posicion, y despues por
+   * el otro lado cuando ya giraron?".
+   *
+   * Pasa que ese string queda medido en dos momentos distintos. Y entre las
+   * nueve y las once el parque se calienta: sube la irradiancia, sube la
+   * ambiente, y el mismo modulo SANO lee varios grados mas tarde que temprano.
+   * Al sacar la mediana de las dos mitades juntas:
+   *
+   *   - los modulos de la pasada tardia salen todos calientes (falsos
+   *     positivos, la cuadrilla camina hasta paneles sanos);
+   *   - y los de la pasada temprana salen todos frios, asi que un modulo
+   *     REALMENTE quemado de ese grupo puede quedar debajo del umbral. Ese es
+   *     el que duele: un defecto que no se reporta.
+   *
+   * Por eso el vecindario incluye la TANDA: las muestras del string se ordenan
+   * por hora y se cortan donde hay un salto grande. Muestras del mismo pasaje
+   * —segundos entre foto y foto— caen todas en la misma tanda y no cambia
+   * nada; dos pasadas separadas por horas quedan separadas.
+   */
+  const tandas = tandasPorString(muestras);
+  const claveString = (m: Muestra) => tandas.get(m) ?? `${m.modulo.rowId}#${m.modulo.chunkIndex}`;
 
   for (const m of muestras) {
     push(porString, claveString(m), m.celsius);
@@ -653,6 +761,8 @@ export function resumir(
    * que ser uno solo, y ese es el del perfil.
    */
   celdaM = CELDA_M,
+  /** Cuantos strings quedaron medidos en dos pasadas separadas en el tiempo. */
+  stringsPartidos = 0,
 ): ResumenDeteccion {
   // Se cuenta por la PEOR de las dos comparaciones: al que tiene que salir a
   // caminar el parque no le importa cual de los dos chequeos disparo.
@@ -692,6 +802,25 @@ export function resumir(
       `modulos traen la medicion del punto caliente. En el resto no se busco.`,
     );
   }
+  /*
+    Strings partidos entre dos pasadas.
+
+    No es un detalle de bitacora: es la diferencia entre "este modulo esta mas
+    caliente que sus hermanos" y "este modulo se fotografio dos horas despues
+    que sus hermanos". La comparacion ya se hace por tanda, asi que el numero
+    que sale es correcto — lo que hay que decir es que ese string se midio
+    contra MENOS vecinos de los que tiene, y por que.
+  */
+  if (stringsPartidos) {
+    limitaciones.push(
+      `${stringsPartidos} ${stringsPartidos === 1 ? "string quedo medido" : "strings quedaron medidos"} ` +
+      `en dos pasadas separadas por mas de ${MINUTOS_DE_LA_MISMA_TANDA} minutos. Entre pasada y ` +
+      `pasada los trackers giran y el parque se calienta, asi que cada mitad se comparo solo ` +
+      `contra los vecinos de SU pasada — mezclarlas daria calientes a todos los de la pasada ` +
+      `tardia y taparia un defecto real de la temprana. Volar cada bloque de una sola vez lo evita.`,
+    );
+  }
+
   const flojos = hallazgos.filter((h) => h.ambito !== "string").length;
   if (flojos) {
     limitaciones.push(

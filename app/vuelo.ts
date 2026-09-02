@@ -26,6 +26,7 @@ import {
   comparar,
   eventosDeString,
   resumir,
+  stringsEnVariasTandas,
   UMBRALES,
   UMBRALES_INTERNOS,
   type Hallazgo,
@@ -236,6 +237,7 @@ export async function analizarFotos(
       termicas++;
       acc!.agregar({
         fileName: file.name,
+        ...(cuando && !Number.isNaN(cuando.getTime()) ? { cuando: cuando.getTime() } : {}),
         radio,
         pose: {
           lat: fix.lat, lon: fix.lon, altitudeAglM: agl,
@@ -526,6 +528,7 @@ export function coberturaDe(d: DatosDeCobertura): Cobertura {
     d.resultado.soloEnElBorde,
     d.resultado.posesSupuestas,
     d.celdaM,
+    stringsEnVariasTandas(d.resultado.muestras),
   );
   return {
     analizadoEl: new Date().toISOString(),
