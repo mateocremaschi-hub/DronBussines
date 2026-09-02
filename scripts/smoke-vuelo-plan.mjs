@@ -39,6 +39,28 @@ await page.getByRole("heading", { name: "Planificar el vuelo" }).waitFor();
   verdad. La prueba sigue el mismo camino: que la tabla exista, que sin marcar
   nada avise, y que marcar cambie el plan.
 */
+/*
+  El dron por defecto.
+
+  No es un detalle de presentacion: el que no toca nada vuela con lo que diga
+  esta lista, y estaba encabezada por un Mavic 3T — un dron que no existe en
+  esta operacion. Un default equivocado es una decision tomada por omision.
+*/
+const dron = await page.locator("#f-cam option:checked").innerText();
+console.log("Dron por defecto:", dron);
+if (!/Matrice 4T/.test(dron)) { console.error("ESPERABA que viniera elegido el Matrice 4T"); process.exitCode = 1; }
+
+// La velocidad se calcula sola y se dice de donde sale.
+const comoVuela = await page.locator("section.card", { hasText: "Cómo vas a volar" }).innerText();
+const vel = comoVuela.match(/son ([\d.]+) m\/s/)?.[1];
+console.log("Velocidad que calcula la app:", vel, "m/s");
+if (!vel || Number(vel) > 5) { console.error("ESPERABA una velocidad calculada y por debajo del techo del M4T"); process.exitCode = 1; }
+
+// Y las dos figuras que contestan si el vuelo sirve, antes de elegir bloques.
+const figuras = await page.locator(".loqueve .figura").count();
+console.log(`Figuras de "que vas a poder ver": ${figuras}`);
+if (figuras !== 2) { console.error("ESPERABA las dos figuras dibujadas"); process.exitCode = 1; }
+
 const tabla = page.locator("section.card", { hasText: "Que bloques vas a volar" });
 console.log("Organizacion:", (await tabla.locator(".stats div").allInnerTexts()).map((t) => t.replace(/\n/g, " ")).join(" · "));
 
@@ -74,9 +96,17 @@ const leer = async () => (await page.locator(".stats").allInnerTexts()).slice(1)
 console.log("Con los valores por defecto:");
 console.log("  " + await leer());
 
-// Bajar la altura tiene que dar mas pasadas y mas pixeles por modulo.
+/*
+  La altura, que ahora es un deslizador y no un campo con jerga.
+
+  El control cambio porque la pantalla se reescribio para alguien que no hizo
+  fotogrametria: se eligen el dron y la altura, y todo lo demas se calcula y se
+  dibuja. Lo que se prueba sigue siendo lo mismo — que mover la altura cambie el
+  plan de verdad y no solo el numero de la pantalla.
+*/
+const altura = page.locator("#f-alt");
 const antes = await leer();
-await page.getByLabel("Altura sobre el terreno (m)").fill("20");
+await altura.fill("20");
 await page.waitForTimeout(400);
 const despues = await leer();
 console.log("A 20 m de altura:");
@@ -84,13 +114,13 @@ console.log("  " + despues);
 if (antes === despues) { console.error("ERROR: cambiar la altura no cambio el plan"); process.exitCode = 1; }
 
 // Volar muy alto tiene que disparar el aviso de pixeles por modulo.
-await page.getByLabel("Altura sobre el terreno (m)").fill("120");
+await altura.fill("120");
 await page.waitForTimeout(400);
 const aviso = await page.locator(".warnbox").first().innerText().catch(() => "");
 console.log("A 120 m:", aviso.split("\n")[0]?.slice(0, 100) ?? "(sin aviso)");
 if (!/pixeles/.test(aviso)) { console.error("ERROR: esperaba el aviso de pixeles por modulo"); process.exitCode = 1; }
 
-await page.getByLabel("Altura sobre el terreno (m)").fill("35");
+await altura.fill("35");
 await page.waitForTimeout(500);
 
 const kml = page.waitForEvent("download");

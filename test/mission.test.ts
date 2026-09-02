@@ -27,7 +27,16 @@ import type { FarmProfile, TrackerRow } from "../src/types.js";
 import { makeRow } from "./helpers/synthetic.js";
 
 const profile = edenvaleJson as unknown as FarmProfile;
-const termica = CAMARAS[0]!; // Mavic 3T termica: 40 mm eq -> HFOV 45.8
+/*
+  La camara se pide por NOMBRE, no por posicion en la lista.
+
+  Estos numeros son del Mavic 3T (40 mm eq -> HFOV 45.8). Estaban tomados como
+  `CAMARAS[0]`, y el dia que el Matrice 4T paso a encabezar la lista —porque es
+  el dron que hay— estos tests pasaron a medir otra camara sin que nadie lo
+  pidiera. Una lista ordenada por lo que conviene por defecto no es un indice
+  estable.
+*/
+const termica = CAMARAS.find((c) => c.djiId === "m3t" && c.imageW === 640)!;
 const M_LAT = 110946;
 
 const opts = (o: Partial<MissionOptions> = {}): MissionOptions => ({
@@ -157,17 +166,28 @@ describe("el numero que decide si el vuelo sirve", () => {
   });
 
   it("el aviso dice a que altura hay que bajar", () => {
-    const m = planMission(bloque(6), profile, opts({ altitudeM: 113 }))!;
+    // Con una velocidad que la camara aguanta, para que el unico aviso en juego
+    // sea el de la celda: a 5 m/s este vuelo ademas avisa por la velocidad, y
+    // los dos avisos hablan de bajar algo.
+    const m = planMission(bloque(6), profile, opts({ altitudeM: 113, speedMps: 3 }))!;
     const alt = Number(m.stats.avisos.join(" ").match(/Bajá a (\d+) m/)?.[1]);
     expect(alt).toBeGreaterThan(30);
     expect(alt).toBeLessThan(120);
     // Y un metro por debajo de esa altura ya no avisa.
-    expect(planMission(bloque(6), profile, opts({ altitudeM: alt - 1 }))!.stats.avisos
+    expect(planMission(bloque(6), profile, opts({ altitudeM: alt - 1, speedMps: 3 }))!.stats.avisos
       .join(" ")).not.toMatch(/celda/);
   });
 
+  /*
+    "Bien planteado" ahora incluye la velocidad.
+
+    Este test pasaba con los 5 m/s que traian las opciones por defecto, y ese
+    plan NO estaba bien planteado: a 25 m de altura la camara no llega a sacar
+    las fotos que el plan cuenta. Nadie lo miraba. Que ahora haya que decir una
+    velocidad posible para que no avise es exactamente el punto.
+  */
   it("no avisa de nada cuando el vuelo esta bien planteado", () => {
-    const m = planMission(bloque(4), profile, opts({ altitudeM: 25 }))!;
+    const m = planMission(bloque(4), profile, opts({ altitudeM: 25, speedMps: 1.5 }))!;
     expect(m.stats.avisos).toEqual([]);
   });
 

@@ -86,10 +86,26 @@ if (!(px(temprano?.[4]) < px(mediodia?.[4]))) {
   console.error("ESPERABA menos pixeles por celda temprano que al mediodia");
   process.exitCode = 1;
 }
-if (!(px(temprano?.[4]) < 4 && px(mediodia?.[4]) >= 4)) {
+/*
+  Cuanto se pierde por volar temprano, medido en la propia tabla.
+
+  Antes esto exigia que la celda CRUZARA el minimo de 4 pixeles entre las 07:00
+  y el mediodia. Eso valia para el Mavic 3T, que a 50 m da 6.6 cm por pixel y
+  se queda corto apenas el tracker se inclina. Con el Matrice 4T —la termica es
+  mas angosta, o sea mejor resolucion: 5.0 cm por pixel— la celda resuelve a las
+  dos horas, y el test fallaba por una MEJORA de la camara.
+
+  Atar la prueba a un umbral que depende del equipo la vuelve una prueba del
+  equipo. Lo que esta tarjeta promete no es "a las 7 no se puede volar": es
+  cuanto peor se ve temprano. Eso se mide como fraccion, y vale para cualquier
+  camara.
+*/
+const perdida = 1 - px(temprano?.[4]) / px(mediodia?.[4]);
+console.log(`Volando a las 07:00 se pierde el ${(perdida * 100).toFixed(0)} % de los pixeles por celda.`);
+if (!(perdida > 0.25)) {
   console.error(
-    "ESPERABA que la celda cruzara el minimo de 4 pixeles entre las 07:00 y el mediodia; " +
-    "salio " + temprano?.[4] + " y " + mediodia?.[4],
+    "ESPERABA que volar a las 07:00 costara al menos un cuarto de la resolucion sobre la celda; " +
+    "salio " + temprano?.[4] + " contra " + mediodia?.[4],
   );
   process.exitCode = 1;
 }

@@ -20,7 +20,9 @@ import {
 } from "../app/projection";
 import { makeFrame, toGeo } from "../src/index.js";
 
-const camera = CAMARAS[0]!; // Mavic 3T termica: 640x512, HFOV 45.8 x VFOV 37.3
+// Mavic 3T termica: 640x512, HFOV 45.8 x VFOV 37.3. Por nombre y no por
+// posicion: el orden de la lista lo manda cual dron viene elegido.
+const camera = CAMARAS.find((c) => c.djiId === "m3t" && c.imageW === 640)!;
 const frame = makeFrame(-26.92, 150.58);
 
 /** Una pose sobre el origen del marco local, a plomo salvo que se diga otra cosa. */

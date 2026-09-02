@@ -49,7 +49,34 @@ export interface Camera {
    * ofrecer el perfil equivocado.
    */
   djiId?: string;
+  /**
+   * Los intervalos de disparo que acepta la camara, en segundos.
+   *
+   * No es un dato de ficha tecnica al pedo: es lo que pone el TECHO a la
+   * velocidad de vuelo. El plan pide una foto cada tantos metros, y si a la
+   * velocidad elegida eso cae por debajo del intervalo mas corto que la camara
+   * sabe hacer, el dron simplemente saca menos fotos que las que el plan
+   * supone. No da error: deja huecos.
+   */
+  intervalosS?: number[];
 }
+
+/**
+ * Cuanto tarda un microbolometro sin refrigerar en "ver" la escena, en
+ * segundos.
+ *
+ * Una termica no tiene obturador: cada pixel es un termistor que se calienta y
+ * se enfria, y tarda del orden de 10 ms en llegar a su valor. Durante esos 10
+ * ms el dron se movio, asi que cada pixel promedia una franja de terreno.
+ *
+ * Y el arrastre no molesta por "salir movida": APLANA EL PICO. La celda
+ * caliente es lo mas chico y lo mas caliente de la escena, o sea justo lo que
+ * un promedio se come primero — y ese pico es la medicion.
+ *
+ * El numero conservador para un VOx sin refrigerar es 12 ms; se usa ese y no
+ * el optimista de 8 para que el aviso salte antes y no despues.
+ */
+export const SEGUNDOS_DE_INTEGRACION = 0.012;
 
 /**
  * Presets sacados de las fichas oficiales.
@@ -103,15 +130,143 @@ export function camaraDesdeEquivalente35(
 }
 
 export const CAMARAS: Camera[] = [
-  camaraDesdeEquivalente35("Mavic 3T · termica 640x512 (40 mm eq)", 40, 640, 512, "m3t"),
-  desdeDiagonal("Matrice 4T · termica 640x512 (DFOV 45°)", 45, 640, 512, "m4t"),
+  /*
+    El Matrice 4T va PRIMERO porque es el dron que hay.
+
+    Estaba segundo, y la pantalla abria configurada en un Mavic 3T. Un valor
+    por defecto no es una sugerencia: es lo que va a volar el que no toca nada.
+  */
+  {
+    ...desdeDiagonal("Matrice 4T · termica 640x512 (DFOV 45°)", 45, 640, 512, "m4t"),
+    intervalosS: [0.7, 1, 2, 3, 5, 7, 10, 15, 20, 30, 60],
+  },
+  { ...camaraDesdeEquivalente35("Mavic 3T · termica 640x512 (40 mm eq)", 40, 640, 512, "m3t"),
+    intervalosS: [2, 3, 5, 7, 10, 15, 20, 30, 60] },
   // El H30T no lleva id: va colgado de un Matrice 350 o 400, que no estan en
   // PERFILES_DJI. Inventarle uno seria peor que no tenerlo.
   desdeDiagonal("Zenmuse H30T · termica 1280x1024 (DFOV 45.2°)", 45.2, 1280, 1024),
   camaraDesdeEquivalente35("Mavic 3T · visible 4000x3000 (24 mm eq)", 24, 4000, 3000, "m3t"),
 ];
 
-const huella = (alturaM: number, fovDeg: number) => 2 * alturaM * Math.tan((fovDeg * RAD) / 2);
+export const huella = (alturaM: number, fovDeg: number) => 2 * alturaM * Math.tan((fovDeg * RAD) / 2);
+
+/**
+ * Cada cuantos metros se repite una fila de trackers, medido del parque.
+ *
+ * Hace falta para DIBUJAR las pasadas sobre las filas a escala: sin el paso
+ * real, la figura muestra un solape que no es el que va a haber.
+ *
+ * Se mide en vez de declararse. Se proyecta el centro de cada fila sobre el eje
+ * PERPENDICULAR a la direccion media de las filas, se ordenan, y se toma la
+ * MEDIANA de los saltos: la mediana aguanta que el parque tenga calles en el
+ * medio, que meten saltos de veinte metros que un promedio se comeria.
+ */
+export function pasoEntreFilas(rows: Array<{ a: { x: number; y: number }; b: { x: number; y: number } }>): number | null {
+  if (rows.length < 3) return null;
+
+  let ux = 0, uy = 0;
+  for (const r of rows) {
+    let dx = r.b.x - r.a.x, dy = r.b.y - r.a.y;
+    const n = Math.hypot(dx, dy);
+    if (!n) continue;
+    dx /= n; dy /= n;
+    // Todas las filas al mismo semiplano: una fila dibujada al reves apunta
+    // para el otro lado y cancelaria a su vecina en el promedio.
+    if (dy < 0 || (dy === 0 && dx < 0)) { dx = -dx; dy = -dy; }
+    ux += dx; uy += dy;
+  }
+  const n = Math.hypot(ux, uy);
+  if (!n) return null;
+  ux /= n; uy /= n;
+
+  // El perpendicular, que es sobre el que se separan las filas.
+  const px = -uy, py = ux;
+  const cortes = rows
+    .map((r) => ((r.a.x + r.b.x) / 2) * px + ((r.a.y + r.b.y) / 2) * py)
+    .sort((x, y) => x - y);
+
+  const saltos: number[] = [];
+  for (let i = 1; i < cortes.length; i++) {
+    const d = cortes[i]! - cortes[i - 1]!;
+    if (d > 0.5) saltos.push(d);   // dos filas al mismo corte son el mismo eje
+  }
+  if (!saltos.length) return null;
+  saltos.sort((x, y) => x - y);
+  return saltos[Math.floor(saltos.length / 2)]!;
+}
+
+// ---------------------------------------------------------------------------
+// La velocidad, que hasta ahora era un numero escrito a mano
+// ---------------------------------------------------------------------------
+
+export interface Velocidades {
+  /** Cada cuantos metros tiene que disparar la camara. */
+  disparoCadaM: number;
+  /** Cuantos segundos hay entre foto y foto a la velocidad elegida. */
+  segundosEntreFotos: number;
+  /** Lo mas rapido que se puede ir sin que la camara se quede atras. */
+  porObturadorMps: number;
+  /** Lo mas rapido que se puede ir sin barrer mas de un pixel de terreno. */
+  porArrastreMps: number;
+  /** El menor de los dos: el techo de verdad. */
+  maximaMps: number;
+  /** Cual de los dos manda. Sirve para explicar POR QUE, no solo cuanto. */
+  manda: "obturador" | "arrastre";
+  /** Cuantos pixeles de terreno barre la imagen a la velocidad elegida. */
+  arrastrePx: number;
+  /** El intervalo mas corto que la camara acepta, en segundos. */
+  intervaloMinimoS: number;
+}
+
+/**
+ * Que velocidad aguanta este vuelo, y por que.
+ *
+ * La velocidad era el unico numero del plan que no salia de ningun lado: un 5
+ * escrito a mano que alimentaba la cuenta de minutos y se copiaba al archivo
+ * del dron. Nada la cruzaba contra la camara. Y hay dos cosas que la limitan,
+ * las dos silenciosas:
+ *
+ *   OBTURADOR  el plan pide una foto cada N metros; a v m/s eso es un intervalo
+ *              de N/v segundos. Si es mas corto que lo que la camara sabe
+ *              hacer, el dron saca menos fotos y quedan HUECOS.
+ *   ARRASTRE   cada pixel promedia lo que vio durante su tiempo de integracion.
+ *              A v m/s eso es v*t metros de terreno por pixel. Pasado un pixel
+ *              de GSD, el promedio se empieza a comer el pico de la celda
+ *              caliente — que es la medicion.
+ *
+ * Ninguno de los dos falla el dia del vuelo. Los dos fallan despues.
+ */
+export function velocidades(
+  camera: Camera,
+  altitudeM: number,
+  frontOverlap: number,
+  speedMps: number,
+): Velocidades {
+  const largoHuella = huella(altitudeM, camera.vfovDeg);
+  const disparoCadaM = Math.max(0.5, largoHuella * (1 - frontOverlap));
+  const gsdM = huella(altitudeM, camera.hfovDeg) / camera.imageW;
+
+  // Sin lista de intervalos se toma 2 s, que es lo que suele aceptar una
+  // termica de esta clase. Suponer 0.7 seria suponer a favor.
+  const intervaloMinimoS = camera.intervalosS?.length
+    ? Math.min(...camera.intervalosS)
+    : 2;
+
+  const porObturadorMps = disparoCadaM / intervaloMinimoS;
+  const porArrastreMps = gsdM / SEGUNDOS_DE_INTEGRACION;
+  const maximaMps = Math.min(porObturadorMps, porArrastreMps);
+
+  return {
+    disparoCadaM,
+    segundosEntreFotos: speedMps > 0 ? disparoCadaM / speedMps : Infinity,
+    porObturadorMps,
+    porArrastreMps,
+    maximaMps,
+    manda: porObturadorMps <= porArrastreMps ? "obturador" : "arrastre",
+    arrastrePx: (speedMps * SEGUNDOS_DE_INTEGRACION) / gsdM,
+    intervaloMinimoS,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Plan
@@ -433,6 +588,29 @@ export function planMission(
   const pixelesPorModulo = pasoModulo / (gsdCm / 100);
 
   const avisos: string[] = [];
+
+  /*
+    La velocidad, que hasta ahora no la miraba nadie.
+
+    Va PRIMERO en la lista de avisos a proposito: los otros avisos hablan de
+    cuanto vas a ver, y este habla de si vas a tener las fotos.
+  */
+  const vel = velocidades(opts.camera, opts.altitudeM, opts.frontOverlap, opts.speedMps);
+  if (opts.speedMps > vel.porObturadorMps) {
+    avisos.push(
+      `A ${opts.speedMps} m/s el plan pide una foto cada ${vel.segundosEntreFotos.toFixed(1)} s y ` +
+      `esta camara no baja de ${vel.intervaloMinimoS} s. El dron va a sacar menos fotos que las ` +
+      `que el plan cuenta y van a quedar franjas sin cubrir. Bajá la velocidad a ` +
+      `${vel.porObturadorMps.toFixed(1)} m/s o menos, o subí la altura.`,
+    );
+  }
+  if (opts.speedMps > vel.porArrastreMps) {
+    avisos.push(
+      `A ${opts.speedMps} m/s cada pixel de la termica barre ${vel.arrastrePx.toFixed(1)} pixeles de ` +
+      `terreno mientras se lee. Eso no sale "movido": aplana el pico de la celda caliente, que es ` +
+      `justo lo que se mide. Bajá la velocidad a ${vel.porArrastreMps.toFixed(1)} m/s o menos.`,
+    );
+  }
   if (gsdCm > GSD_MAXIMO_CM) {
     avisos.push(
       `A ${gsdCm.toFixed(1)} cm por pixel, una celda de 16 cm entra en ${(16 / gsdCm).toFixed(1)} ` +

@@ -27,12 +27,27 @@ import {
   type MissionOptions,
 } from "../mission";
 import { avisosDeKmz, PERFILES_DJI, toKmz } from "../wpml";
+import { huella, pasoEntreFilas, velocidades } from "../mission";
 import { PIXELES_POR_CELDA_MINIMO, CELDA_M } from "../detect";
+import { LoQueVeElDron } from "../components/LoQueVeElDron";
+import { celdaDelParque, largoDelModulo } from "../vuelo";
 import type { StoredFarm } from "../storage";
 
 export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () => void }) {
   const [camIndex, setCamIndex] = useState(0);
   const [o, setO] = useState(OPCIONES_POR_DEFECTO);
+  /**
+   * La velocidad la pone la app salvo que alguien diga lo contrario.
+   *
+   * Era un 5 m/s escrito a mano que nadie chequeaba contra la camara — y con
+   * el Matrice 4T a 50 m el techo real es 4,2, o sea que el valor por defecto
+   * ya estaba por encima del limite. Un numero que hay que saber calcular para
+   * poder poner bien no es una opcion: es una trampa. Se calcula, y el que
+   * sabe lo que hace lo puede desactivar.
+   */
+  const [velocidadAuto, setVelocidadAuto] = useState(true);
+  /** Los numeros finos, escondidos hasta que alguien los pida. */
+  const [verNumeros, setVerNumeros] = useState(false);
   /** Lo que se esta tipeando, mientras no sea todavia un numero valido. */
   const [crudos, setCrudos] = useState<Partial<Record<keyof typeof OPCIONES_POR_DEFECTO, string>>>({});
   const [baterias, setBaterias] = useState(4);
@@ -61,11 +76,42 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
    */
   const perfil = PERFILES_DJI.find((p) => p.id === CAMARAS[camIndex]!.djiId);
 
-  const opts: MissionOptions = { camera: CAMARAS[camIndex]!, ...o };
+  const camara = CAMARAS[camIndex]!;
+
+  /*
+    La velocidad que aguanta esta camara a esta altura.
+
+    Se calcula ANTES de armar el plan, porque si esta en automatico es la que
+    entra al plan: si se calculara despues, el plan diria una cosa y el aviso
+    otra.
+  */
+  const techo = velocidades(camara, o.altitudeM, o.frontOverlap, o.speedMps);
+  // Redondeada para abajo a medio metro por segundo: un numero redondo que se
+  // puede tipear en el control del dron, y del lado seguro del limite.
+  const velocidadElegida = velocidadAuto
+    ? Math.max(1, Math.floor(techo.maximaMps * 2) / 2)
+    : o.speedMps;
+
+  const opts: MissionOptions = { camera: camara, ...o, speedMps: velocidadElegida };
+
+  /*
+    Lo que hace falta para DIBUJAR, que no es lo mismo que para volar.
+
+    Sale de la camara y la altura nomas. Estaba tomado de las estadisticas del
+    plan y eso ataba la figura a tener bloques marcados: uno movia la altura
+    para ver que pasa, y no pasaba nada porque todavia no habia elegido que
+    volar. La pregunta "¿voy a ver la celda?" no depende de que bloque vueles.
+  */
+  const anchoDeHuella = huella(o.altitudeM, camara.hfovDeg);
+  const separacionDeHuella = Math.max(0.5, anchoDeHuella * (1 - o.sideOverlap));
+  const gsdCmDeHuella = (anchoDeHuella * 100) / camara.imageW;
 
   const farm = useMemo<CompiledFarm | null>(() => {
     try { return compileFarm(stored.profile, stored.rows); } catch { return null; }
   }, [stored]);
+
+  /** El paso real entre filas del parque, para dibujar las pasadas a escala. */
+  const pasoDeFila = useMemo(() => (farm ? pasoEntreFilas(farm.rows) : null), [farm]);
 
   const plan = useMemo(
     () => planByBlock(stored.rows, stored.profile, opts, baterias),
@@ -304,65 +350,90 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         <button className="ghost" onClick={onBack}>Parques</button>
       </header>
 
+      {/*
+        Una sola tarjeta, y en castellano.
+        ====================================================================
+        Habia dos —"La camara" y "El vuelo"— y entre las dos pedian: sensor,
+        altura, velocidad, solape lateral, solape frontal y margen. Seis
+        numeros, cuatro de los cuales solo significan algo si hiciste
+        fotogrametria. El que va a volar esto no tiene por que haberla hecho:
+        "solape frontal 0.7" no le dice a nadie si el vuelo va a servir.
+
+        Ahora se eligen DOS cosas —el dron y la altura— y todo lo demas se
+        calcula y se DIBUJA. Los seis numeros siguen estando, abajo, para el
+        dia que alguien quiera discutirlos.
+      */}
       <section className="card">
-        <h2>La camara</h2>
-        <p className="help">
-          Planificá con la <strong>termica</strong>, no con la visible. La termica tiene mucha menos
-          resolucion, asi que su huella en el suelo es mas chica: un vuelo planificado con la camara
-          visible deja huecos en la termica, que es la que importa.
-        </p>
+        <h2>Cómo vas a volar</h2>
+
         <div className="field">
-          <label htmlFor="f-cam">Sensor</label>
+          <label htmlFor="f-cam">Tu dron</label>
           <select id="f-cam" value={camIndex} onChange={(e) => setCamIndex(Number(e.target.value))}>
             {CAMARAS.map((c, i) => (<option key={c.name} value={i}>{c.name}</option>))}
           </select>
           <span className="help">
-            Verificá el campo de vision contra la ficha de tu camara antes de volar. Un angulo mal
-            cargado se traduce en huecos entre lineas.
+            Se planifica con la <strong>térmica</strong>, no con la cámara visible. La térmica ve
+            una franja mucho más angosta: un vuelo planificado con la visible deja huecos en la
+            térmica, que es la que importa.
           </span>
         </div>
-      </section>
 
-      <section className="card">
-        <h2>El vuelo</h2>
-        <div className="grid-2">
-          {num("altitudeM", "Altura sobre el terreno (m)", 5, 120, 1, "Mas bajo: mas detalle y menos error de gimbal, pero mas lineas.")}
-          {num("speedMps", "Velocidad (m/s)", 1, 15, 0.5)}
-          {num("sideOverlap", "Solape lateral (0 a 1)", 0.3, 0.95, 0.05, "Entre lineas vecinas.")}
-          {num("frontOverlap", "Solape frontal (0 a 1)", 0.3, 0.95, 0.05, "Entre fotos de la misma linea.")}
-          {num("marginM", "Margen alrededor (m)", 0, 60, 5)}
-        </div>
-        <label className="check">
+        <div className="field">
+          <label htmlFor="f-alt">Altura sobre el terreno: <strong>{o.altitudeM} m</strong></label>
           <input
-            type="checkbox" checked={o.alongRows}
-            onChange={(e) => setO((p) => ({ ...p, alongRows: e.target.checked }))}
+            id="f-alt" type="range" min={20} max={120} step={1} value={o.altitudeM}
+            onChange={(e) => setO((p) => ({ ...p, altitudeM: Number(e.target.value) }))}
           />
-          <span>
-            Volar a lo largo de las filas
-            <em>Cruzarlas obliga a muchos mas giros, y cada giro cuesta bateria.</em>
+          <span className="help">
+            Más bajo ves más detalle y tardás más, porque la franja de cada pasada es más angosta.
+            Movelo y mirá las dos figuras de abajo: son lo que vas a tener.
           </span>
-        </label>
+        </div>
 
+        {/*
+          La velocidad, que hasta ahora era un numero suelto que nadie miraba.
+
+          No se pregunta: se calcula, y se dice de donde sale. Poner un numero
+          aca exige saber el intervalo de disparo de la camara y el tiempo de
+          integracion del microbolometro — o sea, exige ser la persona que ya
+          no necesita esta pantalla.
+        */}
         <label className="check">
           <input
-            type="checkbox" checked={o.rtk}
-            onChange={(e) => setO((p) => ({
-              ...p, rtk: e.target.checked,
-              ...(e.target.checked ? SOLAPES.conRtk : SOLAPES.sinRtk),
-            }))}
+            type="checkbox" checked={velocidadAuto}
+            onChange={(e) => setVelocidadAuto(e.target.checked)}
           />
           <span>
-            El dron tiene RTK
+            Que la app ponga la velocidad
             <em>
-              Es el interruptor que mas cambia las horas, y no por la precision sino por el SOLAPE.
-              El 70 % que viene por defecto es el que pide la fotogrametria para coser las fotos en
-              un mosaico — algo que esta app no hace: proyecta cada foto por separado sobre el
-              parque, que ya esta medido. El solape solo tiene que alcanzar para que no queden
-              huecos cuando el dron se corre de la linea. Con RTK se corre centimetros y 45 % sobra;
-              sin RTK se puede ir varios metros y hace falta el 70 %.
+              La más rápida que esta cámara aguanta a esta altura. Ahora mismo son{" "}
+              <strong>{velocidadElegida} m/s</strong>, y el techo lo pone{" "}
+              {techo.manda === "obturador"
+                ? `el disparo: el plan pide una foto cada ${techo.disparoCadaM.toFixed(1)} m y esta cámara no baja de ${techo.intervaloMinimoS} s entre foto y foto.`
+                : "el barrido de la imagen: una térmica no tiene obturador, cada píxel tarda unos milisegundos en leerse y mientras tanto el dron se movió. Pasado un píxel de arrastre se empieza a aplanar el pico de la celda caliente, que es justo lo que se mide."}
             </em>
           </span>
         </label>
+
+        {!velocidadAuto && (
+          <div className="field">
+            <label htmlFor="f-vel">
+              Velocidad: <strong>{o.speedMps} m/s</strong>{" "}
+              {o.speedMps > techo.maximaMps && <span className="mal">— pasada de {techo.maximaMps.toFixed(1)}</span>}
+            </label>
+            <input
+              id="f-vel" type="range" min={1} max={15} step={0.5} value={o.speedMps}
+              onChange={(e) => setO((p) => ({ ...p, speedMps: Number(e.target.value) }))}
+            />
+            <span className="help">
+              El máximo que aguanta esta cámara a {o.altitudeM} m es{" "}
+              <strong>{techo.maximaMps.toFixed(1)} m/s</strong>. Más rápido que eso{" "}
+              {techo.manda === "obturador"
+                ? "el dron no llega a sacar todas las fotos y quedan franjas sin cubrir."
+                : "la imagen se barre y el punto caliente se aplana."}
+            </span>
+          </div>
+        )}
 
         {/*
           Lo que hay que saber ANTES de comprar, no despues.
@@ -405,6 +476,63 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
             </p>
           </div>
         )}
+      </section>
+
+      {/*
+        Lo que el vuelo va a ver, dibujado.
+
+        Es la tarjeta que contesta las dos preguntas que de verdad se hacen
+        antes de despegar, y las contesta con figuras a escala en vez de con
+        centimetros por pixel.
+      */}
+      <section className="card">
+          <h2>Qué vas a poder ver con este vuelo</h2>
+          <LoQueVeElDron
+            gsdCm={gsdCmDeHuella}
+            celdaM={celdaDelParque(stored)}
+            moduloAnchoM={stored.profile.module.widthMm / 1000}
+            moduloLargoM={largoDelModulo(stored)}
+            huellaAnchoM={anchoDeHuella}
+            separacionM={separacionDeHuella}
+            pasoDeFilaM={pasoDeFila ?? 5}
+          />
+
+          <button className="link" onClick={() => setVerNumeros((v) => !v)}>
+            {verNumeros ? "ocultar los números" : "ver los números"}
+          </button>
+
+          {verNumeros && (
+            <>
+              <p className="help">
+                Los mismos datos, para el día que haya que discutirlos. El arrastre se calcula con
+                12 ms de tiempo de integración, que es el número conservador de un microbolómetro
+                sin refrigerar — si medís el de tu cámara y es menor, se puede volar más rápido.
+              </p>
+              <div className="grid-2">
+                {num("sideOverlap", "Solape lateral (0 a 1)", 0.3, 0.95, 0.05, "Entre lineas vecinas.")}
+                {num("frontOverlap", "Solape frontal (0 a 1)", 0.3, 0.95, 0.05, "Entre fotos de la misma linea.")}
+                {num("marginM", "Margen alrededor (m)", 0, 60, 5)}
+              </div>
+              <div className="stats">
+                <div><b>{gsdCmDeHuella.toFixed(1)}</b><span>cm por pixel</span></div>
+                <div><b>{techo.disparoCadaM.toFixed(1)} m</b><span>entre foto y foto</span></div>
+                <div><b>{techo.segundosEntreFotos.toFixed(1)} s</b><span>a esta velocidad</span></div>
+                <div><b>{techo.arrastrePx.toFixed(1)}</b><span>pixeles de arrastre</span></div>
+                <div><b>{techo.porObturadorMps.toFixed(1)}</b><span>m/s techo por obturador</span></div>
+                <div><b>{techo.porArrastreMps.toFixed(1)}</b><span>m/s techo por arrastre</span></div>
+              </div>
+              <label className="check">
+                <input
+                  type="checkbox" checked={o.alongRows}
+                  onChange={(e) => setO((p) => ({ ...p, alongRows: e.target.checked }))}
+                />
+                <span>
+                  Volar a lo largo de las filas
+                  <em>Cruzarlas obliga a muchos mas giros, y cada giro cuesta bateria.</em>
+                </span>
+              </label>
+            </>
+          )}
       </section>
 
       {/* --------------------------------------------------------------- */}
