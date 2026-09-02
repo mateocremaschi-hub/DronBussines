@@ -17,11 +17,15 @@ import {
   CAMARAS,
   OPCIONES_POR_DEFECTO,
   SEGUNDOS_DE_INTEGRACION,
+  DERIVA_CON_RTK,
+  DERIVA_SIN_RTK,
   MINUTOS_POR_BATERIA,
+  SOLAPES,
   huella,
   jornadaDeCampo,
   minutosUtiles,
   pasoEntreFilas,
+  solapeLateral,
   velocidades,
 } from "../app/mission";
 
@@ -234,5 +238,98 @@ describe("cuanto se vuela en un dia de campo", () => {
     const j = jornadaDeCampo({ ...base, baterias: 5, cargaEnElCampo: true, minutosDeSol: 0 });
     expect(j.minutosPorJornada).toBeGreaterThan(0);
     expect(Number.isFinite(j.jornadas)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * El solape lateral, calculado en vez de elegido de dos presets.
+ *
+ * "¿Por que con el RTK se tiene que solapar tanto la foto, si se supone que es
+ * ultra preciso? ¿Por que no se puede solapar solo un diez por ciento y ahi
+ * seria mucho mas rapido todo?"
+ *
+ * La respuesta es que en esta app el solape no compra cobertura, compra
+ * medicion: el motor se queda con la foto que tiene al modulo mas cerca del
+ * centro, porque en el borde la termica miente varios grados. Pero el 45 % que
+ * habia era igual de arbitrario que el 5 m/s.
+ */
+describe("el solape lateral", () => {
+  const base = { camera: m4t, altitudeM: 50, fraccionDelCuadro: 0.7 };
+
+  it("la regla de calidad es lo que pone el piso", () => {
+    const s = solapeLateral({ ...base, derivaM: 0, desnivelM: 0 });
+    // "No medir mas alla del 70 % del cuadro" son 30 % de solape, exacto.
+    expect(s.porCalidad).toBeCloseTo(0.3, 5);
+    expect(s.solape).toBeCloseTo(0.3, 5);
+    expect(s.manda).toBe("calidad");
+  });
+
+  /*
+    El caso que pedia: RTK y terreno plano. Tiene que dar bastante menos que el
+    45 % que venia de preset — si no, todo esto no sirvio de nada.
+  */
+  it("con RTK y terreno plano baja bien debajo del 45 % que venia puesto", () => {
+    const s = solapeLateral({ ...base, derivaM: DERIVA_CON_RTK, desnivelM: 2 });
+    expect(s.solape).toBeLessThan(SOLAPES.conRtk.sideOverlap);
+    expect(s.solape).toBeGreaterThan(0.3);
+  });
+
+  it("sin RTK, la deriva del dron pesa y sube el solape", () => {
+    const con = solapeLateral({ ...base, derivaM: DERIVA_CON_RTK, desnivelM: 2 });
+    const sin = solapeLateral({ ...base, derivaM: DERIVA_SIN_RTK, desnivelM: 2 });
+    expect(sin.solape).toBeGreaterThan(con.solape);
+    expect(sin.porDeriva).toBeGreaterThan(con.porDeriva);
+  });
+
+  /*
+    Lo que el RTK NO arregla. La altura es sobre el punto de despegue: si el
+    terreno sube tres metros, se vuela a 47 y la pasada se angosta sola.
+  */
+  it("el terreno pesa aunque haya RTK", () => {
+    const plano = solapeLateral({ ...base, derivaM: DERIVA_CON_RTK, desnivelM: 2 });
+    const feo = solapeLateral({ ...base, derivaM: DERIVA_CON_RTK, desnivelM: 12 });
+    expect(feo.solape).toBeGreaterThan(plano.solape);
+    // Con la regla de calidad floja, el terreno pasa a ser el que manda — y ahi
+    // comprar RTK no arregla nada: hay que volar mas alto o seguir el terreno.
+    const flojo = solapeLateral({
+      ...base, fraccionDelCuadro: 0.9, derivaM: DERIVA_CON_RTK, desnivelM: 12,
+    });
+    expect(flojo.manda).toBe("terreno");
+  });
+
+  it("volar mas alto diluye la deriva pero no el terreno", () => {
+    const bajo = solapeLateral({ ...base, altitudeM: 30, derivaM: DERIVA_SIN_RTK, desnivelM: 6 });
+    const alto = solapeLateral({ ...base, altitudeM: 90, derivaM: DERIVA_SIN_RTK, desnivelM: 6 });
+    // Mas alto la huella es mas ancha, asi que los mismos metros de deriva son
+    // una fraccion menor. Y el desnivel tambien pesa menos, por la misma razon.
+    expect(alto.porDeriva).toBeLessThan(bajo.porDeriva);
+    expect(alto.porTerreno).toBeLessThan(bajo.porTerreno);
+  });
+
+  it("pedir una regla mas exigente sube el solape", () => {
+    const flojo = solapeLateral({ ...base, fraccionDelCuadro: 0.9, derivaM: 0, desnivelM: 0 });
+    const duro = solapeLateral({ ...base, fraccionDelCuadro: 0.5, derivaM: 0, desnivelM: 0 });
+    expect(duro.solape).toBeGreaterThan(flojo.solape);
+  });
+
+  /*
+    El 10 % que preguntaba se puede pedir, y la app lo va a dar — pero solo si
+    se declara que se acepta medir hasta el borde mismo del cuadro. Que es
+    justamente la decision que antes estaba escondida adentro de un preset.
+  */
+  it("un solape del 10 % exige aceptar medir al 90 % del cuadro", () => {
+    const s = solapeLateral({
+      ...base, fraccionDelCuadro: 0.9, derivaM: DERIVA_CON_RTK, desnivelM: 0,
+    });
+    expect(s.solape).toBeLessThan(0.15);
+  });
+
+  it("nunca devuelve un plan sin solape ni uno que no termina nunca", () => {
+    const nada = solapeLateral({ ...base, fraccionDelCuadro: 1, derivaM: 0, desnivelM: 0 });
+    expect(nada.solape).toBeGreaterThanOrEqual(0.05);
+    const todo = solapeLateral({ ...base, fraccionDelCuadro: 0, derivaM: 20, desnivelM: 40 });
+    expect(todo.solape).toBeLessThanOrEqual(0.85);
   });
 });

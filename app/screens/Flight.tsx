@@ -22,7 +22,12 @@ import {
   planByBlock,
   planByGroup,
   planMission,
+  DERIVA_CON_RTK,
+  DERIVA_SIN_RTK,
   SOLAPES,
+  TERRENOS,
+  solapeLateral,
+  type TerrenoId,
   toKml,
   toWaypointCsv,
   type MissionOptions,
@@ -47,6 +52,19 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
    * sabe lo que hace lo puede desactivar.
    */
   const [velocidadAuto, setVelocidadAuto] = useState(true);
+  /**
+   * El solape lateral tambien se calcula, por el mismo motivo que la velocidad.
+   *
+   * Eran dos numeros escritos a mano —45 % con RTK, 70 % sin— y la pregunta que
+   * los volteo fue: "si el RTK es ultra preciso, ¿por que no puedo solapar diez
+   * por ciento y terminar mucho mas rapido?". El 45 % tenia una razon buena
+   * atras, pero la razon no estaba escrita en ningun lado y el numero tampoco
+   * salia de ella.
+   */
+  const [solapeAuto, setSolapeAuto] = useState(true);
+  /** Hasta que fraccion del cuadro se acepta medir un modulo. */
+  const [fraccionDelCuadro, setFraccionDelCuadro] = useState(0.7);
+  const [terreno, setTerreno] = useState<TerrenoId>("plano");
   /** Los numeros finos, escondidos hasta que alguien los pida. */
   const [verNumeros, setVerNumeros] = useState(false);
   /** Lo que se esta tipeando, mientras no sea todavia un numero valido. */
@@ -89,6 +107,20 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   const camara = CAMARAS[camIndex]!;
 
   /*
+    El solape que hace falta, calculado. Va antes del plan porque, en
+    automatico, es el que entra al plan.
+  */
+  const desnivelM = (TERRENOS.find((t) => t.id === terreno) ?? TERRENOS[0]).desnivelM;
+  const solape = solapeLateral({
+    camera: camara,
+    altitudeM: o.altitudeM,
+    fraccionDelCuadro,
+    derivaM: o.rtk ? DERIVA_CON_RTK : DERIVA_SIN_RTK,
+    desnivelM,
+  });
+  const solapeElegido = solapeAuto ? Math.round(solape.solape * 100) / 100 : o.sideOverlap;
+
+  /*
     La velocidad que aguanta esta camara a esta altura.
 
     Se calcula ANTES de armar el plan, porque si esta en automatico es la que
@@ -102,7 +134,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     ? Math.max(1, Math.floor(techo.maximaMps * 2) / 2)
     : o.speedMps;
 
-  const opts: MissionOptions = { camera: camara, ...o, speedMps: velocidadElegida };
+  const opts: MissionOptions = { camera: camara, ...o, speedMps: velocidadElegida, sideOverlap: solapeElegido };
 
   /*
     Lo que hace falta para DIBUJAR, que no es lo mismo que para volar.
@@ -467,6 +499,94 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
         )}
 
         {/*
+          La cobertura, que era dos numeros escritos a mano.
+          ===================================================================
+          "¿Por que con el RTK se tiene que solapar tanto la foto, si se supone
+          que es ultra preciso? ¿Por que no un diez por ciento y ahi seria mucho
+          mas rapido todo?"
+
+          Porque en esta app el solape no compra COBERTURA, compra MEDICION: de
+          todas las fotos donde sale un modulo, el motor se queda con la que lo
+          tiene mas cerca del centro del cuadro, porque en el borde la termica
+          miente varios grados y los umbrales son de dos o tres. Con pasadas
+          separadas `ancho * (1 - solape)`, el modulo peor ubicado queda a
+          `(1 - solape)` del centro hacia el borde: con 10 % de solape hay
+          modulos medidos al 90 % del camino al borde.
+
+          Asi que la pregunta no es cuanto solapar: es hasta donde se acepta
+          medir. Eso se elige aca, y el solape sale de ahi mas lo que obligan la
+          deriva del dron y el terreno.
+        */}
+        <label className="check">
+          <input
+            type="checkbox" checked={o.rtk}
+            onChange={(e) => setO((p) => ({ ...p, rtk: e.target.checked }))}
+          />
+          <span>
+            El dron tiene RTK
+            <em>
+              Clava la posicion del dron en centimetros, asi que el solape no
+              tiene que absorber que se corra de la linea. Es lo que mas mueve las horas.
+            </em>
+          </span>
+        </label>
+
+        <div className="field">
+          <label htmlFor="f-terreno">¿Cómo es el terreno del parque?</label>
+          <select
+            id="f-terreno" value={terreno}
+            onChange={(e) => setTerreno(e.target.value as TerrenoId)}
+          >
+            {TERRENOS.map((t) => (<option key={t.id} value={t.id}>{t.nombre}</option>))}
+          </select>
+          <span className="help">
+            El dron vuela a una altura sobre el punto de despegue, no sobre el suelo: donde el
+            terreno sube {desnivelM} m estás volando {desnivelM} m más bajo, y la franja de esa
+            pasada se angosta sola. Es lo único de acá que el RTK no arregla.
+          </span>
+        </div>
+
+        <label className="check">
+          <input
+            type="checkbox" checked={solapeAuto}
+            onChange={(e) => setSolapeAuto(e.target.checked)}
+          />
+          <span>
+            Que la app calcule cuánto solapar
+            <em>
+              Ahora mismo da <strong>{Math.round(solapeElegido * 100)} %</strong>: {" "}
+              {Math.round(solape.porCalidad * 100)} % para que ningún módulo se mida más allá del{" "}
+              {Math.round(fraccionDelCuadro * 100)} % del cuadro,{" "}
+              {Math.round(solape.porDeriva * 100)} % por lo que se corre el dron de la línea, y{" "}
+              {Math.round(solape.porTerreno * 100)} % por el terreno.{" "}
+              {solape.manda === "calidad"
+                ? "Lo que más pesa es la regla de medición: para ir más rápido hay que aceptar medir más cerca del borde."
+                : solape.manda === "deriva"
+                  ? "Lo que más pesa es que el dron se corre de la línea: acá el RTK te ahorra horas de verdad."
+                  : "Lo que más pesa es el terreno, y eso no lo arregla el RTK: volando más alto pesa menos."}
+            </em>
+          </span>
+        </label>
+
+        {solapeAuto && (
+          <div className="field">
+            <label htmlFor="f-cuadro">
+              No medir ningún módulo más allá del{" "}
+              <strong>{Math.round(fraccionDelCuadro * 100)} %</strong> del cuadro
+            </label>
+            <input
+              id="f-cuadro" type="range" min={0.5} max={0.95} step={0.05} value={fraccionDelCuadro}
+              onChange={(e) => setFraccionDelCuadro(Number(e.target.value))}
+            />
+            <span className="help">
+              Correrlo a la derecha acepta medir módulos más cerca del borde del cuadro, donde la
+              térmica lee peor, y a cambio el vuelo tarda menos. A la izquierda, al revés. Es la
+              decisión que antes estaba escondida adentro del 45 % / 70 %.
+            </span>
+          </div>
+        )}
+
+        {/*
           Lo que hay que saber ANTES de comprar, no despues.
           ===================================================================
           Esta casilla decide la mitad de las horas de vuelo del parque, y no
@@ -499,8 +619,9 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
               </li>
             </ul>
             <p className="help">
-              Si llegás al parque y el RTK no engancha, destildá esta casilla y volá con 70 %: vas a
-              tardar mas o menos el doble, pero el vuelo sirve igual. La app no necesita RTK para
+              Si llegás al parque y el RTK no engancha, destildá esta casilla: la app recalcula el
+              solape sola y te dice cuánto tarda así. Vas a tardar bastante más, pero el vuelo sirve
+              igual. La app no necesita RTK para
               ubicar los modulos — cada direccion sale de las picas del relevamiento, no del GPS del
               dron. Lo unico que cambia es que la grilla te va a quedar corrida unos metros al
               analizar, y eso se corrige de un arrastre.

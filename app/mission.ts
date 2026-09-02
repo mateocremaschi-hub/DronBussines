@@ -324,6 +324,110 @@ export interface MissionOptions {
  * y sobre una franja de 30 m eso es un 15 % para cada lado: hace falta el 70 %.
  * La diferencia, en un parque grande, es la mitad de los dias de trabajo.
  */
+/**
+ * El terreno, en palabras.
+ *
+ * Se pregunta asi y no en metros porque nadie sabe de memoria cuanto sube y
+ * baja un parque, pero todo el mundo sabe si es una mesa o si tiene lomadas.
+ * El numero de al lado es el desnivel tipico dentro de un bloque — no el del
+ * parque entero, porque cada vuelo es un bloque.
+ */
+export const TERRENOS = [
+  { id: "plano", nombre: "Plano, como una mesa", desnivelM: 2 },
+  { id: "lomadas", nombre: "Con lomadas suaves", desnivelM: 6 },
+  { id: "ondulado", nombre: "Ondulado", desnivelM: 12 },
+] as const;
+
+export type TerrenoId = (typeof TERRENOS)[number]["id"];
+
+/**
+ * Cuanto se corre el dron de la linea, en metros.
+ *
+ * Con RTK son centimetros y no hay discusion.
+ *
+ * Sin RTK el numero honesto NO es el metro y medio que publica DJI para vuelo
+ * estacionario: eso es quieto y sin viento. En una pasada de medio kilometro
+ * con viento cruzado el error de seguimiento es mayor, y este comentario ya
+ * decia "2 a 5 metros" cuando el solape era un preset. Se toman 3, del medio de
+ * ese rango.
+ *
+ * Y se peca de conservador a proposito: quedarse corto aca no da un error el
+ * dia del vuelo, deja una franja de paneles sin foto — y eso no se descubre
+ * hasta que alguien los busca meses despues.
+ */
+export const DERIVA_CON_RTK = 0.1;
+export const DERIVA_SIN_RTK = 3;
+
+export interface SolapeDerivado {
+  /** Lo que exige la regla de calidad de medicion. */
+  porCalidad: number;
+  /** Lo que exige que el dron se corra de la linea. */
+  porDeriva: number;
+  /** Lo que exige que el terreno suba y baje. */
+  porTerreno: number;
+  /** La suma, acotada a algo que se pueda volar. */
+  solape: number;
+  /** Cual de los tres pesa mas. Es lo que hay que atacar para ir mas rapido. */
+  manda: "calidad" | "deriva" | "terreno";
+}
+
+/**
+ * El solape lateral, calculado en vez de elegido de dos presets.
+ *
+ * Habia dos numeros escritos a mano —45 % con RTK, 70 % sin— y la pregunta que
+ * los volteo fue la correcta: "si el RTK es ultra preciso, ¿por que no puedo
+ * solapar diez por ciento y terminar mucho mas rapido?".
+ *
+ * Porque en esta app el solape no compra COBERTURA, compra MEDICION. El motor
+ * ya se queda, de todas las fotos donde sale un modulo, con la que lo tiene mas
+ * cerca del centro del cuadro — porque en el borde la termica miente: el barril
+ * de la lente irradia sobre las esquinas y el vidrio visto de costado refleja
+ * el cielo, y eso da diferencias de varios grados contra umbrales de dos o
+ * tres. Con pasadas separadas `d = ancho * (1 - solape)`, el modulo peor
+ * ubicado queda a `(1 - solape)` del centro hacia el borde:
+ *
+ *     solape 10 %  ->  hay modulos medidos al 90 % del camino al borde
+ *     solape 30 %  ->  al 70 %
+ *     solape 45 %  ->  al 55 %
+ *
+ * Asi que la regla no es "cuanto solapo" sino "hasta donde acepto medir", y de
+ * ahi sale el solape. Encima se suman las dos cosas que el RTK NO arregla: que
+ * el dron se corra de la linea (eso si lo arregla) y que el terreno suba —
+ * la altura es sobre el punto de despegue, asi que un metro de lomada es un
+ * metro menos de altura y una pasada mas angosta.
+ */
+export function solapeLateral(args: {
+  camera: Camera;
+  altitudeM: number;
+  /** Hasta que fraccion del cuadro se acepta medir un modulo, de 0 a 1. */
+  fraccionDelCuadro: number;
+  /** Cuanto se corre el dron de la linea, en metros. */
+  derivaM: number;
+  /** Cuanto sube y baja el terreno adentro del bloque, en metros. */
+  desnivelM: number;
+}): SolapeDerivado {
+  const ancho = huella(args.altitudeM, args.camera.hfovDeg);
+
+  const porCalidad = Math.max(0, 1 - args.fraccionDelCuadro);
+  // Dos pasadas vecinas pueden correrse cada una para su lado: el hueco que se
+  // abre entre ellas es del doble de la deriva.
+  const porDeriva = (2 * args.derivaM) / ancho;
+  // Si el terreno sube, se vuela mas bajo de lo pedido y la pasada se angosta
+  // en la misma proporcion.
+  const porTerreno = args.desnivelM / Math.max(1, args.altitudeM);
+
+  const suma = porCalidad + porDeriva + porTerreno;
+  const mayor = Math.max(porCalidad, porDeriva, porTerreno);
+
+  return {
+    porCalidad, porDeriva, porTerreno,
+    // El piso evita un plan sin solape ninguno; el techo, uno que no termina
+    // nunca.
+    solape: Math.min(0.85, Math.max(0.05, suma)),
+    manda: mayor === porCalidad ? "calidad" : mayor === porDeriva ? "deriva" : "terreno",
+  };
+}
+
 export const SOLAPES = {
   conRtk: { sideOverlap: 0.45, frontOverlap: 0.5 },
   sinRtk: { sideOverlap: 0.7, frontOverlap: 0.7 },
