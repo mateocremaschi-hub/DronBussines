@@ -128,6 +128,17 @@ export interface Finding {
   note?: string;
   /** Si el tecnico corrige el modulo mirando la foto, queda registrado aparte. */
   moduleCorregido?: number;
+
+  /**
+   * Que dijo la maquina mirando la forma de la mancha, y por que.
+   *
+   * Va aparte de `anomaly` a proposito. `anomaly` es lo que se entrega, y una
+   * persona lo puede cambiar; esto es lo que propuso el motor y no se pisa
+   * nunca. Guardar los dos es lo que permite decir, en el informe, cuantos de
+   * los revisados coincidieron — que es lo unico que hace defendible clasificar
+   * por muestreo en vez de uno por uno.
+   */
+  patron?: import("./patron").Clasificacion;
 }
 
 /**

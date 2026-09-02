@@ -192,6 +192,27 @@ export function Revisor({ findings, archivos, seleccion, onSeleccion, onPatch }:
               </p>
             )}
 
+            {/*
+              Lo que dijo la maquina, con el motivo.
+
+              Va ARRIBA de los botones de anomalia y no adentro: lo que se hace
+              con esto es desmentirlo o dejarlo, y para eso hay que poder leer
+              por que lo dijo. Una etiqueta sin motivo no se puede discutir — es
+              justo lo que tiene el informe de la otra empresa, y por eso su
+              verificacion de campo encontro 30 de 71 mal en un tipo entero.
+            */}
+            {actual.patron && (
+              <p className={`note ${actual.patron.confianza === "alta" ? "ok" : ""}`}>
+                <strong>
+                  {actual.patron.anomalia ?? "Sin clasificar"}
+                  {actual.patron.confianza !== "alta" && (
+                    <> — {actual.patron.confianza === "media" ? "a confirmar" : "poco confiable"}</>
+                  )}
+                </strong>{" "}
+                {actual.patron.porQue}
+              </p>
+            )}
+
             {actual.warnings.length > 0 && (
               <div className="warnbox">
                 {actual.warnings.map((w, i) => (<p key={i}>{w.message}</p>))}

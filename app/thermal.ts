@@ -325,6 +325,84 @@ function pixelesDeCaja(
   return dentro.length ? { dentro, esperados } : null;
 }
 
+/**
+ * El modulo remuestreado en una grilla de su PROPIO marco.
+ *
+ * `pixelesDeCaja` devuelve los pixeles en una lista plana, sin coordenadas:
+ * alcanza para sacar una mediana y no alcanza para ver una FORMA. Y la forma es
+ * lo que dice que defecto es — una franja que cruza el modulo es un diodo de
+ * bypass, tres manchitas sueltas son celdas.
+ *
+ * Se remuestrea a una grilla chica —12 x 6 es la forma de un modulo de 72
+ * celdas— y no se trabaja sobre los pixeles crudos por dos razones. Una: a 5 cm
+ * por pixel el modulo entra en unos 22 x 45 pixeles, asi que la grilla no
+ * pierde nada que la camara haya visto. La otra: la grilla es del marco del
+ * MODULO, con el lado largo siempre en el mismo eje, asi que la franja del
+ * diodo se busca siempre en la misma direccion sin importar como volo el dron.
+ *
+ * Cada celda de la grilla toma la mediana de los pixeles que le caen adentro,
+ * que es lo que evita que un pixel muerto del sensor invente un punto caliente.
+ */
+export function retratoDeCaja(
+  r: Radiometric,
+  cx: number,
+  cy: number,
+  /** Lado del modulo que va a lo largo de la fila, en pixeles. */
+  largoPx: number,
+  /** Lado del modulo que cruza la fila, en pixeles. Es el lado largo. */
+  cruzadoPx: number,
+  anguloRad = 0,
+  filas = 12,
+  columnas = 6,
+): { celdas: Float32Array; filas: number; columnas: number } | null {
+  const cos = Math.cos(anguloRad);
+  const sin = Math.sin(anguloRad);
+  const hw = largoPx / 2;
+  const hh = cruzadoPx / 2;
+  if (hw <= 0 || hh <= 0) return null;
+
+  const cubos: number[][] = Array.from({ length: filas * columnas }, () => []);
+
+  const extX = Math.abs(hw * cos) + Math.abs(hh * sin);
+  const extY = Math.abs(hw * sin) + Math.abs(hh * cos);
+  const x0 = Math.max(0, Math.round(cx - extX)), x1 = Math.min(r.width - 1, Math.round(cx + extX));
+  const y0 = Math.max(0, Math.round(cy - extY)), y1 = Math.min(r.height - 1, Math.round(cy + extY));
+
+  for (let y = y0; y <= y1; y++) {
+    const dy = y - cy;
+    const base = y * r.width;
+    for (let x = x0; x <= x1; x++) {
+      const dx = x - cx;
+      // Al marco del modulo: girar el punto al reves que la caja.
+      const u = dx * cos + dy * sin;      // a lo largo de la fila
+      const v = -dx * sin + dy * cos;     // cruzando la fila: el lado largo
+      if (Math.abs(u) > hw || Math.abs(v) > hh) continue;
+      const c = Math.min(columnas - 1, Math.max(0, Math.floor(((u + hw) / (2 * hw)) * columnas)));
+      const f = Math.min(filas - 1, Math.max(0, Math.floor(((v + hh) / (2 * hh)) * filas)));
+      cubos[f * columnas + c]!.push(r.celsius[base + x]!);
+    }
+  }
+
+  const celdas = new Float32Array(filas * columnas);
+  let vacias = 0;
+  for (let i = 0; i < celdas.length; i++) {
+    const c = cubos[i]!;
+    if (!c.length) { vacias++; celdas[i] = NaN; continue; }
+    celdas[i] = percentil(c, 50);
+  }
+  // Con la mitad de la grilla vacia el modulo entro tan chico —o tan cortado
+  // por el borde— que su forma no se puede leer. Decirlo es mejor que
+  // clasificar sobre agujeros.
+  if (vacias > celdas.length / 2) return null;
+
+  // Los huecos sueltos se rellenan con la mediana de lo que si se midio, para
+  // que no cuenten como frios ni como calientes.
+  const medida = percentil(Array.from(celdas).filter((v) => !Number.isNaN(v)), 50);
+  for (let i = 0; i < celdas.length; i++) if (Number.isNaN(celdas[i]!)) celdas[i] = medida;
+
+  return { celdas, filas, columnas };
+}
+
 export function medianaEnCaja(
   r: Radiometric,
   cx: number,

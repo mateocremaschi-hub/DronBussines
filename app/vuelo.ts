@@ -404,15 +404,33 @@ export function hallazgosAFindings(
       candidates: res.candidates.slice(0, 8),
       warnings: res.warnings,
       medicion: medicionDe(h),
+      /*
+        La anomalia viene PRECARGADA con lo que dice la forma de la mancha.
+
+        Es lo que convierte revisar tres mil paneles en revisar una muestra. No
+        se marca como confirmado: sigue en pendiente y con el motivo escrito al
+        lado, para que la persona lo pueda desmentir de un vistazo en vez de
+        tener que clasificarlo de cero.
+      */
+      ...(h.patron?.anomalia ? { anomaly: h.patron.anomalia } : {}),
+      ...(h.patron ? { patron: h.patron } : {}),
       status: "pendiente" as const,
     };
   });
 }
 
-/** Si una persona ya toco este hallazgo. */
+/**
+ * Si una PERSONA ya toco este hallazgo.
+ *
+ * Ojo con la anomalia: desde que el motor clasifica por la forma de la mancha,
+ * `anomaly` viene precargada en todos los hallazgos. Contarla como toque humano
+ * dejaria "revisado" a todo el vuelo desde el minuto cero — y como los
+ * revisados no se tiran al recorrer de nuevo, una lista vieja no se limpiaria
+ * nunca. Cuenta solo si difiere de lo que propuso la maquina.
+ */
 const revisado = (f: Finding): boolean =>
   f.status !== "pendiente" ||
-  f.anomaly != null ||
+  (f.anomaly != null && f.anomaly !== f.patron?.anomalia) ||
   f.klass != null ||
   f.note != null ||
   f.deltaT != null ||
@@ -440,10 +458,19 @@ export function fusionarRevision(nuevos: Finding[], viejos: Finding[]): Finding[
   const salida = nuevos.map((n) => {
     const v = porId.get(n.id);
     if (!v) return n;
+    /*
+      Lo que escribio la persona gana; lo que propuso la maquina, no.
+
+      Sin esta distincion, una anomalia precargada por la corrida ANTERIOR
+      pisaria la de la corrida nueva —que puede ser mejor, porque cambio el
+      ajuste de la grilla o el umbral— y ademas quedaria registrada como si
+      alguien la hubiera confirmado.
+    */
+    const humano = v.anomaly != null && v.anomaly !== v.patron?.anomalia;
     return {
       ...n,
       status: v.status,
-      ...(v.anomaly != null ? { anomaly: v.anomaly } : {}),
+      ...(humano ? { anomaly: v.anomaly! } : {}),
       ...(v.klass != null ? { klass: v.klass } : {}),
       ...(v.deltaT != null ? { deltaT: v.deltaT } : {}),
       ...(v.note != null ? { note: v.note } : {}),

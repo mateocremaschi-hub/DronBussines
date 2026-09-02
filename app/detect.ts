@@ -20,7 +20,8 @@
 
 import { modulesOfRow } from "@locator";
 import type { CompiledFarm, LocalFrame, ModuleRef } from "@locator";
-import { medirCaja, percentil, type Radiometric } from "./thermal";
+import { medirCaja, percentil, retratoDeCaja, type Radiometric } from "./thermal";
+import { clasificarPatron } from "./patron";
 import { aplicarAjuste, footprint, pixelOf, type Ajuste, type PhotoPose } from "./projection";
 import type { Camera } from "./mission";
 import { SIN_AJUSTE } from "./projection";
@@ -54,6 +55,16 @@ export interface Muestra {
   /** Cuantos pixeles cubre una celda en esta foto. Menos de 2 y no se resuelve. */
   pixelesPorCelda?: number;
   fileName: string;
+  /**
+   * El modulo remuestreado en una grilla de su propio marco.
+   *
+   * Es lo que permite clasificar el defecto por su FORMA — una franja que cruza
+   * el modulo es un diodo de bypass, tres manchitas sueltas son celdas. Se
+   * guarda con la muestra y no se recalcula despues, por lo mismo que la caja:
+   * recalcularlo exige la pose, la camara, el ajuste y el acortamiento de ESE
+   * instante, y ya no estan a mano.
+   */
+  retrato?: { celdas: Float32Array; filas: number; columnas: number };
   /** Cuando se saco la foto de la que salio esta medicion, en milisegundos. */
   cuando?: number;
   /** Distancia del modulo al centro del cuadro. Cerca del borde la termica miente mas. */
@@ -257,9 +268,16 @@ export class Acumulador {
           continue;
         }
 
+        // La forma de la mancha, para poder decir QUE defecto es y no solo
+        // cuanto se despega.
+        const retrato = retratoDeCaja(
+          foto.radio, cx, cy, largoCaja, cruzadoCaja, anguloEnImagen,
+        );
+
         medidos++;
         this.mejor.set(clave, {
           modulo: m,
+          ...(retrato ? { retrato } : {}),
           ...(foto.cuando != null ? { cuando: foto.cuando } : {}),
           celsius: hit.celsius,
           pixeles: hit.pixeles,
@@ -352,6 +370,16 @@ export interface Hallazgo extends Muestra {
   peor: Severidad;
   /** Cual de las dos comparaciones la disparo. */
   origen: "modulo" | "celda" | "ninguno";
+
+  /**
+   * Que defecto es, sacado de la forma de la mancha.
+   *
+   * Ausente cuando el modulo no entro lo suficiente como para leerle la forma.
+   * NO reemplaza a la persona: precarga la anomalia y dice por que, y despues
+   * se revisa por muestreo. La diferencia es entre clasificar tres mil paneles
+   * a mano y revisar una muestra de los que ya vienen clasificados.
+   */
+  patron?: import("./patron").Clasificacion;
 }
 
 /**
@@ -551,6 +579,13 @@ export function comparar(
     }
 
     const deltaT = m.celsius - referenciaC;
+    /*
+      Que defecto es. Se hace aca y no al medir porque hace falta el ΔT contra
+      el string, que solo existe una vez que estan todas las muestras: un modulo
+      desconectado no tiene ninguna mancha adentro y solo se reconoce desde
+      afuera, comparandolo con sus hermanos.
+    */
+    const patron = m.retrato ? clasificarPatron(m.retrato, deltaT) : undefined;
 
     return {
       ...m,
@@ -558,6 +593,7 @@ export function comparar(
       referenciaC,
       vecinos,
       ambito,
+      ...(patron ? { patron } : {}),
       ...clasificar({ ...m, deltaT }, umbrales, internos),
     };
   });

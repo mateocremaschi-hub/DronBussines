@@ -88,9 +88,34 @@ if (!antes.hallazgos) { console.error("ERROR: el lote se volteo, no hay hallazgo
 if (antes.pendientes !== antes.hallazgos) { console.error("ESPERABA todos pendientes al empezar"); process.exitCode = 1; }
 if (antes["sin ubicar"]) { console.error("ALGUN hallazgo quedo sin ubicar"); process.exitCode = 1; }
 
+/*
+  La lista abre filtrada por LA MUESTRA, no por todo.
+
+  Es el cambio de fondo: el motor clasifica los hallazgos por la forma de la
+  mancha y la persona revisa un porcentaje de cada tipo, no los tres mil. Asi
+  que al abrir un vuelo se ven los que hay que mirar, y el boton dice cuantos
+  son. "Todos" sigue estando al lado.
+*/
+const botonMuestra = page.getByRole("button", { name: /Lo que hay que revisar \((\d+)\)/ });
+const cuantos = Number((await botonMuestra.innerText()).match(/\((\d+)\)/)?.[1]);
+const enMuestra = await page.locator(".revisor-lista li").count();
+console.log(`La muestra a revisar son ${cuantos} de ${antes.hallazgos} hallazgos.`);
+if (!(cuantos > 0 && cuantos < antes.hallazgos)) {
+  console.error("ESPERABA una muestra menor que el total y mayor que cero"); process.exitCode = 1;
+}
+if (enMuestra !== cuantos) { console.error("ESPERABA que la lista mostrara la muestra"); process.exitCode = 1; }
+
+// Y que la maquina ya haya clasificado, con el motivo escrito al lado.
+const veredicto = await page.locator(".revisor-detalle .note").first().innerText();
+console.log("La maquina dice:", veredicto.replace(/\s+/g, " ").slice(0, 120));
+if (!/módulo|celda|franja|zona/i.test(veredicto)) {
+  console.error("ESPERABA que el hallazgo viniera clasificado y con el motivo"); process.exitCode = 1;
+}
+
+await page.getByRole("button", { name: "Todos", exact: true }).click();
+await page.waitForTimeout(300);
 const enLista = await page.locator(".revisor-lista li").count();
-console.log(`Renglones en la lista: ${enLista}`);
-if (enLista !== antes.hallazgos) { console.error("ESPERABA un renglon por hallazgo"); process.exitCode = 1; }
+if (enLista !== antes.hallazgos) { console.error("ESPERABA que 'Todos' mostrara los 12"); process.exitCode = 1; }
 
 const primera = await page.locator(".revisor-detalle .answer").innerText();
 console.log("El elegido:", primera.replace(/\s+/g, " ").trim());

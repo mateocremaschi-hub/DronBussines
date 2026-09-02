@@ -38,6 +38,7 @@ import { deleteAnalysis, loadAnalysis, type StoredFarm } from "../storage";
 import { aExcel, aInformeHtml, entregables, nombreDeFoto, toCsv } from "../informe";
 import { fusionarRevision, reclasificarFindings, vueloDesdeAnalisis } from "../vuelo";
 import { bloquesDelParque, puntosDeHallazgos } from "../mapa";
+import { acuerdoDeLaMuestra, muestraARevisar } from "../muestreo";
 import { MapaDelParque } from "../components/MapaDelParque";
 import { Revisor } from "../components/Revisor";
 import { zip } from "../zip";
@@ -82,7 +83,16 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
   const inputFotos = useRef<HTMLInputElement>(null);
   const pedido = useRef<((fs: File[]) => void) | null>(null);
   const [exportando, setExportando] = useState<string | null>(null);
-  const [filtro, setFiltro] = useState<"todos" | "pendiente" | "confirmado" | "sin-ubicar">("todos");
+  const [filtro, setFiltro] = useState<"todos" | "muestra" | "pendiente" | "confirmado" | "sin-ubicar">("muestra");
+  /**
+   * Que porcentaje de cada tipo se revisa a mano.
+   *
+   * Arranca en 20 % porque es lo que pidio: "yo hacer tipo una revision random
+   * de un 20 %". Sobre eso se agregan enteros los de poca confianza y los que
+   * no se pudieron clasificar, asi que la muestra es el piso de lo que se
+   * revisa, no el techo.
+   */
+  const [porcentaje, setPorcentaje] = useState(0.2);
   /*
     Las fotos del vuelo, mientras esten a mano.
 
@@ -419,12 +429,22 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
     uno. Es lo que dibuja el mapa de navegacion; se arma una vez por lista y no
     por cuadro.
   */
+  /*
+    La muestra a revisar y cuanto le acerto la maquina.
+
+    Es lo que convierte "revisar tres mil paneles" en "revisar trescientos y
+    poder decir en cuantos coincidio".
+  */
+  const muestra = muestraARevisar(current.findings, porcentaje, current.id);
+  const acuerdo = acuerdoDeLaMuestra(current.findings, muestra.aRevisar);
+
   const puntos = puntosDeHallazgos(farm, current.findings);
   const bloques = bloquesDelParque(farm, current.findings, puntos);
 
   const visibles = current.findings
     .filter((f) =>
       filtro === "todos" ? true
+        : filtro === "muestra" ? muestra.aRevisar.has(f.id)
         : filtro === "sin-ubicar" ? !f.address
         : f.status === filtro,
     )
@@ -548,6 +568,50 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
             funciona tambien con un vuelo abierto un mes despues, con las fotos
             en otro disco.
           */}
+          {/*
+            La revision por muestreo.
+            ===================================================================
+            "Imaginate revisar mas de 3000 paneles a mano, me tardaria una
+            eternidad." La salida no es revisar mas rapido: es revisar MENOS y
+            poder defenderlo. El motor clasifica todos por la forma de la
+            mancha, una persona revisa una muestra, y el informe declara cuantos
+            miro y en cuantos coincidio.
+
+            Ese ultimo numero es lo que hace la diferencia. La empresa que hace
+            este trabajo en Edenvale entrega 3.156 hallazgos clasificados y
+            SIN esa tasa; su propia verificacion de campo, cuando la hicieron,
+            encontro un tipo entero con 30 de 71 mal. Con la tasa a la vista eso
+            se ve el primer dia, no seis meses despues.
+          */}
+          <h3>Revisión por muestreo</h3>
+          <div className="field pregunta">
+            <label htmlFor="f-muestra">
+              Revisar <strong>{Math.round(porcentaje * 100)} %</strong> de cada tipo, al azar
+            </label>
+            <input
+              id="f-muestra" type="range" min={0.05} max={1} step={0.05} value={porcentaje}
+              onChange={(e) => setPorcentaje(Number(e.target.value))}
+            />
+            <span className="help">
+              De los <strong>{s.total}</strong> hallazgos hay{" "}
+              <strong>{muestra.aRevisar.size}</strong> para mirar:{" "}
+              {muestra.porSorteo} por sorteo
+              {muestra.porConfianza > 0 && <>, {muestra.porConfianza} que la máquina marcó como poco confiables</>}
+              {muestra.sinClasificar > 0 && <> y {muestra.sinClasificar} a los que no les pudo leer la forma</>}.
+              {" "}Lo poco confiable no se sortea: va entero, porque muestrear justo lo que sabés que
+              falla es elegir no enterarte.
+              {acuerdo.tasa != null && (
+                <>
+                  {" "}Sobre los <strong>{acuerdo.revisados}</strong> que ya cerraste, la máquina
+                  acertó el <strong>{Math.round(acuerdo.tasa * 100)} %</strong>
+                  {acuerdo.porTipo.length > 1 && (
+                    <> ({acuerdo.porTipo.map((t) => `${t.patron} ${t.coinciden}/${t.revisados}`).join(", ")})</>
+                  )}. Ese número va al informe: es lo que lo hace auditable.
+                </>
+              )}
+            </span>
+          </div>
+
           <h3>Como se clasifica la lista</h3>
           <div className="row">
             {(["leve", "moderada", "critica"] as const).map((k) => (
@@ -577,13 +641,15 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
           </p>
 
           <div className="row">
-            {(["todos", "pendiente", "confirmado", "sin-ubicar"] as const).map((f) => (
+            {(["muestra", "todos", "pendiente", "confirmado", "sin-ubicar"] as const).map((f) => (
               <button
                 key={f}
                 className={filtro === f ? "" : "ghost"}
                 onClick={() => setFiltro(f)}
               >
-                {f === "sin-ubicar" ? "Sin ubicar" : f[0]!.toUpperCase() + f.slice(1)}
+                {f === "sin-ubicar" ? "Sin ubicar"
+                  : f === "muestra" ? `Lo que hay que revisar (${muestra.aRevisar.size})`
+                  : f[0]!.toUpperCase() + f.slice(1)}
               </button>
             ))}
           </div>
