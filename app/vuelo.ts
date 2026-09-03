@@ -699,7 +699,17 @@ function deStringsEnteros(
         clase la sube la persona si lo que encuentra es una caja quemada.
       */
       klass: 2 as const,
-      clase: { klass: 2 as const, porQue },
+      /*
+        El motivo de la CLASE es otro texto que el del patron: la pantalla los
+        muestra uno detras del otro, y poniendo el mismo en los dos el hallazgo
+        salia con el parrafo repetido palabra por palabra.
+      */
+      clase: {
+        klass: 2 as const,
+        porQue:
+          "Hay que ir a mirar la conexion de ese string, pero no corre riesgo agudo: se " +
+          "programa con el resto del mantenimiento.",
+      },
       status: "pendiente" as const,
     });
   }
