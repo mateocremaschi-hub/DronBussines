@@ -309,6 +309,26 @@ export async function analizarFotos(
       );
     }
 
+    /*
+      El vinieteo que hubo que sacarle a las fotos.
+
+      Se dice porque es del EQUIPO, no del parque: si la camara mete cuatro
+      grados entre el centro y la esquina, eso vale para todos los vuelos y
+      conviene saberlo. Y porque es grande — mas que el umbral de anomalia
+      leve, o sea que sin corregirlo cada vuelo trae defectos inventados.
+    */
+    const vinieteo = acc.vinieteo();
+    if (vinieteo.length) {
+      const peor = Math.max(...vinieteo.map((v) => v.maximoC));
+      fallos.push(
+        `A ${vinieteo.length} de ${termicas} fotos se les saco el sesgo del borde del cuadro: ` +
+        `hasta ${peor.toFixed(1)} °C entre el centro y la esquina. No es del parque, es de la ` +
+        "camara — el cuerpo y la lente irradian sobre los detectores de afuera, y todas las " +
+        "termicas sin refrigerar lo hacen. Sin corregirlo, un modulo fotografiado en una esquina " +
+        "sale con esos grados de mas contra hermanos fotografiados en el centro.",
+      );
+    }
+
     const perdidas = acc.fotosQueNoEngancharon();
     if (perdidas.length) {
       fallos.push(

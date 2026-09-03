@@ -29,6 +29,7 @@ import {
   FRIO_QUE_NO_ES_PANEL_C,
   type Caja as CajaDeMedicion,
 } from "./encaje";
+import { correccion, medirVinieta, radioNormalizado, type Vinieta } from "./vinieta";
 import { claseSugerida, clasificarPatron } from "./patron";
 import { aplicarAjuste, footprint, pixelOf, type Ajuste, type PhotoPose } from "./projection";
 import type { Camera } from "./mission";
@@ -193,6 +194,8 @@ export class Acumulador {
   private encajes: Array<{ fileName: string; metros: number }> = [];
   /** Fotos que no se pudieron enganchar a los paneles, y no se midieron. */
   private fotosSinEnganche: Array<{ fileName: string; fraccionLisa: number }> = [];
+  /** Cuanto vinieteo hubo que sacarle a cada foto, en grados en la esquina. */
+  private vinietas: Array<{ fileName: string; maximoC: number }> = [];
 
   constructor(
     private farm: CompiledFarm,
@@ -352,13 +355,32 @@ export class Acumulador {
       return 0;
     }
 
+    /**
+     * Se mide todo primero y se guarda despues.
+     *
+     * En el medio va la correccion de vinieteo, que sale de las medianas de
+     * los propios modulos de esta foto: no se puede aplicar hasta tenerlos
+     * todos medidos.
+     */
+    const medidas: Array<{
+      m: ModuleRef;
+      clave: string;
+      caja: CajaDeMedicion;
+      hit: NonNullable<ReturnType<typeof medirCaja>>;
+      retrato: ReturnType<typeof retratoDeCaja>;
+      ladoCeldaPx: number;
+      d: number;
+      textura: number | undefined;
+      r: number;
+    }> = [];
+
     for (let i = 0; i < candidatos.length; i++) {
       const { m, clave, ladoCeldaPx, celdaPx, d, caja } = candidatos[i]!;
       const cx = caja.cx + dx;
       const cy = caja.cy + dy;
 
       /*
-        Y la caja suelta que quedo mucho mas fria que su propia foto.
+        La caja suelta que quedo mucho mas fria que su propia foto.
 
         Solo el lado frio. Un defecto siempre calienta, asi que este freno no
         puede tirar un hallazgo; lo que si tira es la sombra del borde de la
@@ -373,7 +395,6 @@ export class Acumulador {
         this.sinPanel.add(clave);
         continue;
       }
-      const textura = sondeo?.liso;
 
       const hit = medirCaja(foto.radio, cx, cy, caja.largo, caja.cruzado, celdaPx, caja.rotRad);
       // El modulo tiene que haber entrado casi entero. Medio modulo apoyado
@@ -383,28 +404,55 @@ export class Acumulador {
         continue;
       }
 
-      // La forma de la mancha, para poder decir QUE defecto es y no solo
-      // cuanto se despega.
-      const retrato = retratoDeCaja(
-        foto.radio, cx, cy, caja.largo, caja.cruzado, caja.rotRad,
-      );
-
-      medidos++;
-      this.sinPanel.delete(clave);
-      this.mejor.set(clave, {
-        modulo: m,
-        ...(retrato ? { retrato } : {}),
-        ...(foto.cuando != null ? { cuando: foto.cuando } : {}),
-        celsius: hit.celsius,
-        pixeles: hit.pixeles,
-        puntoCalienteC: hit.puntoCalienteC,
-        pixelesPorCelda: ladoCeldaPx * ladoCeldaPx,
-        ...(textura != null ? { textura } : {}),
-        fileName: foto.fileName,
-        distanciaAlCentroM: d,
-        caja: { cx, cy, largo: caja.largo, cruzado: caja.cruzado, rotRad: caja.rotRad },
+      medidas.push({
+        m, clave, ladoCeldaPx, d,
+        caja: { ...caja, cx, cy },
+        hit,
+        // La forma de la mancha, para poder decir QUE defecto es y no solo
+        // cuanto se despega.
+        retrato: retratoDeCaja(foto.radio, cx, cy, caja.largo, caja.cruzado, caja.rotRad),
+        textura: sondeo?.liso,
+        r: radioNormalizado(cx, cy, foto.radio.width, foto.radio.height),
       });
     }
+
+    /*
+      El vinieteo de ESTA foto, sacado de sus propios modulos.
+
+      El borde del cuadro lee mas caliente que el centro —cuatro grados en esta
+      camara— y los hermanos de un string casi nunca caen a la misma distancia
+      del centro. Sin esto, un modulo fotografiado en una esquina sale con tres
+      grados que no existen contra hermanos fotografiados en el medio.
+    */
+    const vinieta = medirVinieta(medidas.map((x) => ({ r: x.r, celsius: x.hit.celsius })));
+    if (vinieta) this.vinietas.push({ fileName: foto.fileName, maximoC: vinieta.maximoC });
+
+    for (const x of medidas) {
+      // Se le resta lo mismo a la mediana y al punto caliente: el chequeo
+      // interno los compara entre si, y los dos estan al mismo radio, asi que
+      // la diferencia tiene que quedar igual.
+      const resta = vinieta ? correccion(vinieta, x.r) : 0;
+
+      medidos++;
+      this.sinPanel.delete(x.clave);
+      this.mejor.set(x.clave, {
+        modulo: x.m,
+        ...(x.retrato ? { retrato: x.retrato } : {}),
+        ...(foto.cuando != null ? { cuando: foto.cuando } : {}),
+        celsius: x.hit.celsius - resta,
+        pixeles: x.hit.pixeles,
+        puntoCalienteC: x.hit.puntoCalienteC - resta,
+        pixelesPorCelda: x.ladoCeldaPx * x.ladoCeldaPx,
+        ...(x.textura != null ? { textura: x.textura } : {}),
+        fileName: foto.fileName,
+        distanciaAlCentroM: x.d,
+        caja: {
+          cx: x.caja.cx, cy: x.caja.cy,
+          largo: x.caja.largo, cruzado: x.caja.cruzado, rotRad: x.caja.rotRad,
+        },
+      });
+    }
+
     return medidos;
   }
 
@@ -449,6 +497,11 @@ export class Acumulador {
     let n = 0;
     for (const k of this.sinPanel) if (!this.mejor.has(k)) n++;
     return n;
+  }
+
+  /** El vinieteo que hubo que sacarle a cada foto, en grados en la esquina. */
+  vinieteo(): Array<{ fileName: string; maximoC: number }> {
+    return this.vinietas;
   }
 
   /** Los corrimientos que hubo que aplicarle a cada foto, en metros. */
