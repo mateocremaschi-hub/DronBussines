@@ -287,6 +287,51 @@ export async function analizarFotos(
     );
   }
 
+  /*
+    Lo que hubo que corregir de la posicion de las fotos, y lo que no se pudo.
+
+    Esto se dice siempre, aunque salga bien, porque es la diferencia entre un
+    informe y una lista de numeros: si el corrimiento tipico es de dos metros,
+    el GPS del vuelo estuvo malo y conviene saberlo antes de la proxima salida.
+  */
+  if (acc) {
+    const corrimientos = acc.corrimientos();
+    if (corrimientos.length) {
+      const tipico = [...corrimientos].sort((a, b) => a.metros - b.metros)[
+        Math.floor(corrimientos.length / 2)
+      ]!.metros;
+      const peor = Math.max(...corrimientos.map((c) => c.metros));
+      fallos.push(
+        `A ${corrimientos.length} de ${termicas} fotos hubo que correrles la posicion para que ` +
+        `los recuadros cayeran sobre los paneles: ${tipico.toFixed(1)} m tipico, ${peor.toFixed(1)} m ` +
+        "la peor. Es el error del GPS del dron, y esta corregido — se dice para que lo sepas, no " +
+        "porque haya que hacer algo. Con RTK esto se va casi a cero.",
+      );
+    }
+
+    const perdidas = acc.fotosQueNoEngancharon();
+    if (perdidas.length) {
+      fallos.push(
+        `${perdidas.length} de ${termicas} fotos no se pudieron enganchar a los paneles y NO se ` +
+        "midieron (" + perdidas.slice(0, 3).map((p) => p.fileName).join(", ") +
+        (perdidas.length > 3 ? "…" : "") + "). En esas fotos los recuadros caian sobre el pasto o " +
+        "sobre la sombra al costado de la fila, y lo que sale de ahi no son defectos: es la textura " +
+        "del suelo. Suele ser GPS malo, o que la geometria del parque no coincide con lo que hay " +
+        "en el campo en esa zona.",
+      );
+    }
+
+    const fuera = acc.cajasFueraDelPanel();
+    if (fuera) {
+      fallos.push(
+        `${fuera} modulos quedaron sin medir porque su recuadro caia sobre algo mas frio que los ` +
+        "paneles de su propia foto — la sombra al borde de la fila, casi siempre. No se midieron " +
+        "en vez de reportarlos: un recuadro sobre la sombra da un punto caliente de +15 °C que no " +
+        "existe.",
+      );
+    }
+  }
+
   if (superRes) {
     fallos.push(
       `${superRes} de ${termicas} fotos vienen con "Super Resolution" prendida en la camara. ` +

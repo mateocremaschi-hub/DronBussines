@@ -116,9 +116,19 @@ function escenaInclinada(posCaliente: number, alturaM: number, factor: number, s
       const aLargo = ex * rux + ey * ruy;
       const cruzado = -ex * ruy + ey * rux;
       // Igual que la escena derecha, pero el modulo mide `factor` de su ancho.
-      if (Math.abs(aLargo) <= ANCHO_M / 2 && Math.abs(cruzado) <= (LARGO_M * factor) / 2) {
-        celsius[py * 640 + px] = 45; // el modulo, trabajando y sano
-      }
+      /*
+        La fila ENTERA de modulos, no uno solo.
+
+        Antes se pintaba un solo modulo sobre un campo de suelo pelado. Eso no
+        puede pasar: la fila esta ahi. Y el motor ahora mira todas las cajas de
+        una foto juntas para decidir si estan cayendo sobre paneles, asi que
+        una escena con un panel y cien cajas sobre tierra la descarta entera —
+        con razon.
+      */
+      const enLaFila =
+        Math.abs(cruzado) <= (LARGO_M * factor) / 2 &&
+        Math.abs(aLargo) <= (ANCHO_M * 28) / 2;
+      if (enLaFila) celsius[py * 640 + px] = 45; // los modulos, trabajando y sanos
     }
   }
   return { ...foto, radio: { ...foto.radio, celsius } };

@@ -21,6 +21,14 @@
 import { modulesOfRow } from "@locator";
 import type { CompiledFarm, LocalFrame, ModuleRef } from "@locator";
 import { medirCaja, percentil, retratoDeCaja, type Radiometric } from "./thermal";
+import {
+  confianzaDeFoto,
+  desvioLocal,
+  engancharFoto,
+  sondearCaja,
+  FRIO_QUE_NO_ES_PANEL_C,
+  type Caja as CajaDeMedicion,
+} from "./encaje";
 import { claseSugerida, clasificarPatron } from "./patron";
 import { aplicarAjuste, footprint, pixelOf, type Ajuste, type PhotoPose } from "./projection";
 import type { Camera } from "./mission";
@@ -54,6 +62,14 @@ export interface Muestra {
   puntoCalienteC?: number;
   /** Cuantos pixeles cubre una celda en esta foto. Menos de 2 y no se resuelve. */
   pixelesPorCelda?: number;
+  /**
+   * Cuan lisa es la caja: el desvio de cada pixel contra sus vecinos.
+   *
+   * Es lo que distingue un panel (0,6-1,2 °C) del pasto (1,9-2,5) y de la
+   * sombra al borde de la fila (2,1-5,8). Se guarda para poder mostrar por que
+   * una caja se descarto, y para que se vea si una foto entera vino mal.
+   */
+  textura?: number;
   fileName: string;
   /**
    * El modulo remuestreado en una grilla de su propio marco.
@@ -164,6 +180,19 @@ export class Acumulador {
   private posesIncompletas = new Map<string, number>();
   /** Modulos que quedaron cortados por el borde del cuadro y no se midieron. */
   private recortados = new Set<string>();
+  /**
+   * Cajas que cayeron sobre algo que no es un panel, y no se midieron.
+   *
+   * Antes se median igual. Lo que salia era la textura del pasto o de la
+   * sombra reportada como puntos calientes de celda, y nada lo frenaba porque
+   * la comparacion contra los hermanos de string es ciega a un error que
+   * corre a todas las cajas de la foto por igual.
+   */
+  private sinPanel = new Set<string>();
+  /** Los corrimientos que hubo que aplicar, por foto. */
+  private encajes: Array<{ fileName: string; metros: number }> = [];
+  /** Fotos que no se pudieron enganchar a los paneles, y no se midieron. */
+  private fotosSinEnganche: Array<{ fileName: string; fraccionLisa: number }> = [];
 
   constructor(
     private farm: CompiledFarm,
@@ -204,6 +233,22 @@ export class Acumulador {
     const escalaY = foto.radio.height / camera.imageH;
     const mPorPx = huella.anchoM / camera.imageW;
     let medidos = 0;
+
+    /**
+     * Las cajas de esta foto, antes de medir ninguna.
+     *
+     * Se arma la lista entera primero porque el corrimiento se calcula con
+     * TODAS las cajas juntas: una caja sola no puede decir si esta bien puesta
+     * —tal vez ese modulo esta raro— pero cien cajas a la vez si.
+     */
+    const candidatos: Array<{
+      m: ModuleRef;
+      clave: string;
+      caja: CajaDeMedicion;
+      ladoCeldaPx: number;
+      celdaPx: number;
+      d: number;
+    }> = [];
 
     for (const row of cerca) {
       /**
@@ -260,34 +305,105 @@ export class Acumulador {
         // vista desde arriba es un rectangulo del mismo largo y mas angosto.
         const ladoCeldaPx = ((this.opts.celdaM ?? CELDA_M) / mPorPx) * escalaX;
         const celdaPx = ladoCeldaPx * ladoCeldaPx * Math.min(1, Math.max(0.2, acortamiento));
-        const hit = medirCaja(foto.radio, cx, cy, largoCaja, cruzadoCaja, celdaPx, anguloEnImagen);
-        // El modulo tiene que haber entrado casi entero. Medio modulo apoyado
-        // en el borde del sensor no es una medicion, es el borde del cuadro.
-        if (!hit || hit.pixeles < hit.esperados * FRACCION_MINIMA_MEDIDA) {
-          this.recortados.add(clave);
-          continue;
-        }
 
-        // La forma de la mancha, para poder decir QUE defecto es y no solo
-        // cuanto se despega.
-        const retrato = retratoDeCaja(
-          foto.radio, cx, cy, largoCaja, cruzadoCaja, anguloEnImagen,
-        );
-
-        medidos++;
-        this.mejor.set(clave, {
-          modulo: m,
-          ...(retrato ? { retrato } : {}),
-          ...(foto.cuando != null ? { cuando: foto.cuando } : {}),
-          celsius: hit.celsius,
-          pixeles: hit.pixeles,
-          puntoCalienteC: hit.puntoCalienteC,
-          pixelesPorCelda: ladoCeldaPx * ladoCeldaPx,
-          fileName: foto.fileName,
-          distanciaAlCentroM: d,
+        candidatos.push({
+          m, clave, ladoCeldaPx, celdaPx, d,
           caja: { cx, cy, largo: largoCaja, cruzado: cruzadoCaja, rotRad: anguloEnImagen },
         });
       }
+    }
+
+    if (!candidatos.length) return 0;
+
+    /*
+      El corrimiento de ESTA foto.
+
+      El GPS decide bien QUE modulos entran en el cuadro —para eso 1 o 2 metros
+      de error no alcanzan a cambiar nada— pero no alcanza para decir DONDE
+      caen: la caja de medicion mide 1,3 m de ancho y con 1,3 m de error se sale
+      entera del panel. Asi que la posicion fina la decide la propia foto.
+    */
+    const sd = desvioLocal(foto.radio);
+    const encaje = engancharFoto(
+      foto.radio,
+      sd,
+      candidatos.map((c) => c.caja),
+      this.limiteDeBusquedaPx(cerca, mPorPx, escalaX),
+      mPorPx / escalaX,
+    );
+    if (encaje) this.encajes.push({ fileName: foto.fileName, metros: encaje.metros });
+    const dx = encaje?.dx ?? 0;
+    const dy = encaje?.dy ?? 0;
+
+    /*
+      Y despues de correrla, si la foto quedo bien puesta.
+
+      Se mira el conjunto y no cada caja: la falla que esto ataca corre a todas
+      las cajas de la foto por igual. Una foto que no engancho no da algunos
+      hallazgos malos — los da todos malos, y con la seguridad de siempre.
+    */
+    const sondeos = candidatos.map((c) => sondearCaja(foto.radio, sd, c.caja, dx, dy));
+    const confianza = confianzaDeFoto(sondeos);
+    if (!confianza.sirve) {
+      this.fotosSinEnganche.push({
+        fileName: foto.fileName,
+        fraccionLisa: confianza.fraccionLisa,
+      });
+      return 0;
+    }
+
+    for (let i = 0; i < candidatos.length; i++) {
+      const { m, clave, ladoCeldaPx, celdaPx, d, caja } = candidatos[i]!;
+      const cx = caja.cx + dx;
+      const cy = caja.cy + dy;
+
+      /*
+        Y la caja suelta que quedo mucho mas fria que su propia foto.
+
+        Solo el lado frio. Un defecto siempre calienta, asi que este freno no
+        puede tirar un hallazgo; lo que si tira es la sombra del borde de la
+        fila, que lee diez grados por debajo de los paneles de al lado.
+
+        Una caja que se sale del cuadro no se juzga aca: mas abajo la descarta
+        el conteo de pixeles, que sabe distinguir "cortada por el borde" de
+        "mal puesta" — se descartan igual pero se cuentan y se dicen distinto.
+      */
+      const sondeo = sondeos[i];
+      if (sondeo && sondeo.celsius < confianza.medianaC - FRIO_QUE_NO_ES_PANEL_C) {
+        this.sinPanel.add(clave);
+        continue;
+      }
+      const textura = sondeo?.liso;
+
+      const hit = medirCaja(foto.radio, cx, cy, caja.largo, caja.cruzado, celdaPx, caja.rotRad);
+      // El modulo tiene que haber entrado casi entero. Medio modulo apoyado
+      // en el borde del sensor no es una medicion, es el borde del cuadro.
+      if (!hit || hit.pixeles < hit.esperados * FRACCION_MINIMA_MEDIDA) {
+        this.recortados.add(clave);
+        continue;
+      }
+
+      // La forma de la mancha, para poder decir QUE defecto es y no solo
+      // cuanto se despega.
+      const retrato = retratoDeCaja(
+        foto.radio, cx, cy, caja.largo, caja.cruzado, caja.rotRad,
+      );
+
+      medidos++;
+      this.sinPanel.delete(clave);
+      this.mejor.set(clave, {
+        modulo: m,
+        ...(retrato ? { retrato } : {}),
+        ...(foto.cuando != null ? { cuando: foto.cuando } : {}),
+        celsius: hit.celsius,
+        pixeles: hit.pixeles,
+        puntoCalienteC: hit.puntoCalienteC,
+        pixelesPorCelda: ladoCeldaPx * ladoCeldaPx,
+        ...(textura != null ? { textura } : {}),
+        fileName: foto.fileName,
+        distanciaAlCentroM: d,
+        caja: { cx, cy, largo: caja.largo, cruzado: caja.cruzado, rotRad: caja.rotRad },
+      });
     }
     return medidos;
   }
@@ -320,7 +436,81 @@ export class Acumulador {
     for (const k of this.recortados) if (!this.mejor.has(k)) n++;
     return n;
   }
+
+  /**
+   * Cuantos modulos cayeron siempre sobre algo que no es un panel.
+   *
+   * Un puñado es normal —las puntas de las filas, los modulos que asoman en el
+   * borde del cuadro—. Muchos quiere decir que la rejilla no esta cayendo
+   * donde estan los paneles, y eso hay que decirlo en vez de entregar una
+   * lista de defectos que en realidad es la textura del suelo.
+   */
+  cajasFueraDelPanel(): number {
+    let n = 0;
+    for (const k of this.sinPanel) if (!this.mejor.has(k)) n++;
+    return n;
+  }
+
+  /** Los corrimientos que hubo que aplicarle a cada foto, en metros. */
+  corrimientos(): Array<{ fileName: string; metros: number }> {
+    return this.encajes;
+  }
+
+  /**
+   * Las fotos que no se pudieron enganchar a los paneles.
+   *
+   * No se midieron. Antes se median igual y salian como hallazgos: eso es
+   * exactamente lo que habia que dejar de hacer.
+   */
+  fotosQueNoEngancharon(): Array<{ fileName: string; fraccionLisa: number }> {
+    return this.fotosSinEnganche;
+  }
+
+  /**
+   * Hasta donde se puede buscar el corrimiento de una foto.
+   *
+   * El limite lo pone la separacion entre filas, no el error del GPS. Si se
+   * deja buscar mas de MEDIA separacion, el mejor puntaje lo puede dar la fila
+   * de al lado —tambien lisa, tambien un panel— y el informe entero sale
+   * corrido una fila sin un solo sintoma. Un dron sin RTK trae 1 a 2 m de
+   * error, asi que con 2 m de busqueda alcanza de sobra.
+   */
+  private limiteDeBusquedaPx(
+    cerca: CompiledFarm["rows"],
+    mPorPx: number,
+    escalaX: number,
+  ): number {
+    const mPorPxImagen = mPorPx / escalaX;
+    let separacion = Infinity;
+    if (cerca.length > 1) {
+      const a = cerca[0]!;
+      // La perpendicular a la fila: sobre ese eje se mide cuanto se separan.
+      const nx = -a.uy, ny = a.ux;
+      const centro = (r: CompiledFarm["rows"][number]) => ({
+        x: (r.bbox.minX + r.bbox.maxX) / 2,
+        y: (r.bbox.minY + r.bbox.maxY) / 2,
+      });
+      const proy = cerca.map((r) => {
+        const c = centro(r);
+        return c.x * nx + c.y * ny;
+      }).sort((p, q) => p - q);
+      for (let i = 1; i < proy.length; i++) {
+        const dd = proy[i]! - proy[i - 1]!;
+        if (dd > 0.5 && dd < separacion) separacion = dd;
+      }
+    }
+    const metros = Math.min(BUSQUEDA_MAXIMA_M, Number.isFinite(separacion) ? separacion * 0.4 : BUSQUEDA_MAXIMA_M);
+    return metros / mPorPxImagen;
+  }
 }
+
+/**
+ * Cuanto se permite corregir la posicion de una foto, en metros.
+ *
+ * Es el error de GPS que trae un dron sin RTK. Mas que esto no es una
+ * correccion, es una adivinanza.
+ */
+export const BUSQUEDA_MAXIMA_M = 2;
 
 /** Version de una sola pasada, para cuando el lote entra en memoria. */
 export function muestrear(

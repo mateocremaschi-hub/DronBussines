@@ -1,0 +1,425 @@
+/**
+ * Enganchar la rejilla de modulos a los paneles que se ven en la foto.
+ *
+ * El motor ubica cada modulo por GPS: sabe donde esta el dron, hacia donde
+ * mira y cuanto abarca el cuadro, y con eso proyecta cada modulo del parque a
+ * un pixel de la imagen. Eso funciona mientras el GPS sea bueno.
+ *
+ * No lo es. Un dron sin RTK trae 1 a 2 metros de error horizontal, y la caja
+ * con la que se mide un modulo mide 1,3 m de ancho. Con 1,3 m de error la caja
+ * se sale ENTERA del panel y aterriza en la franja de sombra fria que queda al
+ * costado de cada fila.
+ *
+ * Y no avisa. Sigue midiendo, sigue dando un numero, y la comparacion contra
+ * los hermanos de string tampoco lo detecta porque el error es SISTEMATICO:
+ * todas las cajas de esa foto se corren igual, la mediana del string se corre
+ * con ellas y cada modulo da delta T cero. Lo que sale es la textura del suelo
+ * reportada como puntos calientes de celda. Medido sobre las fotos del 3 de
+ * septiembre en Edenvale: 31 hallazgos en 3 fotos, todos falsos, todos
+ * leyendo 31-34 °C cuando los paneles de esa misma foto estaban a 41-42.
+ *
+ * La salida es dejar de creerle al GPS para el ajuste fino. Un panel en una
+ * termica es una superficie LISA; el pasto y la sombra del borde de la fila
+ * son ruido. Asi que se corre la rejilla entera hasta que caiga sobre lo liso,
+ * y esa correccion —unos pocos pixeles— se aplica a todas las cajas de esa
+ * foto. El GPS sigue decidiendo QUE modulos entran en el cuadro, que es para
+ * lo que alcanza de sobra; la foto decide DONDE estan.
+ *
+ * Medido sobre la foto real: el objetivo vale 0,23 °C bien alineado y 1,5 °C
+ * corrido treinta pixeles, con pendiente suave alrededor — o sea que la
+ * busqueda no tiene donde trabarse. Y las cajas pasan de 100 % lisas bien
+ * alineadas a 17 % con el corrimiento que traia el vuelo.
+ */
+
+import type { Radiometric } from "./thermal";
+
+/**
+ * Cuan lisa es cada zona de la imagen: el desvio de cada pixel contra sus
+ * vecinos.
+ *
+ * El interior de un panel da 0,15-0,56 °C. El pasto da 1,3-1,6. La franja de
+ * sombra al borde de una fila da 1,3-2,6. Esa separacion es lo que hace
+ * posible todo lo demas.
+ *
+ * Se calcula con sumas acumuladas —dos barridos de la imagen— porque hay que
+ * hacerlo una vez por foto y un vuelo son cientos.
+ */
+export function desvioLocal(r: Radiometric, radio = 3): Float32Array {
+  const { width: w, height: h, celsius } = r;
+  // Sumas acumuladas de x y de x², con una fila y una columna de ceros
+  // adelante para no tener que preguntar por los bordes adentro del ciclo.
+  const s = new Float64Array((w + 1) * (h + 1));
+  const s2 = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const v = celsius[y * w + x]!;
+      const i = (y + 1) * (w + 1) + (x + 1);
+      s[i] = v + s[i - 1]! + s[i - (w + 1)]! - s[i - (w + 2)]!;
+      s2[i] = v * v + s2[i - 1]! + s2[i - (w + 1)]! - s2[i - (w + 2)]!;
+    }
+  }
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - radio), y1 = Math.min(h - 1, y + radio);
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - radio), x1 = Math.min(w - 1, x + radio);
+      const a = (y1 + 1) * (w + 1), b = y0 * (w + 1), c = x1 + 1, d = x0;
+      const cuentas = (y1 - y0 + 1) * (x1 - x0 + 1);
+      const suma = s[a + c]! - s[a + d]! - s[b + c]! + s[b + d]!;
+      const suma2 = s2[a + c]! - s2[a + d]! - s2[b + c]! + s2[b + d]!;
+      const media = suma / cuentas;
+      out[y * w + x] = Math.sqrt(Math.max(0, suma2 / cuentas - media * media));
+    }
+  }
+  return out;
+}
+
+/** Una caja de medicion, en pixeles de la imagen termica. */
+export interface Caja {
+  cx: number;
+  cy: number;
+  /** A lo largo de la fila. */
+  largo: number;
+  /** Cruzado a la fila. */
+  cruzado: number;
+  rotRad: number;
+}
+
+/**
+ * Cuantos puntos se miran adentro de cada caja.
+ *
+ * Con 24 alcanza: no se busca el detalle del panel, se busca si la caja esta
+ * sobre algo liso o sobre algo ruidoso, y eso se decide con pocas muestras.
+ * Mirar todos los pixeles de todas las cajas para cada uno de los cientos de
+ * corrimientos que se prueban costaria mil veces mas y no cambiaria el minimo.
+ */
+const FILAS_DE_SONDEO = 4;
+const COLUMNAS_DE_SONDEO = 6;
+
+/** Los puntos de sondeo de una caja, en su propio marco, de -0,5 a 0,5. */
+const SONDEOS: Array<{ a: number; b: number }> = (() => {
+  const out: Array<{ a: number; b: number }> = [];
+  for (let i = 0; i < COLUMNAS_DE_SONDEO; i++) {
+    for (let j = 0; j < FILAS_DE_SONDEO; j++) {
+      out.push({
+        a: (i + 0.5) / COLUMNAS_DE_SONDEO - 0.5,
+        b: (j + 0.5) / FILAS_DE_SONDEO - 0.5,
+      });
+    }
+  }
+  return out;
+})();
+
+export interface Sondeo {
+  /**
+   * Cuan lisa esta la caja: la MEDIANA del desvio local de sus puntos.
+   *
+   * Mediana y no promedio, y esto no es un detalle. Un modulo con la franja
+   * caliente de un diodo tiene bordes duros adentro: su desvio PROMEDIO da
+   * 2,01 °C, igual que el pasto (1,84). Con la mediana da 1,56 contra 0,20 de
+   * un modulo sano — pero lo que importa no es el numero, es que el defecto es
+   * minoria adentro de su propia caja y la mediana lo ignora. Con el promedio,
+   * el freno que busca cajas mal puestas descartaria justo los modulos rotos.
+   */
+  liso: number;
+  /** La temperatura de la caja, por mediana de los mismos puntos. */
+  celsius: number;
+}
+
+/**
+ * Mira una caja por encima: cuan lisa esta y a que temperatura.
+ *
+ * Devuelve null si se sale del cuadro. Una caja a medias afuera no se puede
+ * juzgar asi, y no hace falta: ese caso lo resuelve el conteo de pixeles
+ * cuando se la mide de verdad, que ademas sabe distinguirlo de una caja mal
+ * puesta.
+ */
+export function sondearCaja(
+  r: Radiometric,
+  sd: Float32Array,
+  caja: Caja,
+  dx = 0,
+  dy = 0,
+): Sondeo | null {
+  const n = juntarSondeos(r, sd, caja, dx, dy, true);
+  if (n == null) return null;
+  return { liso: medianaEnSitio(BUF_LISO, n), celsius: medianaEnSitio(BUF_TEMP, n) };
+}
+
+/**
+ * Solo cuan lisa esta la caja, sin la temperatura.
+ *
+ * Existe aparte porque la busqueda del corrimiento la llama unas seis mil
+ * veces por foto y no usa la temperatura para nada. Calcularla igual —con su
+ * ordenamiento— duplicaba el costo del enganche en un vuelo de 500 fotos.
+ */
+function lisoDeCaja(
+  r: Radiometric,
+  sd: Float32Array,
+  caja: Caja,
+  dx: number,
+  dy: number,
+): number | null {
+  const n = juntarSondeos(r, sd, caja, dx, dy, false);
+  return n == null ? null : medianaEnSitio(BUF_LISO, n);
+}
+
+/*
+  Los sondeos se juntan en dos buffers fijos que se reusan.
+
+  Son 24 numeros por caja y la busqueda mira miles de cajas por foto: pedir dos
+  arreglos nuevos cada vez es lo unico que se notaba en el perfil. No hay
+  concurrencia — todo esto corre en un solo hilo, de a una foto.
+*/
+const BUF_LISO = new Float64Array(SONDEOS.length);
+const BUF_TEMP = new Float64Array(SONDEOS.length);
+
+function juntarSondeos(
+  r: Radiometric,
+  sd: Float32Array,
+  caja: Caja,
+  dx: number,
+  dy: number,
+  conTemperatura: boolean,
+): number | null {
+  const { width: w, height: h } = r;
+  const cos = Math.cos(caja.rotRad), sin = Math.sin(caja.rotRad);
+  let n = 0;
+  for (const { a, b } of SONDEOS) {
+    const u = a * caja.largo, v = b * caja.cruzado;
+    const x = Math.round(caja.cx + dx + u * cos - v * sin);
+    const y = Math.round(caja.cy + dy + u * sin + v * cos);
+    if (x < 0 || y < 0 || x >= w || y >= h) continue;
+    BUF_LISO[n] = sd[y * w + x]!;
+    if (conTemperatura) BUF_TEMP[n] = r.celsius[y * w + x]!;
+    n++;
+  }
+  return n < SONDEOS.length * 0.75 ? null : n;
+}
+
+/** Mediana de los primeros `n` del buffer, ordenandolo en el lugar. */
+function medianaEnSitio(buf: Float64Array, n: number): number {
+  const v = buf.subarray(0, n);
+  v.sort();
+  const m = n >> 1;
+  return n % 2 ? v[m]! : (v[m - 1]! + v[m]!) / 2;
+}
+
+/**
+ * Hacia donde corren las filas en esta foto.
+ *
+ * Todas las cajas de una foto suelen tener el mismo angulo —es el rumbo de la
+ * fila— pero pueden entrar dos bloques con rumbos apenas distintos, asi que se
+ * promedia como direccion y no como numero: promediar 179° y -179° a mano da
+ * cero grados, que es perpendicular a las dos.
+ */
+function anguloTipico(cajas: Caja[]): number {
+  let sx = 0, sy = 0;
+  for (const c of cajas) { sx += Math.cos(2 * c.rotRad); sy += Math.sin(2 * c.rotRad); }
+  return Math.atan2(sy, sx) / 2;
+}
+
+function mediana(v: number[]): number {
+  const o = [...v].sort((a, b) => a - b);
+  const m = o.length >> 1;
+  return o.length % 2 ? o[m]! : (o[m - 1]! + o[m]!) / 2;
+}
+
+/** El corrimiento que encontro el enganche, en pixeles de la imagen. */
+export interface Encaje {
+  dx: number;
+  dy: number;
+  /** Que fraccion de las cajas caia sobre un panel antes de correrlas, y despues. */
+  antes: number;
+  despues: number;
+  /** Cuanto se corrio, en metros sobre el terreno. Es lo que se le muestra. */
+  metros: number;
+}
+
+/** Desvio local por debajo del cual una caja esta sobre un panel. */
+export const LISO_C = 1;
+
+/**
+ * Cuantas cajas mas tienen que quedar sobre un panel para creerle al
+ * corrimiento, como fraccion del total.
+ *
+ * El objetivo CUENTA cajas lisas en vez de promediar cuan lisas estan, y eso
+ * no es un detalle: con el promedio, la busqueda se escapa de cualquier cosa
+ * que tenga estructura, incluido un modulo roto. En una escena de prueba con
+ * un solo modulo caliente sobre un campo parejo, el promedio bajaba de 0,345 a
+ * 0 corriendo la rejilla 23 px justo para dejar el defecto afuera. Contando
+ * cajas eso no puede pasar: una caja que ya esta lisa no se puede mejorar, y
+ * un modulo roto entre cientos mueve el conteo en uno.
+ *
+ * Un cinco por ciento es mucho mas que el ruido y mucho menos que lo que hay
+ * en juego: en la foto real el corrimiento llevaba las cajas lisas del 17 % al
+ * 100 %. Puede quedar bajo porque el enganche solo se mueve a donde MAS cajas
+ * caen sobre panel, asi que moverse nunca empeora — el umbral esta para no
+ * moverse al pedo, no para protegerse de moverse.
+ */
+const MEJORA_MINIMA_FRACCION = 0.05;
+
+/** Con menos cajas que esto no hay con que promediar y no se engancha. */
+const CAJAS_MINIMAS = 8;
+
+/**
+ * Busca el corrimiento de esta foto.
+ *
+ * `maxPx` acota la busqueda y es lo mas importante de la funcion: tiene que
+ * ser menos de MEDIA separacion entre filas. Si se le deja mas, el mejor
+ * puntaje lo puede dar la fila de al lado —que tambien es lisa y tambien es un
+ * panel— y entonces el enganche queda perfecto y todos los modulos son el
+ * vecino. Un informe entero corrido una fila, sin un solo sintoma.
+ *
+ * Barre grueso y despues fino: primero cada 2 px sobre todo el rango, despues
+ * de a 1 px alrededor del mejor. Un barrido fino de todo el rango costaria
+ * cuatro veces mas para encontrar el mismo minimo, porque la pendiente es
+ * suave.
+ */
+export function engancharFoto(
+  r: Radiometric,
+  sd: Float32Array,
+  cajas: Caja[],
+  maxPx: number,
+  mPorPx: number,
+): Encaje | null {
+  if (cajas.length < CAJAS_MINIMAS || maxPx < 1) return null;
+
+  /**
+   * Cuantas cajas quedan sobre un panel con este corrimiento, y cuan lisas
+   * quedan las que si.
+   *
+   * La fraccion manda; el promedio solo DESEMPATA entre corrimientos que dejan
+   * la misma fraccion de cajas sobre panel, y sirve para centrar: una banda de
+   * modulos es mas ancha que la caja, asi que hay varios corrimientos que dan
+   * 100 % y conviene quedarse con el que deja las cajas mas adentro.
+   *
+   * Como desempate el promedio es seguro. Como objetivo principal no lo seria:
+   * premia irse de cualquier cosa que tenga estructura, incluido un modulo
+   * roto — pero para eso habria que salirse del panel, y salirse baja la
+   * fraccion, que es lo que manda.
+   */
+  const puntaje = (dx: number, dy: number): { fraccion: number; promedio: number; n: number } => {
+    let lisas = 0, suma = 0, n = 0;
+    for (const c of cajas) {
+      const liso = lisoDeCaja(r, sd, c, dx, dy);
+      if (liso == null) continue;
+      n++;
+      if (liso <= LISO_C) lisas++;
+      suma += liso;
+    }
+    return { fraccion: n ? lisas / n : 0, promedio: n ? suma / n : Infinity, n };
+  };
+
+  const base = puntaje(0, 0);
+  if (base.n < CAJAS_MINIMAS) return null;
+
+  /*
+    Se corrige SOLO cruzado a la fila, y esto es una limitacion de verdad, no
+    una simplificacion.
+
+    Una fila de modulos es lisa a lo largo: correr la rejilla un metro en ese
+    sentido la deja igual de lisa, asi que el enganche no tiene con que ver la
+    diferencia y elegiria cualquier cosa. Cruzado a la fila es al reves — un
+    metro para el costado y la caja se cae del panel al pasto.
+
+    Y justo cruzado es donde el error hace dano: un corrimiento a lo largo
+    reporta el modulo de al lado (la cuadrilla camina un panel de mas y el
+    defecto esta ahi), uno cruzado reporta la textura del suelo como defecto.
+    Asi que se arregla lo que se puede ver y no se toca lo que no.
+  */
+  const ang = anguloTipico(cajas);
+  const ux = -Math.sin(ang), uy = Math.cos(ang);
+
+  let mejorT = 0, mejor = base;
+  const considerar = (t: number) => {
+    const dx = Math.round(t * ux), dy = Math.round(t * uy);
+    const p = puntaje(dx, dy);
+    /*
+      Se compara FRACCION y no cantidad, y ademas se exige que la foto siga
+      juzgandose con casi las mismas cajas. Con la cantidad suelta, correr la
+      rejilla hacia adentro del cuadro sumaba cajas que antes se salian y el
+      conteo "mejoraba" sin que nada se hubiera acomodado.
+    */
+    if (p.n < CAJAS_MINIMAS || p.n < base.n * 0.8) return;
+    const gana =
+      p.fraccion > mejor.fraccion + 1e-9 ||
+      (Math.abs(p.fraccion - mejor.fraccion) <= 1e-9 && p.promedio < mejor.promedio - 1e-9) ||
+      (Math.abs(p.fraccion - mejor.fraccion) <= 1e-9 &&
+        Math.abs(p.promedio - mejor.promedio) <= 1e-9 &&
+        Math.abs(t) < Math.abs(mejorT));
+    if (gana) { mejor = p; mejorT = t; }
+  };
+
+  const lim = Math.round(maxPx);
+  for (let t = -lim; t <= lim; t += 2) considerar(t);
+  for (let t = mejorT - 2; t <= mejorT + 2; t++) considerar(t);
+
+  const mejorX = Math.round(mejorT * ux), mejorY = Math.round(mejorT * uy);
+
+  if (mejor.fraccion - base.fraccion < MEJORA_MINIMA_FRACCION) return null;
+  return {
+    dx: mejorX,
+    dy: mejorY,
+    antes: base.fraccion,
+    despues: mejor.fraccion,
+    metros: Math.hypot(mejorX, mejorY) * mPorPx,
+  };
+}
+
+
+/**
+ * Que fraccion de las cajas tiene que estar sobre un panel para creerle a la
+ * foto.
+ *
+ * Es generoso a proposito: un vuelo real trae modulos rotos, filas de punta y
+ * cajas medio afuera del cuadro, y ninguna de esas cosas es un problema. Lo
+ * que este numero tiene que agarrar es la foto que quedo entera corrida, que
+ * es un caso muy distinto: sobre la foto real, bien alineada da 100 % de cajas
+ * lisas, y con el corrimiento que traia el vuelo da 17 %.
+ */
+export const FRACCION_LISA_MINIMA = 0.5;
+
+/**
+ * Cuanto mas fria que su propia foto puede estar una caja antes de no creerle.
+ *
+ * Este freno mira solo el lado FRIO, y es a proposito. Un defecto siempre
+ * calienta: no existe el modulo que se rompe y se enfria. Asi que descartar
+ * por frio no puede tirar un hallazgo, mientras que descartar por caliente o
+ * por textura si — la franja de un diodo de bypass tiene la misma textura que
+ * el pasto.
+ *
+ * Lo que si esta frio es la sombra al borde de la fila: 31 °C contra 41-46 de
+ * los paneles de la misma foto.
+ */
+export const FRIO_QUE_NO_ES_PANEL_C = 5;
+
+/** Como quedo una foto despues de intentar engancharla. */
+export interface Confianza {
+  /** Que fraccion de las cajas quedo sobre algo liso. */
+  fraccionLisa: number;
+  /** La temperatura tipica de las cajas de esta foto. */
+  medianaC: number;
+  /** Si se le puede creer a la foto. */
+  sirve: boolean;
+}
+
+/**
+ * Decide si la foto quedo bien puesta, mirando TODAS sus cajas juntas.
+ *
+ * Este es el freno que faltaba, y es a nivel foto y no a nivel caja por una
+ * razon: la falla que hubo que arreglar corre a todas las cajas por igual, asi
+ * que se ve en el conjunto y no en ninguna caja sola. Al reves, un modulo
+ * suelto que se ve raro es justo lo que se esta buscando — un freno por caja
+ * que mire textura descartaria los defectos.
+ */
+export function confianzaDeFoto(sondeos: Array<Sondeo | null>): Confianza {
+  const vivos = sondeos.filter((s): s is Sondeo => s != null);
+  if (!vivos.length) return { fraccionLisa: 0, medianaC: 0, sirve: false };
+  const fraccionLisa = vivos.filter((s) => s.liso <= LISO_C).length / vivos.length;
+  return {
+    fraccionLisa,
+    medianaC: mediana(vivos.map((s) => s.celsius)),
+    sirve: fraccionLisa >= FRACCION_LISA_MINIMA,
+  };
+}
