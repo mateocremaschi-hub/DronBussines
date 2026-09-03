@@ -151,7 +151,6 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
     <div className="screen">
       <header className="screen-head">
         <div>
-          <p className="eyebrow">Pica</p>
           <h1>Parques</h1>
         </div>
         <button onClick={onNew}>Nuevo parque</button>
@@ -176,22 +175,47 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
             const pct = (n: number) => Math.round((n / Math.max(1, f.rows.length)) * 100);
             return (
               <li key={f.profile.id}>
+                {/*
+                  Los mismos datos, con rotulo.
+
+                  Eran tres renglones de mono gris seguidos —"24 filas en 1
+                  bloques · 28 × 2 modulos por fila · paso 1155 mm · bahia 555
+                  mm..."— donde para saber que era cada numero habia que leer la
+                  palabra de al lado. Un tablero con el rotulo abajo se lee de un
+                  vistazo y se compara entre parques de arriba abajo.
+                */}
                 <button className="farm-open" onClick={() => onOpen(f)}>
-                  <strong>{f.profile.name}</strong>
-                  <span className="mono">
-                    {f.rows.length} filas en {new Set(f.rows.map((r) => r.block)).size} bloques ·{" "}
-                    {f.profile.topology.modulesPerString} × {f.profile.topology.stringsPerRow} modulos por fila
+                  <span className="farm-cab">
+                    <strong>{f.profile.name}</strong>
+                    <span className={verified ? "chip ver" : "chip asm"}>
+                      {verified ? "verificado en campo" : "sin verificar"}
+                    </span>
                   </span>
-                  <span className="mono muted">
-                    paso {f.profile.module.widthMm + f.profile.module.gapMm} mm · bahia{" "}
-                    {f.profile.topology.stringGapMm ?? 0} mm · offset{" "}
-                    {f.profile.geometry.endpointOffsetMm} mm
-                  </span>
-                  <span className="mono muted">
-                    {pct(conStrings)} % con numero de string · {pct(conLinea)} % con posicion en la linea
-                  </span>
-                  <span className={verified ? "chip ver" : "chip asm"}>
-                    {verified ? "verificado en campo" : "sin verificar"}
+                  <span className="farm-datos">
+                    <div>
+                      <b>{f.rows.length}</b>
+                      <span>filas</span>
+                    </div>
+                    <div>
+                      <b>{new Set(f.rows.map((r) => r.block)).size}</b>
+                      <span>bloques</span>
+                    </div>
+                    <div>
+                      <b>{f.profile.topology.modulesPerString} × {f.profile.topology.stringsPerRow}</b>
+                      <span>módulos por fila</span>
+                    </div>
+                    <div>
+                      <b>{f.profile.module.widthMm + f.profile.module.gapMm} mm</b>
+                      <span>paso</span>
+                    </div>
+                    <div>
+                      <b>{pct(conStrings)} %</b>
+                      <span>con nº de string</span>
+                    </div>
+                    <div>
+                      <b>{pct(conLinea)} %</b>
+                      <span>con posición</span>
+                    </div>
                   </span>
                 </button>
                 {/*

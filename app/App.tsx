@@ -84,7 +84,38 @@ export function App() {
     );
   }
 
+  /*
+    La barra de arriba, que no existia.
+
+    Cada pantalla traia su propio titulo y un boton "Parques" flotando al
+    costado, asi que la app se leia como una sucesion de documentos sueltos. Una
+    barra fija con la marca y el hilo de la rampa termica es lo que hace que se
+    lea como UN programa — y de paso deja siempre a mano la vuelta a la lista de
+    parques, que es la unica navegacion global que hay.
+  */
+  const enParques = view.name === "farms";
+
   return (
+    <>
+      <header className="barra">
+        <div className="barra-dentro">
+          <button
+            className="marca"
+            onClick={() => setView({ name: "farms" })}
+            aria-label="Volver a los parques"
+          >
+            <span className="marca-icono" aria-hidden="true" />
+            <span className="marca-nombre">Pica</span>
+          </button>
+          {!enParques && "farm" in view && view.farm && (
+            <span className="barra-donde">
+              <span className="sep" aria-hidden="true">/</span>
+              {view.farm.profile.name}
+            </span>
+          )}
+        </div>
+      </header>
+
     <div className="app">
       {view.name === "farms" && (
         <Farms
@@ -145,5 +176,6 @@ export function App() {
         Pica · los datos viven solo en este dispositivo · nada se sube a ningun lado
       </footer>
     </div>
+    </>
   );
 }

@@ -63,11 +63,24 @@ await page.screenshot({ path: "shots/10-strings.png", fullPage: true });
 await page.getByRole("button", { name: "Aplicar al parque" }).click();
 await page.getByRole("heading", { name: "Parques" }).waitFor();
 
-const despues = await page.locator(".farm-open").first().innerText();
-const linea = despues.split("\n").find((l) => l.includes("%")) ?? "";
-console.log("Despues:", linea);
-if (!/100 % con numero de string/.test(linea)) {
-  console.error("ESPERABA 100 % con numero de string"); process.exitCode = 1;
+
+/*
+  El tablero de la tarjeta de parque, leido por su rotulo.
+
+  Los datos eran tres renglones de texto mono seguidos y ahora son casillas con
+  rotulo. Se leen por el rotulo y no por posicion: si manana se agrega una
+  casilla al tablero, esto sigue andando.
+*/
+const datoDelParque = async (rotulo) => {
+  const casillas = await page.locator(".farm-datos div").allInnerTexts();
+  const c = casillas.find((t) => t.toLowerCase().includes(rotulo.toLowerCase()));
+  return c ? c.split("\n")[0].trim() : null;
+};
+
+const conString = await datoDelParque("con nº de string");
+console.log("Despues:", conString, "de las filas tienen numero de string.");
+if (conString !== "100 %") {
+  console.error("ESPERABA 100 % con numero de string, salio " + conString); process.exitCode = 1;
 }
 
 await browser.close();

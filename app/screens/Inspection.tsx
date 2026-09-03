@@ -363,8 +363,7 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
       <div className="screen">
         <header className="screen-head">
           <div>
-            <p className="eyebrow">{stored.profile.name}</p>
-            <h1>Vuelos</h1>
+              <h1>Vuelos</h1>
           </div>
           <button onClick={nueva}>Nuevo vuelo</button>
         </header>

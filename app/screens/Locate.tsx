@@ -316,7 +316,6 @@ export function Locate({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     <div className="screen">
       <header className="screen-head">
         <div>
-          <p className="eyebrow">{stored.profile.name}</p>
           <h1>Localizar</h1>
         </div>
         <button className="ghost" onClick={onBack}>Parques</button>

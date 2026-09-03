@@ -220,7 +220,6 @@ export function StringList({ farm, onDone, onCancel }: {
     <div className="screen">
       <header className="screen-head">
         <div>
-          <p className="eyebrow">{farm.profile.name}</p>
           <h1>Lista de strings</h1>
         </div>
         <button className="ghost" onClick={onCancel}>Cancelar</button>
