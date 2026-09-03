@@ -411,3 +411,53 @@ describe("que tan urgente es", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * La franja puede cruzar el modulo en cualquiera de los dos sentidos.
+ *
+ * Antes se la buscaba en un solo eje del retrato, y eso da por sentado como
+ * estan cableadas las substrings y como esta montado el modulo — dos cosas que
+ * cambian entre fabricantes y entre parques.
+ *
+ * Costo real de suponerlo: la franja de diodo que Mateo fotografio a mano en
+ * Edenvale el 3 de septiembre cruzaba el retrato en el eje que no se miraba, y
+ * salia clasificada como "punto caliente, mancha chica" con confianza baja.
+ */
+describe("la franja del diodo, en los dos sentidos", () => {
+  /** Un retrato de 12x6 con una franja caliente en el eje que se le pida. */
+  function conFranja(eje: "filas" | "columnas") {
+    const filas = 12, columnas = 6;
+    const celdas = new Float32Array(filas * columnas).fill(42);
+    for (let f = 0; f < filas; f++) {
+      for (let c = 0; c < columnas; c++) {
+        const dentro = eje === "filas" ? f < 4 : c < 2;
+        if (dentro) celdas[f * columnas + c] = 50;
+      }
+    }
+    return { celdas, filas, columnas };
+  }
+
+  it("cruzando a lo largo del retrato", () => {
+    expect(clasificarPatron(conFranja("filas"), 0).patron).toBe("diodo");
+  });
+
+  it("y cruzando a lo ancho, que es como vino la del vuelo real", () => {
+    expect(clasificarPatron(conFranja("columnas"), 0).patron).toBe("diodo");
+  });
+
+  /*
+    El limite que hace que esto no sea una fabrica de falsos positivos. La caja
+    mide el 60 % central del modulo, asi que su borde cae ADENTRO del panel y
+    cualquier gradiente dibuja ahi una raya de una sola celda que cruza de lado
+    a lado. Sobre el vuelo real, aceptar esas rayas llevaba los hallazgos de 7
+    a 20, y diecisiete de los veinte eran exactamente eso.
+  */
+  it("una raya de una sola celda en el borde no es una substring", () => {
+    const filas = 12, columnas = 6;
+    const celdas = new Float32Array(filas * columnas).fill(42);
+    for (let f = 0; f < filas; f++) celdas[f * columnas] = 50;
+    expect(clasificarPatron({ celdas, filas, columnas }, 0).patron).not.toBe("diodo");
+  });
+});

@@ -25,6 +25,7 @@ import {
   clasificar,
   comparar,
   eventosDeString,
+  type EventoDeString,
   resumir,
   stringsEnVariasTandas,
   UMBRALES,
@@ -478,8 +479,16 @@ export function hallazgosAFindings(
   farm: CompiledFarm,
   frame: LocalFrame,
   fixes: Map<string, PhotoFix> = new Map(),
+  /**
+   * Los strings enteros calientes, que se cuelan como hallazgos propios.
+   *
+   * Van aparte porque se calculan sobre TODOS los hallazgos y no sobre la
+   * lista corta: un string desconectado existe justamente porque NINGUN modulo
+   * suyo se despega de sus hermanos, asi que ninguno esta en la lista corta.
+   */
+  stringsEnteros?: { eventos: EventoDeString[]; todos: Hallazgo[] },
 ): Finding[] {
-  return hallazgos.map((h) => {
+  const deModulo = hallazgos.map((h) => {
     const centro = toGeo(frame, h.modulo.x, h.modulo.y);
     const res = locate({ lat: centro.lat, lon: centro.lon, accuracyM: PRECISION_DE_LA_GEOMETRIA }, farm);
     const fix = fixes.get(h.fileName);
@@ -506,6 +515,95 @@ export function hallazgosAFindings(
       status: "pendiente" as const,
     };
   });
+
+  return stringsEnteros
+    ? [
+        ...deStringsEnteros(stringsEnteros.eventos, stringsEnteros.todos, farm, frame, fixes),
+        ...deModulo,
+      ]
+    : deModulo;
+}
+
+/**
+ * Los strings enteros calientes, como hallazgos de la lista.
+ *
+ * Estaban. El motor los encontraba —los dos strings desconectados del vuelo
+ * del 3 de septiembre salieron con +5,4 y +4,2 °C sobre sus vecinos, sobre 27
+ * y 23 modulos medidos— pero terminaban en una tabla de la pantalla de
+ * analisis, no en la lista que se revisa y que se exporta. O sea: el defecto
+ * mas caro que puede tener un parque, calculado bien, y afuera del entregable.
+ *
+ * Va uno por string, no 28 por modulo. Un string desconectado no son 28
+ * modulos malos: es UNA conexion. Reportarlo como 28 lineas es lo que hace la
+ * empresa de termografia del parque y es justo lo que infla sus informes.
+ *
+ * Se ancla en el modulo mas caliente que se le midio, para que tenga una foto,
+ * un recuadro y una direccion a la que caminar.
+ */
+function deStringsEnteros(
+  eventos: EventoDeString[],
+  todos: Hallazgo[],
+  farm: CompiledFarm,
+  frame: LocalFrame,
+  fixes: Map<string, PhotoFix>,
+): Finding[] {
+  const out: Finding[] = [];
+  for (const e of eventos) {
+    const delString = todos.filter(
+      (h) => h.modulo.rowId === e.rowId && h.modulo.stringNumber === e.stringNumber,
+    );
+    if (!delString.length) continue;
+    const ancla = delString.reduce((a, b) => (a.celsius >= b.celsius ? a : b));
+    const centro = toGeo(frame, ancla.modulo.x, ancla.modulo.y);
+    const res = locate({ lat: centro.lat, lon: centro.lon, accuracyM: PRECISION_DE_LA_GEOMETRIA }, farm);
+    const fix = fixes.get(ancla.fileName);
+    const porQue =
+      `El string entero corre ${e.deltaTMedio.toFixed(1)} °C por encima de los otros, sobre ` +
+      `${e.modulos} modulos medidos. ` +
+      (e.motivo === "string-entero"
+        ? "Ningun modulo se despega de sus hermanos: estan todos calientes por igual, que es la " +
+          "firma de un string que no entrega corriente — desconectado, un fusible o un conector " +
+          "abierto. No son 28 modulos malos, es una conexion."
+        : "Ademas la mayoria de sus modulos dio anomalia por su cuenta: el string esta caliente " +
+          "y desparejo.");
+    out.push({
+      // Id propio del STRING: si no, pisa al hallazgo de su modulo ancla y se
+      // pierde uno de los dos al volver a correr la deteccion.
+      id: `string:${e.rowId}#${e.stringNumber}`,
+      fileName: ancla.fileName,
+      ...(fix ? { fix } : {}),
+      address: res.best,
+      candidates: res.candidates.slice(0, 8),
+      warnings: res.warnings,
+      medicion: medicionDe(ancla),
+      /*
+        La anomalia y la clase van PRECARGADAS y con su gemelo de maquina al
+        lado (`patron`, `clase`). Sin el gemelo, `revisado()` las lee como el
+        toque de una persona y da el vuelo entero por revisado desde el minuto
+        cero — ya paso una vez con la clasificacion por forma.
+      */
+      anomaly: "String completo",
+      patron: {
+        patron: "modulo-completo" as const,
+        anomalia: "String completo",
+        porQue,
+        // Alta: esto no sale de la forma de una mancha, sale de comparar el
+        // string contra los otros sobre decenas de modulos medidos.
+        confianza: "alta" as const,
+        fraccionCaliente: 1,
+        grumos: 1,
+      },
+      /*
+        Clase 2 y no 3. Un string caliente entero no es un riesgo agudo: no
+        entrega corriente y hay que ir a mirarlo, pero no se prende fuego. La
+        clase la sube la persona si lo que encuentra es una caja quemada.
+      */
+      klass: 2 as const,
+      clase: { klass: 2 as const, porQue },
+      status: "pendiente" as const,
+    });
+  }
+  return out;
 }
 
 /**

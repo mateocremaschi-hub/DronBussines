@@ -71,6 +71,16 @@ export interface Muestra {
    * una caja se descarto, y para que se vea si una foto entera vino mal.
    */
   textura?: number;
+  /**
+   * Que fraccion de la caja cayo sobre el panel, punto por punto.
+   *
+   * Uno significa que la caja entro entera en el modulo. Menos de uno
+   * significa que algo de lo que se midio no era el panel — el riel, el hueco
+   * al lado, el borde del cuadro — y eso importa sobre todo para el chequeo
+   * interno: una caja que sobresale dibuja una franja caliente en su borde que
+   * se parece muchisimo a una substring puenteada.
+   */
+  fraccionPanel?: number;
   fileName: string;
   /**
    * El modulo remuestreado en una grilla de su propio marco.
@@ -122,7 +132,23 @@ export interface Caja {
  * Que fraccion del modulo se mide, para no tocar el marco ni el suelo.
  *
  * El borde de un modulo tiene marco de aluminio, que al sol esta a otra
- * temperatura que la celda. Midiendo el 60 % central se evita.
+ * temperatura que la celda, y hay que dejarlo afuera.
+ *
+ * Estaba en 0,6 y era demasiado. El marco mide unos 4 cm sobre un modulo de
+ * 2,28 m: es el 1,7 % del largo. Recortar al 60 % tiraba el 40 % del modulo
+ * para esquivar un 2 %, y ese 40 % no es cualquier parte — es donde caen las
+ * substrings de las puntas.
+ *
+ * Se vio en el vuelo real. Mateo fotografio a mano un modulo con una franja
+ * caliente de diodo de bypass; la franja estaba en el 20 % de arriba del
+ * modulo, o sea justo afuera de la caja, y el motor midio el panel sano de
+ * abajo y no reporto nada. La foto es inequivoca: la caja dibujada queda
+ * limpiamente debajo de la franja naranja.
+ *
+ * Con 0,9 quedan 11 cm de margen en cada punta, que es casi tres veces el
+ * marco. Esto se puede subir ahora y antes no, porque antes la caja se
+ * apoyaba donde el GPS decia: hoy se engancha a los paneles de la foto y se
+ * mide cuanta caja cae sobre panel.
  */
 const FRACCION_UTIL = 0.6;
 
@@ -371,6 +397,7 @@ export class Acumulador {
       ladoCeldaPx: number;
       d: number;
       textura: number | undefined;
+      fraccionPanel: number | undefined;
       r: number;
     }> = [];
 
@@ -412,6 +439,7 @@ export class Acumulador {
         // cuanto se despega.
         retrato: retratoDeCaja(foto.radio, cx, cy, caja.largo, caja.cruzado, caja.rotRad),
         textura: sondeo?.liso,
+        fraccionPanel: sondeo?.fraccionPanel,
         r: radioNormalizado(cx, cy, foto.radio.width, foto.radio.height),
       });
     }
@@ -444,6 +472,7 @@ export class Acumulador {
         puntoCalienteC: x.hit.puntoCalienteC - resta,
         pixelesPorCelda: x.ladoCeldaPx * x.ladoCeldaPx,
         ...(x.textura != null ? { textura: x.textura } : {}),
+        ...(x.fraccionPanel != null ? { fraccionPanel: x.fraccionPanel } : {}),
         fileName: foto.fileName,
         distanciaAlCentroM: x.d,
         caja: {
@@ -664,6 +693,44 @@ export const UMBRALES: Umbrales = { leve: 3, moderada: 10, critica: 20 };
 export const UMBRALES_INTERNOS: Umbrales = { leve: 8, moderada: 15, critica: 25 };
 
 /**
+ * Los mismos umbrales, para una FRANJA en vez de una celda.
+ *
+ * No es un ajuste fino, son dos fisicas distintas. Una celda en corto se come
+ * toda la corriente del string en dos centimetros cuadrados y corre 15, 25, 40
+ * grados por encima del modulo. Una substring puenteada por su diodo disipa lo
+ * mismo repartido en un tercio del panel: corre unos pocos grados, y ademas
+ * arrastra la mediana del propio modulo contra la que se la compara.
+ *
+ * Con un solo umbral pasa lo que paso en el vuelo del 3 de septiembre: la
+ * franja de diodo que Mateo fotografio a mano dio +6,2 °C sobre su modulo,
+ * quedo debajo de los 8 que pide una celda y no se reporto. El motor la habia
+ * medido, la habia dibujado y la habia clasificado como diodo — y despues la
+ * llamo normal.
+ */
+export const UMBRALES_INTERNOS_DE_FRANJA: Umbrales = { leve: 3, moderada: 8, critica: 15 };
+
+/**
+ * Que umbrales internos le corresponden a esta forma.
+ *
+ * Solo la franja y el modulo entero bajan. Todo lo que sea una mancha del
+ * tamano de una celda —o algo sin forma— sigue exigiendo los 8 °C, que es lo
+ * que separa una celda en corto de una piedra al sol.
+ */
+function umbralesInternosDe(
+  patron: import("./patron").Patron | undefined,
+  internos: Umbrales,
+): Umbrales {
+  if (patron !== "diodo" && patron !== "modulo-completo") return internos;
+  // Se respeta la proporcion si alguien movio los umbrales a mano.
+  const factor = internos.leve ? UMBRALES_INTERNOS_DE_FRANJA.leve / UMBRALES_INTERNOS.leve : 1;
+  return {
+    leve: internos.leve * factor,
+    moderada: internos.moderada * factor,
+    critica: internos.critica * factor,
+  };
+}
+
+/**
  * Cuantos pixeles por celda hacen falta para creerle al punto caliente.
  *
  * Con menos de cuatro pixeles —dos de lado— el defecto llega al sensor
@@ -845,7 +912,7 @@ export function comparar(
       vecinos,
       ambito,
       ...(patron ? { patron } : {}),
-      ...clasificar({ ...m, deltaT }, umbrales, internos),
+      ...clasificar({ ...m, deltaT, ...(patron ? { patron: patron.patron } : {}) }, umbrales, internos),
     };
   }).map((h) => {
     // La clase necesita el delta interno, que lo pone `clasificar`: por eso va
@@ -876,6 +943,15 @@ export interface Medido {
   deltaT: number;
   puntoCalienteC?: number;
   pixelesPorCelda?: number;
+  /**
+   * Que forma tiene la mancha, si se le pudo mirar.
+   *
+   * Entra aca porque decide contra que umbral se compara el calentamiento
+   * INTERNO del modulo, y eso no es un ajuste fino: una celda en corto y una
+   * substring puenteada por su diodo son dos fisicas distintas y no dan
+   * numeros parecidos.
+   */
+  patron?: import("./patron").Patron;
 }
 
 /** Como queda clasificada una medicion contra los umbrales de hoy. */
@@ -930,7 +1006,9 @@ export function clasificar(
       ? m.puntoCalienteC - m.celsius
       : undefined;
   const severidadInterna =
-    deltaInterno != null ? severidadDe(deltaInterno, internos) : undefined;
+    deltaInterno != null
+      ? severidadDe(deltaInterno, umbralesInternosDe(m.patron, internos))
+      : undefined;
 
   const peor = peorDe(severidad, severidadInterna ?? "normal");
   return {

@@ -13,7 +13,7 @@
 
 import { describe, expect, it } from "vitest";
 import edenvaleJson from "../farms/edenvale.json" with { type: "json" };
-import { Acumulador, comparar, eventosDeString, resumir, UMBRALES, type Muestra } from "../app/detect";
+import { Acumulador, clasificar, comparar, eventosDeString, resumir, UMBRALES, type Muestra } from "../app/detect";
 import { camaraDesdeEquivalente35 } from "../app/mission";
 import { compileFarm, makeFrame, modulesOfRow, toGeo } from "../src/index.js";
 import type { FarmProfile } from "../src/types.js";
@@ -582,5 +582,44 @@ describe("la caja del modulo en la foto", () => {
     expect(inclinado.caja!.cruzado).toBeLessThan(plano.caja!.cruzado);
     expect(inclinado.caja!.cruzado / plano.caja!.cruzado).toBeCloseTo(0.57, 2);
     expect(inclinado.caja!.largo).toBeCloseTo(plano.caja!.largo, 6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Una franja de diodo no se mide con la vara de una celda.
+ *
+ * Son dos fisicas distintas y no dan numeros parecidos. Una celda en corto se
+ * come toda la corriente del string en dos centimetros cuadrados y corre 15,
+ * 25, 40 grados por encima del modulo. Una substring puenteada por su diodo
+ * disipa lo mismo repartido en un tercio del panel: corre unos pocos grados, y
+ * ademas arrastra hacia arriba la mediana del propio modulo contra la que se
+ * la compara.
+ *
+ * Con un solo umbral pasa lo que paso en el vuelo del 3 de septiembre: una
+ * franja de diodo medida en +6,2 °C sobre su modulo quedaba debajo de los 8
+ * que pide una celda y se reportaba como normal. El motor la habia medido, la
+ * habia dibujado y la habia clasificado como diodo — y despues la llamo sana.
+ */
+describe("la vara depende de la forma", () => {
+  const medido = (patron: "diodo" | "punto-caliente" | undefined) => ({
+    celsius: 45,
+    deltaT: 0,
+    puntoCalienteC: 50,   // +5 °C adentro del propio modulo
+    pixelesPorCelda: 9,
+    ...(patron ? { patron } : {}),
+  });
+
+  it("cinco grados adentro de una franja ya es un hallazgo", () => {
+    expect(clasificar(medido("diodo")).severidadInterna).not.toBe("normal");
+  });
+
+  it("los mismos cinco grados en una celda no alcanzan", () => {
+    expect(clasificar(medido("punto-caliente")).severidadInterna).toBe("normal");
+  });
+
+  it("sin forma conocida se sigue exigiendo lo de una celda", () => {
+    expect(clasificar(medido(undefined)).severidadInterna).toBe("normal");
   });
 });

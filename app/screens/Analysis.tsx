@@ -25,7 +25,7 @@ import { makeFrame } from "@locator";
 import type { CompiledFarm } from "@locator";
 import { ThermalMap } from "../components/ThermalMap";
 import { FotoDelHallazgo } from "../components/FotoDelHallazgo";
-import { type Hallazgo, type Umbrales } from "../detect";
+import { eventosDeString, type Hallazgo, type Umbrales } from "../detect";
 import type { Cobertura, Finding } from "../inspection";
 import type { Ajuste } from "../projection";
 import type { StoredFarm } from "../storage";
@@ -117,7 +117,12 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
   const deteccion = useMemo(() => {
     if (!resultado || !hallazgos.length) return null;
     return {
-      findings: hallazgosAFindings(cortos, farm, frame, resultado.fixes),
+      findings: hallazgosAFindings(cortos, farm, frame, resultado.fixes, {
+        // Sobre TODOS los hallazgos, no sobre la lista corta: un string
+        // desconectado existe porque ninguno de sus modulos se despega.
+        eventos: eventosDeString(hallazgos, largoDelString),
+        todos: hallazgos,
+      }),
       cobertura: coberturaDe({
         resultado,
         hallazgos,

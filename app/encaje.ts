@@ -124,6 +124,32 @@ export interface Sondeo {
   liso: number;
   /** La temperatura de la caja, por mediana de los mismos puntos. */
   celsius: number;
+  /**
+   * Que fraccion de los puntos de la caja cae sobre panel, punto por punto.
+   *
+   * Es lo que centra la caja, y hace falta aparte de `liso` por una razon
+   * concreta: `liso` es una MEDIANA, asi que no se entera de que un sexto de
+   * la caja este afuera del modulo. Y un sexto afuera alcanza para arruinar la
+   * medicion, porque lo que hay al lado —pasto a +5 °C, sombra a −10— se
+   * despega del panel mucho mas que cualquier defecto.
+   *
+   * Medido sobre el vuelo real: un modulo con la caja corrida cinco pixeles
+   * daba una franja de 45 °C sobre un panel de 41,5, y salia clasificado como
+   * "punto caliente". Era el pasto de al lado.
+   *
+   * Un punto es panel si esta liso y si su temperatura no se despega de la
+   * MEDIANA DE SU PROPIA CAJA. Relativo a la caja y no a la foto: lo que rodea
+   * a un modulo no siempre es pasto ruidoso — en el vuelo real lo que se comia
+   * la caja era el riel de aluminio a 45 °C y el hueco frio a 39,6, los dos
+   * tan lisos como el panel de 41,5 que hay en el medio.
+   *
+   * Este criterio si mira lo caliente, y por eso NO decide descartes: solo
+   * centra. Un defecto es minoria en una foto —dos modulos entre cien— asi que
+   * mueve el promedio un uno por ciento, mientras que una caja corrida afecta
+   * a TODAS por igual. Los frenos que descartan siguen mirando solo el lado
+   * frio.
+   */
+  fraccionPanel: number;
 }
 
 /**
@@ -141,27 +167,29 @@ export function sondearCaja(
   dx = 0,
   dy = 0,
 ): Sondeo | null {
-  const n = juntarSondeos(r, sd, caja, dx, dy, true);
+  const n = juntarSondeos(r, sd, caja, dx, dy);
   if (n == null) return null;
-  return { liso: medianaEnSitio(BUF_LISO, n), celsius: medianaEnSitio(BUF_TEMP, n) };
+  const fraccionPanel = ULTIMOS_DE_PANEL / n;
+  const celsius = ULTIMA_MEDIANA_C;
+  return { liso: medianaEnSitio(BUF_LISO, n), celsius, fraccionPanel };
 }
 
 /**
- * Solo cuan lisa esta la caja, sin la temperatura.
+ * Solo que fraccion de la caja cae sobre panel.
  *
  * Existe aparte porque la busqueda del corrimiento la llama unas seis mil
- * veces por foto y no usa la temperatura para nada. Calcularla igual —con su
- * ordenamiento— duplicaba el costo del enganche en un vuelo de 500 fotos.
+ * veces por foto y no necesita la mediana de textura, que es el ordenamiento
+ * mas caro de los dos.
  */
-function lisoDeCaja(
+function panelDeCaja(
   r: Radiometric,
   sd: Float32Array,
   caja: Caja,
   dx: number,
   dy: number,
 ): number | null {
-  const n = juntarSondeos(r, sd, caja, dx, dy, false);
-  return n == null ? null : medianaEnSitio(BUF_LISO, n);
+  const n = juntarSondeos(r, sd, caja, dx, dy);
+  return n == null ? null : ULTIMOS_DE_PANEL / n;
 }
 
 /*
@@ -173,6 +201,19 @@ function lisoDeCaja(
 */
 const BUF_LISO = new Float64Array(SONDEOS.length);
 const BUF_TEMP = new Float64Array(SONDEOS.length);
+const BUF_ORD = new Float64Array(SONDEOS.length);
+
+/**
+ * Cuanto se puede despegar un punto de la mediana de su caja y seguir siendo
+ * panel.
+ *
+ * El interior de un modulo se mueve 0,4-0,8 °C, asi que un grado y medio es
+ * mas de tres veces eso. Lo que queda afuera con este margen es lo que hay
+ * alrededor del modulo: el riel a +3,5 y el hueco a -1,9.
+ */
+const MARGEN_DE_PANEL_C = 1.5;
+/** Cuantos de los puntos del ultimo sondeo cayeron sobre panel. */
+let ULTIMOS_DE_PANEL = 0;
 
 function juntarSondeos(
   r: Radiometric,
@@ -180,7 +221,6 @@ function juntarSondeos(
   caja: Caja,
   dx: number,
   dy: number,
-  conTemperatura: boolean,
 ): number | null {
   const { width: w, height: h } = r;
   const cos = Math.cos(caja.rotRad), sin = Math.sin(caja.rotRad);
@@ -191,11 +231,24 @@ function juntarSondeos(
     const y = Math.round(caja.cy + dy + u * sin + v * cos);
     if (x < 0 || y < 0 || x >= w || y >= h) continue;
     BUF_LISO[n] = sd[y * w + x]!;
-    if (conTemperatura) BUF_TEMP[n] = r.celsius[y * w + x]!;
+    BUF_TEMP[n] = r.celsius[y * w + x]!;
     n++;
   }
-  return n < SONDEOS.length * 0.75 ? null : n;
+  if (n < SONDEOS.length * 0.75) return null;
+
+  BUF_ORD.set(BUF_TEMP.subarray(0, n));
+  const med = medianaEnSitio(BUF_ORD, n);
+  let dePanel = 0;
+  for (let i = 0; i < n; i++) {
+    if (BUF_LISO[i]! <= LISO_C && Math.abs(BUF_TEMP[i]! - med) <= MARGEN_DE_PANEL_C) dePanel++;
+  }
+  ULTIMOS_DE_PANEL = dePanel;
+  ULTIMA_MEDIANA_C = med;
+  return n;
 }
+
+/** La mediana de temperatura del ultimo sondeo, ya calculada. */
+let ULTIMA_MEDIANA_C = 0;
 
 /** Mediana de los primeros `n` del buffer, ordenandolo en el lugar. */
 function medianaEnSitio(buf: Float64Array, n: number): number {
@@ -229,7 +282,7 @@ function mediana(v: number[]): number {
 export interface Encaje {
   dx: number;
   dy: number;
-  /** Que fraccion de las cajas caia sobre un panel antes de correrlas, y despues. */
+  /** Que fraccion de lo medido caia sobre panel antes de correr las cajas, y despues. */
   antes: number;
   despues: number;
   /** Cuanto se corrio, en metros sobre el terreno. Es lo que se le muestra. */
@@ -286,29 +339,24 @@ export function engancharFoto(
   if (cajas.length < CAJAS_MINIMAS || maxPx < 1) return null;
 
   /**
-   * Cuantas cajas quedan sobre un panel con este corrimiento, y cuan lisas
-   * quedan las que si.
+   * Que fraccion de TODO lo que se va a medir cae sobre panel.
    *
-   * La fraccion manda; el promedio solo DESEMPATA entre corrimientos que dejan
-   * la misma fraccion de cajas sobre panel, y sirve para centrar: una banda de
-   * modulos es mas ancha que la caja, asi que hay varios corrimientos que dan
-   * 100 % y conviene quedarse con el que deja las cajas mas adentro.
-   *
-   * Como desempate el promedio es seguro. Como objetivo principal no lo seria:
-   * premia irse de cualquier cosa que tenga estructura, incluido un modulo
-   * roto — pero para eso habria que salirse del panel, y salirse baja la
-   * fraccion, que es lo que manda.
+   * Se cuenta punto por punto y no caja por caja, y ahi esta la diferencia que
+   * importa: contando cajas, una caja con un sexto afuera del modulo cuenta
+   * igual que una perfecta, y la busqueda se queda conforme dejandola corrida.
+   * Fue exactamente lo que paso en el vuelo real — el enganche puso las cajas
+   * "sobre panel" pero cinco pixeles corridas, y una franja de pasto a 45 °C
+   * entro en la medicion de un panel de 41,5 y salio como punto caliente.
    */
-  const puntaje = (dx: number, dy: number): { fraccion: number; promedio: number; n: number } => {
-    let lisas = 0, suma = 0, n = 0;
+  const puntaje = (dx: number, dy: number): { panel: number; n: number } => {
+    let suma = 0, n = 0;
     for (const c of cajas) {
-      const liso = lisoDeCaja(r, sd, c, dx, dy);
-      if (liso == null) continue;
+      const f = panelDeCaja(r, sd, c, dx, dy);
+      if (f == null) continue;
+      suma += f;
       n++;
-      if (liso <= LISO_C) lisas++;
-      suma += liso;
     }
-    return { fraccion: n ? lisas / n : 0, promedio: n ? suma / n : Infinity, n };
+    return { panel: n ? suma / n : 0, n };
   };
 
   const base = puntaje(0, 0);
@@ -318,15 +366,14 @@ export function engancharFoto(
     Se corrige SOLO cruzado a la fila, y esto es una limitacion de verdad, no
     una simplificacion.
 
-    Una fila de modulos es lisa a lo largo: correr la rejilla un metro en ese
-    sentido la deja igual de lisa, asi que el enganche no tiene con que ver la
-    diferencia y elegiria cualquier cosa. Cruzado a la fila es al reves — un
-    metro para el costado y la caja se cae del panel al pasto.
+    Una fila de modulos es igual a lo largo: correr la rejilla un metro en ese
+    sentido la deja cayendo sobre panel igual, asi que el enganche no tiene con
+    que ver la diferencia y elegiria cualquier cosa. Cruzado a la fila es al
+    reves — medio metro para el costado y la caja empieza a comer pasto.
 
     Y justo cruzado es donde el error hace dano: un corrimiento a lo largo
     reporta el modulo de al lado (la cuadrilla camina un panel de mas y el
-    defecto esta ahi), uno cruzado reporta la textura del suelo como defecto.
-    Asi que se arregla lo que se puede ver y no se toca lo que no.
+    defecto esta ahi), uno cruzado mide el suelo y lo llama defecto.
   */
   const ang = anguloTipico(cajas);
   const ux = -Math.sin(ang), uy = Math.cos(ang);
@@ -335,19 +382,13 @@ export function engancharFoto(
   const considerar = (t: number) => {
     const dx = Math.round(t * ux), dy = Math.round(t * uy);
     const p = puntaje(dx, dy);
-    /*
-      Se compara FRACCION y no cantidad, y ademas se exige que la foto siga
-      juzgandose con casi las mismas cajas. Con la cantidad suelta, correr la
-      rejilla hacia adentro del cuadro sumaba cajas que antes se salian y el
-      conteo "mejoraba" sin que nada se hubiera acomodado.
-    */
+    // Se exige que la foto siga juzgandose con casi las mismas cajas: sin eso,
+    // correr la rejilla hacia adentro del cuadro "mejora" el promedio sumando
+    // cajas que antes se salian, sin que nada se haya acomodado.
     if (p.n < CAJAS_MINIMAS || p.n < base.n * 0.8) return;
     const gana =
-      p.fraccion > mejor.fraccion + 1e-9 ||
-      (Math.abs(p.fraccion - mejor.fraccion) <= 1e-9 && p.promedio < mejor.promedio - 1e-9) ||
-      (Math.abs(p.fraccion - mejor.fraccion) <= 1e-9 &&
-        Math.abs(p.promedio - mejor.promedio) <= 1e-9 &&
-        Math.abs(t) < Math.abs(mejorT));
+      p.panel > mejor.panel + 1e-9 ||
+      (Math.abs(p.panel - mejor.panel) <= 1e-9 && Math.abs(t) < Math.abs(mejorT));
     if (gana) { mejor = p; mejorT = t; }
   };
 
@@ -357,16 +398,20 @@ export function engancharFoto(
 
   const mejorX = Math.round(mejorT * ux), mejorY = Math.round(mejorT * uy);
 
-  if (mejor.fraccion - base.fraccion < MEJORA_MINIMA_FRACCION) return null;
+  /*
+    Si no mejora bastante, no se toca nada. Este es el freno que impide
+    "mejorar" una foto que ya estaba bien: sin el, la rejilla se correria unos
+    pixeles detras del ruido.
+  */
+  if (mejor.panel - base.panel < MEJORA_MINIMA_FRACCION) return null;
   return {
     dx: mejorX,
     dy: mejorY,
-    antes: base.fraccion,
-    despues: mejor.fraccion,
+    antes: base.panel,
+    despues: mejor.panel,
     metros: Math.hypot(mejorX, mejorY) * mPorPx,
   };
 }
-
 
 /**
  * Que fraccion de las cajas tiene que estar sobre un panel para creerle a la
@@ -396,7 +441,7 @@ export const FRIO_QUE_NO_ES_PANEL_C = 5;
 
 /** Como quedo una foto despues de intentar engancharla. */
 export interface Confianza {
-  /** Que fraccion de las cajas quedo sobre algo liso. */
+  /** Que fraccion de lo que se va a medir cayo sobre panel. */
   fraccionLisa: number;
   /** La temperatura tipica de las cajas de esta foto. */
   medianaC: number;
@@ -416,7 +461,8 @@ export interface Confianza {
 export function confianzaDeFoto(sondeos: Array<Sondeo | null>): Confianza {
   const vivos = sondeos.filter((s): s is Sondeo => s != null);
   if (!vivos.length) return { fraccionLisa: 0, medianaC: 0, sirve: false };
-  const fraccionLisa = vivos.filter((s) => s.liso <= LISO_C).length / vivos.length;
+  const fraccionLisa =
+    vivos.reduce((a, s) => a + s.fraccionPanel, 0) / vivos.length;
   return {
     fraccionLisa,
     medianaC: mediana(vivos.map((s) => s.celsius)),

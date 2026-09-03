@@ -159,35 +159,85 @@ function contarGrumos(calientes: boolean[], filas: number, columnas: number): nu
  * dibuja eso.
  *
  * Se pide que la franja cruce el modulo entero —no basta con que sea alargada—
- * y que ocupe entre un quinto y dos tercios del largo. Menos de un quinto es
+ * y que ocupe entre un sexto y dos tercios del otro lado. Menos de un sexto es
  * una celda estirada; mas de dos tercios ya es el modulo entero.
  */
 function franja(
   calientes: boolean[],
   filas: number,
   columnas: number,
-): { hay: boolean; desde: number; hasta: number } {
-  const cruza = Array.from({ length: filas }, (_, f) => {
+): { hay: boolean; desde: number; hasta: number; de: number } {
+  /*
+    Se prueban los DOS sentidos.
+
+    Antes se buscaba la franja en un solo eje del retrato, y eso da por sentado
+    como estan cableadas las substrings y como esta montado el modulo — dos
+    cosas que cambian entre fabricantes y entre parques. Un modulo de media
+    celda tiene seis substrings en vez de tres, y montado de la otra manera la
+    franja cruza el retrato al reves.
+
+    Costo real de suponerlo: en el vuelo del 3 de septiembre, la franja de
+    diodo que Mateo fotografio a mano cruzaba el retrato en el eje que no se
+    miraba. Salio clasificada como "punto caliente, mancha chica" y con la
+    confianza en baja.
+  */
+  const derecho = franjaEnUnEje(calientes, filas, columnas, false);
+  if (derecho.hay) return derecho;
+  return franjaEnUnEje(calientes, filas, columnas, true);
+}
+
+function franjaEnUnEje(
+  calientes: boolean[],
+  filas: number,
+  columnas: number,
+  transpuesto: boolean,
+): { hay: boolean; desde: number; hasta: number; de: number } {
+  const largoDelEje = transpuesto ? columnas : filas;
+  const anchoDelEje = transpuesto ? filas : columnas;
+  const esta = (a: number, b: number) =>
+    transpuesto ? calientes[b * columnas + a]! : calientes[a * columnas + b]!;
+
+  const cruza = Array.from({ length: largoDelEje }, (_, f) => {
     let n = 0;
-    for (let c = 0; c < columnas; c++) if (calientes[f * columnas + c]) n++;
-    return n >= Math.ceil(columnas * 0.8);
+    for (let c = 0; c < anchoDelEje; c++) if (esta(f, c)) n++;
+    return n >= Math.ceil(anchoDelEje * 0.8);
   });
 
-  let mejor = { hay: false, desde: -1, hasta: -1 };
+  let mejor = { hay: false, desde: -1, hasta: -1, de: largoDelEje };
   let desde = -1;
-  for (let f = 0; f <= filas; f++) {
-    if (f < filas && cruza[f]) { if (desde < 0) desde = f; continue; }
+  for (let f = 0; f <= largoDelEje; f++) {
+    if (f < largoDelEje && cruza[f]) { if (desde < 0) desde = f; continue; }
     if (desde >= 0) {
       const largo = f - desde;
-      const frac = largo / filas;
-      if (frac >= 0.2 && frac <= FRACCION_MODULO_ENTERO && largo > (mejor.hasta - mejor.desde)) {
-        mejor = { hay: true, desde, hasta: f - 1 };
+      const frac = largo / largoDelEje;
+      if (frac >= FRACCION_MINIMA_DE_FRANJA && frac <= FRACCION_MODULO_ENTERO &&
+          largo > (mejor.hasta - mejor.desde)) {
+        mejor = { hay: true, desde, hasta: f - 1, de: largoDelEje };
       }
       desde = -1;
     }
   }
   return mejor;
 }
+
+/**
+ * Lo mas angosta que puede ser una franja y seguir siendo una substring.
+ *
+ * Un quinto. Se probo bajarlo a un sexto para que entraran los modulos de
+ * media celda, que tienen seis substrings en vez de tres, y sobre el vuelo
+ * real eso llevo los hallazgos de 7 a 20 — y diecisiete de los veinte decian
+ * exactamente "17 % del largo", o sea UNA celda del retrato.
+ *
+ * No eran substrings: era el borde de la caja. La caja mide el 60 % central
+ * del modulo, asi que su borde cae adentro del panel y cualquier gradiente
+ * —el riel, la sombra del marco, el hueco al vecino— dibuja ahi una raya
+ * angosta que cruza de lado a lado y se parece a una substring.
+ *
+ * O sea que a esta resolucion no se puede distinguir una substring de media
+ * celda del borde de la propia caja. Con un quinto la franja tiene que ocupar
+ * al menos dos celdas del retrato, y eso el borde no lo hace.
+ */
+const FRACCION_MINIMA_DE_FRANJA = 0.2;
 
 /**
  * Que defecto es, mirando la forma.
@@ -248,7 +298,7 @@ export function clasificarPatron(
 
   const banda = franja(calientes, filas, columnas);
   if (banda.hay) {
-    const parte = (banda.hasta - banda.desde + 1) / filas;
+    const parte = (banda.hasta - banda.desde + 1) / banda.de;
     return {
       ...sinMancha,
       patron: "diodo",
