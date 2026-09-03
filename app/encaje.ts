@@ -282,6 +282,18 @@ function mediana(v: number[]): number {
 export interface Encaje {
   dx: number;
   dy: number;
+  /**
+   * Cuanto hay que girar el cuadro, en grados.
+   *
+   * Con corrimiento solo no alcanzaba, y el retrato de los modulos decia por
+   * que: el borde de la caja se despegaba -3,5 °C en una punta de la fila y
+   * +1,5 en la otra, cambiando de a poco entre medio. Eso no es un
+   * corrimiento, es un GIRO — y tiene de donde salir: la huella de la foto se
+   * orienta con el rumbo del gimbal, y una brujula de dron trae uno o dos
+   * grados de error. Un grado sobre una huella de 32 m son 56 cm en el borde
+   * del cuadro, mas que el margen que deja la caja.
+   */
+  giroDeg: number;
   /** Que fraccion de lo medido caia sobre panel antes de correr las cajas, y despues. */
   antes: number;
   despues: number;
@@ -348,9 +360,11 @@ export function engancharFoto(
    * "sobre panel" pero cinco pixeles corridas, y una franja de pasto a 45 °C
    * entro en la medicion de un panel de 41,5 y salio como punto caliente.
    */
-  const puntaje = (dx: number, dy: number): { panel: number; n: number } => {
+  const centroX = r.width / 2, centroY = r.height / 2;
+  const puntaje = (dx: number, dy: number, giroDeg: number): { panel: number; n: number } => {
     let suma = 0, n = 0;
-    for (const c of cajas) {
+    for (const c0 of cajas) {
+      const c = girar(c0, giroDeg, centroX, centroY);
       const f = panelDeCaja(r, sd, c, dx, dy);
       if (f == null) continue;
       suma += f;
@@ -359,7 +373,7 @@ export function engancharFoto(
     return { panel: n ? suma / n : 0, n };
   };
 
-  const base = puntaje(0, 0);
+  const base = puntaje(0, 0, 0);
   if (base.n < CAJAS_MINIMAS) return null;
 
   /*
@@ -378,10 +392,10 @@ export function engancharFoto(
   const ang = anguloTipico(cajas);
   const ux = -Math.sin(ang), uy = Math.cos(ang);
 
-  let mejorT = 0, mejor = base;
-  const considerar = (t: number) => {
+  let mejorT = 0, mejorGiro = 0, mejor = base;
+  const considerar = (t: number, giroDeg: number) => {
     const dx = Math.round(t * ux), dy = Math.round(t * uy);
-    const p = puntaje(dx, dy);
+    const p = puntaje(dx, dy, giroDeg);
     // Se exige que la foto siga juzgandose con casi las mismas cajas: sin eso,
     // correr la rejilla hacia adentro del cuadro "mejora" el promedio sumando
     // cajas que antes se salian, sin que nada se haya acomodado.
@@ -389,12 +403,14 @@ export function engancharFoto(
     const gana =
       p.panel > mejor.panel + 1e-9 ||
       (Math.abs(p.panel - mejor.panel) <= 1e-9 && Math.abs(t) < Math.abs(mejorT));
-    if (gana) { mejor = p; mejorT = t; }
+    if (gana) { mejor = p; mejorT = t; mejorGiro = giroDeg; }
   };
 
   const lim = Math.round(maxPx);
-  for (let t = -lim; t <= lim; t += 2) considerar(t);
-  for (let t = mejorT - 2; t <= mejorT + 2; t++) considerar(t);
+  for (let g = -GIRO_MAXIMO_DEG; g <= GIRO_MAXIMO_DEG + 1e-9; g += PASO_DE_GIRO_DEG) {
+    for (let t = -lim; t <= lim; t += 2) considerar(t, g);
+  }
+  for (let t = mejorT - 2; t <= mejorT + 2; t++) considerar(t, mejorGiro);
 
   const mejorX = Math.round(mejorT * ux), mejorY = Math.round(mejorT * uy);
 
@@ -409,7 +425,31 @@ export function engancharFoto(
     dy: mejorY,
     antes: base.panel,
     despues: mejor.panel,
+    giroDeg: mejorGiro,
     metros: Math.hypot(mejorX, mejorY) * mPorPx,
+  };
+}
+
+/**
+ * Cuanto se acepta girar el cuadro.
+ *
+ * Es el error de una brujula de dron. Mas que esto ya no es la brujula: seria
+ * la geometria del parque, y eso no se arregla girando una foto.
+ */
+const GIRO_MAXIMO_DEG = 1.5;
+const PASO_DE_GIRO_DEG = 0.25;
+
+/** Gira una caja alrededor del centro del cuadro. */
+export function girar(c: Caja, giroDeg: number, centroX: number, centroY: number): Caja {
+  if (!giroDeg) return c;
+  const a = (giroDeg * Math.PI) / 180;
+  const cos = Math.cos(a), sin = Math.sin(a);
+  const dx = c.cx - centroX, dy = c.cy - centroY;
+  return {
+    ...c,
+    cx: centroX + dx * cos - dy * sin,
+    cy: centroY + dx * sin + dy * cos,
+    rotRad: c.rotRad + a,
   };
 }
 
@@ -469,3 +509,4 @@ export function confianzaDeFoto(sondeos: Array<Sondeo | null>): Confianza {
     sirve: fraccionLisa >= FRACCION_LISA_MINIMA,
   };
 }
+

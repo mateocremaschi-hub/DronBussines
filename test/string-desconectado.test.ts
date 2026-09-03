@@ -186,3 +186,49 @@ describe("un string entero mas caliente que sus vecinos", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Un diodo de bypass no se quema en fila.
+ *
+ * Una caja de medicion mal puesta dibuja una franja caliente en su borde, y
+ * como el error de encuadre es de la FILA, la dibuja en todos los modulos de
+ * esa fila y siempre en el mismo extremo. Sobre el vuelo real del 3 de
+ * septiembre eso ponia seis "diodos de bypass" en una misma fila, los seis con
+ * la franja en las primeras dos celdas del retrato.
+ *
+ * Mirando un modulo solo no hay forma de saberlo: esa franja se ve igual que
+ * la substring mas angosta que existe. Se ve mirando la fila.
+ */
+describe("una fila entera con la misma franja es el recuadro, no diodos", () => {
+  /** Un retrato con una franja caliente en las primeras `alto` celdas. */
+  const conFranja = (alto: number) => {
+    const filas = 12, columnas = 6;
+    const celdas = new Float32Array(filas * columnas).fill(42);
+    for (let f = 0; f < alto; f++) for (let c = 0; c < columnas; c++) celdas[f * columnas + c] = 50;
+    return { celdas, filas, columnas };
+  };
+
+  const fila = (cuantosConFranja: number) =>
+    Array.from({ length: 20 }, (_, i) => ({
+      ...m(i + 1, 45, 0),
+      fileName: "DJI_0001_T.JPG",
+      pixelesPorCelda: 9,
+      puntoCalienteC: 45,
+      ...(i < cuantosConFranja ? { retrato: conFranja(3) } : { retrato: conFranja(0) }),
+    }));
+
+  it("dos modulos de veinte con franja se reportan", () => {
+    const hs = comparar(fila(2), UMBRALES);
+    expect(hs.filter((h) => h.patron?.patron === "diodo")).toHaveLength(2);
+  });
+
+  it("doce de veinte no: eso es el borde del recuadro", () => {
+    const hs = comparar(fila(12), UMBRALES);
+    expect(hs.filter((h) => h.patron?.patron === "diodo")).toHaveLength(0);
+    // Y lo dice, en vez de borrarlos en silencio.
+    const uno = hs.find((h) => h.patron?.patron === "sin-patron")!;
+    expect(uno.patron!.porQue).toContain("fila");
+  });
+});

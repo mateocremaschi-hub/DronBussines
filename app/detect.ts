@@ -25,6 +25,7 @@ import {
   confianzaDeFoto,
   desvioLocal,
   engancharFoto,
+  girar,
   sondearCaja,
   FRIO_QUE_NO_ES_PANEL_C,
   type Caja as CajaDeMedicion,
@@ -353,14 +354,32 @@ export class Acumulador {
       entera del panel. Asi que la posicion fina la decide la propia foto.
     */
     const sd = desvioLocal(foto.radio);
+    const limitePx = this.limiteDeBusquedaPx(cerca, mPorPx, escalaX);
+    const mPorPxImagen = mPorPx / escalaX;
+
+    /*
+      El corrimiento se busca POR FILA, no por foto.
+
+      Se hacia por foto y no alcanzaba. Mirando el retrato de los modulos de una
+      fila real, el borde de la caja se despega de -3,5 °C en un extremo a +1,5
+      en el otro, cambiando de a poco a lo largo de la fila: no es un
+      corrimiento parejo de la foto, es que la linea de la fila que tiene el
+      parque no cae exactamente sobre la fila que hay en el campo. Un metro de
+      error repartido entre dos puntas es normal en un replanteo, y con la caja
+      al 60 % del modulo no molestaba — pero es lo que impedia agrandarla.
+
+      Cada fila trae veinte y pico de cajas en una foto, de sobra para
+      estimarle su propio corrimiento. Las filas que asoman con pocos modulos
+      caen al corrimiento general de la foto, que sigue calculandose con todas.
+    */
     const encaje = engancharFoto(
-      foto.radio,
-      sd,
-      candidatos.map((c) => c.caja),
-      this.limiteDeBusquedaPx(cerca, mPorPx, escalaX),
-      mPorPx / escalaX,
+      foto.radio, sd, candidatos.map((c) => c.caja), limitePx, mPorPxImagen,
     );
     if (encaje) this.encajes.push({ fileName: foto.fileName, metros: encaje.metros });
+
+    const giro = encaje?.giroDeg ?? 0;
+    const centroX = foto.radio.width / 2, centroY = foto.radio.height / 2;
+    const puesta = (caja: CajaDeMedicion) => girar(caja, giro, centroX, centroY);
     const dx = encaje?.dx ?? 0;
     const dy = encaje?.dy ?? 0;
 
@@ -371,7 +390,7 @@ export class Acumulador {
       las cajas de la foto por igual. Una foto que no engancho no da algunos
       hallazgos malos — los da todos malos, y con la seguridad de siempre.
     */
-    const sondeos = candidatos.map((c) => sondearCaja(foto.radio, sd, c.caja, dx, dy));
+    const sondeos = candidatos.map((c) => sondearCaja(foto.radio, sd, puesta(c.caja), dx, dy));
     const confianza = confianzaDeFoto(sondeos);
     if (!confianza.sirve) {
       this.fotosSinEnganche.push({
@@ -402,7 +421,8 @@ export class Acumulador {
     }> = [];
 
     for (let i = 0; i < candidatos.length; i++) {
-      const { m, clave, ladoCeldaPx, celdaPx, d, caja } = candidatos[i]!;
+      const { m, clave, ladoCeldaPx, celdaPx, d } = candidatos[i]!;
+      const caja = puesta(candidatos[i]!.caja);
       const cx = caja.cx + dx;
       const cy = caja.cy + dy;
 
@@ -707,7 +727,19 @@ export const UMBRALES_INTERNOS: Umbrales = { leve: 8, moderada: 15, critica: 25 
  * medido, la habia dibujado y la habia clasificado como diodo — y despues la
  * llamo normal.
  */
-export const UMBRALES_INTERNOS_DE_FRANJA: Umbrales = { leve: 3, moderada: 8, critica: 15 };
+/** Cuantos modulos de una fila hacen falta para poder juzgar si algo es de la fila. */
+const MODULOS_PARA_JUZGAR_LA_FILA = 8;
+
+/**
+ * Que fraccion de una fila puede tener franja antes de dejar de creerle.
+ *
+ * Un quinto. Un diodo de bypass es un componente que falla solo; que le pase a
+ * mas de un quinto de los modulos de una fila el mismo dia, y siempre en la
+ * misma substring, es un problema de medicion.
+ */
+const FRACCION_DE_DIODOS_QUE_NO_EXISTE = 0.2;
+
+export const UMBRALES_INTERNOS_DE_FRANJA: Umbrales = { leve: 4, moderada: 8, critica: 15 };
 
 /**
  * Que umbrales internos le corresponden a esta forma.
@@ -881,7 +913,7 @@ export function comparar(
 
   const medianaGlobal = percentil(todo, 50);
 
-  return muestras.map((m) => {
+  const crudos: Hallazgo[] = muestras.map((m) => {
     const s = porString.get(claveString(m)) ?? [];
     const f = porFila.get(m.modulo.rowId) ?? [];
 
@@ -914,6 +946,60 @@ export function comparar(
       ...(patron ? { patron } : {}),
       ...clasificar({ ...m, deltaT, ...(patron ? { patron: patron.patron } : {}) }, umbrales, internos),
     };
+  });
+
+  /*
+    Los diodos de bypass no vienen en fila.
+
+    Una caja mal puesta dibuja una franja caliente en su borde, y como el error
+    de encuadre es de la FILA, la dibuja en todos los modulos de esa fila y
+    siempre en el mismo extremo. Sobre el vuelo real eso ponia seis "diodos" en
+    una misma fila, todos con la franja en las primeras dos celdas del retrato.
+    Seis diodos consecutivos en la misma substring no existen: es la caja.
+
+    Un diodo de verdad es un componente que se quema solo. Que le pase a mas de
+    un quinto de los modulos de una fila el mismo dia es la definicion de un
+    problema de medicion, no de un hallazgo.
+
+    Se hace despues de clasificar y no antes porque hace falta ver la fila
+    entera: un modulo solo no puede saber que es lo raro y que es lo comun.
+  */
+  const porFilaYFoto = new Map<string, typeof crudos>();
+  for (const h of crudos) {
+    const k = `${h.fileName}|${h.modulo.rowId}`;
+    const l = porFilaYFoto.get(k);
+    if (l) l.push(h); else porFilaYFoto.set(k, [h]);
+  }
+  const enFila = new Set<string>();
+  for (const [, lista] of porFilaYFoto) {
+    if (lista.length < MODULOS_PARA_JUZGAR_LA_FILA) continue;
+    const diodos = lista.filter((h) => h.patron?.patron === "diodo");
+    if (diodos.length / lista.length > FRACCION_DE_DIODOS_QUE_NO_EXISTE) {
+      for (const h of diodos) enFila.add(`${h.fileName}|${h.modulo.rowId}#${h.modulo.positionInRow}`);
+    }
+  }
+
+  return crudos.map((h) => {
+    if (enFila.has(`${h.fileName}|${h.modulo.rowId}#${h.modulo.positionInRow}`)) {
+      const sinFranja: Hallazgo = {
+        ...h,
+        patron: {
+          ...h.patron!,
+          patron: "sin-patron",
+          confianza: "baja",
+          porQue:
+            "Se le vio una franja caliente, pero a demasiados modulos de esta misma fila les " +
+            "salio la misma franja en el mismo extremo. Un diodo de bypass no se quema en fila: " +
+            "eso es el borde del recuadro, no un defecto.",
+        },
+        severidadInterna: "normal",
+        peor: h.severidad,
+        origen: h.severidad === "normal" ? "ninguno" : "modulo",
+      };
+      delete (sinFranja.patron as { anomalia?: string }).anomalia;
+      return sinFranja;
+    }
+    return h;
   }).map((h) => {
     // La clase necesita el delta interno, que lo pone `clasificar`: por eso va
     // en una segunda pasada y no adentro de la primera.

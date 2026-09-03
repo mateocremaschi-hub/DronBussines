@@ -237,7 +237,7 @@ function franjaEnUnEje(
  * celda del borde de la propia caja. Con un quinto la franja tiene que ocupar
  * al menos dos celdas del retrato, y eso el borde no lo hace.
  */
-const FRACCION_MINIMA_DE_FRANJA = 0.2;
+const FRACCION_MINIMA_DE_FRANJA = 0.15;
 
 /**
  * Que defecto es, mirando la forma.

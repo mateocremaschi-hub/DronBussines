@@ -448,16 +448,19 @@ describe("la franja del diodo, en los dos sentidos", () => {
   });
 
   /*
-    El limite que hace que esto no sea una fabrica de falsos positivos. La caja
-    mide el 60 % central del modulo, asi que su borde cae ADENTRO del panel y
-    cualquier gradiente dibuja ahi una raya de una sola celda que cruza de lado
-    a lado. Sobre el vuelo real, aceptar esas rayas llevaba los hallazgos de 7
-    a 20, y diecisiete de los veinte eran exactamente eso.
+    Una raya de una sola celda en el borde de la caja se ve EXACTAMENTE igual
+    que la substring mas angosta que existe (un modulo de media celda tiene
+    seis substrings: un sexto cada una). Mirando un modulo solo no se pueden
+    separar, y este test lo deja escrito para que nadie intente arreglarlo aca.
+    
+    Quien las separa es `comparar`, que mira la fila entera: si a mas de un
+    quinto de los modulos de una fila les sale la misma franja en el mismo
+    extremo, eso es el borde del recuadro. Un diodo no se quema en fila.
   */
-  it("una raya de una sola celda en el borde no es una substring", () => {
+  it("una raya de una sola celda no se puede distinguir de una substring angosta", () => {
     const filas = 12, columnas = 6;
     const celdas = new Float32Array(filas * columnas).fill(42);
     for (let f = 0; f < filas; f++) celdas[f * columnas] = 50;
-    expect(clasificarPatron({ celdas, filas, columnas }, 0).patron).not.toBe("diodo");
+    expect(clasificarPatron({ celdas, filas, columnas }, 0).patron).toBe("diodo");
   });
 });
