@@ -19,6 +19,8 @@ import {
   desvioLocal,
   engancharFoto,
   sondearCaja,
+  pasoEnLaImagen,
+  escalaDeLaImagen,
   LISO_C,
   type Caja,
 } from "../app/encaje";
@@ -166,5 +168,80 @@ describe("cuando la foto no engancha", () => {
     const foto = confianzaDeFoto(cajas(0).map((c) => sondearCaja(r, sd, c)));
     const sombra = sondearCaja(r, sd, { cx: 160, cy: 29, largo: 20, cruzado: 4, rotRad: 0 })!;
     expect(foto.medianaC - sombra.celsius).toBeGreaterThan(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * La escala del EXIF no es la de la imagen.
+ *
+ * La huella de una foto se calcula con la altura del EXIF y el campo de vision
+ * de la camara. Contra las dos distancias que Mateo midio con cinta en
+ * Edenvale —el paso entre modulos, 1155 mm, y la separacion entre filas, 5460—
+ * el EXIF exagera la escala un 4 a 5 % en las tres fotos del Matrice 4T. La
+ * causa mas probable es que la "altura relativa" se mide contra el punto de
+ * despegue, que es el suelo, y los paneles estan dos metros mas arriba: a
+ * cincuenta metros, dos metros son el 4 %.
+ *
+ * Y es el unico error que no arregla ni un corrimiento ni un giro, porque
+ * crece desde el centro del cuadro hacia afuera.
+ */
+describe("contar el paso entre modulos en la propia imagen", () => {
+  /** Una fila de modulos con juntas frias cada `paso` pixeles. */
+  function fila(paso: number): Radiometric {
+    const celsius = new Float32Array(W * H).fill(47);
+    let semilla = 999;
+    const ruido = () => { semilla = (semilla * 1664525 + 1013904223) >>> 0; return semilla / 0xffffffff - 0.5; };
+    for (let y = 100; y < 140; y++) {
+      for (let x = 0; x < W; x++) {
+        const enLaJunta = x % paso < 2;
+        celsius[y * W + x] = (enLaJunta ? 39 : 42) + ruido() * 0.4;
+      }
+    }
+    return {
+      width: W, height: H, celsius,
+      escala: "de prueba", escalaAuto: "de prueba", topeC: 999, fraccionEnElTope: 0,
+    };
+  }
+
+  it("encuentra el paso que hay, no el que se le sugiere", () => {
+    const r = fila(26);
+    // Se le pide buscar alrededor de 22 px, que es lo que diria un EXIF con la
+    // altura medida contra el suelo en vez de contra los paneles.
+    const p = pasoEnLaImagen(r, { cx: W / 2, cy: 120 }, 0, W - 20, 36, 22)!;
+    expect(p, "tenia que contar el paso").not.toBeNull();
+    expect(p.pasoPx).toBe(26);
+    expect(p.fuerza).toBeGreaterThan(0.3);
+  });
+
+  it("sobre una superficie sin juntas no inventa un paso", () => {
+    const celsius = new Float32Array(W * H).fill(42);
+    const liso: Radiometric = {
+      width: W, height: H, celsius,
+      escala: "de prueba", escalaAuto: "de prueba", topeC: 999, fraccionEnElTope: 0,
+    };
+    expect(pasoEnLaImagen(liso, { cx: W / 2, cy: 120 }, 0, W - 20, 36, 22)).toBeNull();
+  });
+
+  /*
+    El factor solo se acepta si varias filas coinciden. Una fila sola puede
+    engancharse en un armonico —contar dos modulos como uno— y eso corregiria
+    la escala al doble.
+  */
+  it("con una sola fila no se decide, y un disparate se descarta", () => {
+    expect(escalaDeLaImagen([{ pasoPx: 26, esperadoPx: 24 }])).toBeNull();
+    expect(escalaDeLaImagen([
+      { pasoPx: 26, esperadoPx: 24 },
+      { pasoPx: 52, esperadoPx: 24 },   // el armonico: se descarta por absurdo
+    ])).toBeNull();
+  });
+
+  it("con dos filas que coinciden, devuelve el factor", () => {
+    const f = escalaDeLaImagen([
+      { pasoPx: 26, esperadoPx: 24 },
+      { pasoPx: 26, esperadoPx: 24.2 },
+    ])!;
+    expect(f).toBeCloseTo(24.1 / 26, 2);
   });
 });

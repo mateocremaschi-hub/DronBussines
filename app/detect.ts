@@ -25,7 +25,9 @@ import {
   confianzaDeFoto,
   desvioLocal,
   engancharFoto,
+  escalaDeLaImagen,
   girar,
+  pasoEnLaImagen,
   sondearCaja,
   FRIO_QUE_NO_ES_PANEL_C,
   type Caja as CajaDeMedicion,
@@ -219,6 +221,8 @@ export class Acumulador {
   private sinPanel = new Set<string>();
   /** Los corrimientos que hubo que aplicar, por foto. */
   private encajes: Array<{ fileName: string; metros: number }> = [];
+  /** Cuanto se despega la escala del EXIF de la contada en la imagen, por foto. */
+  private escalas: Array<{ fileName: string; factor: number }> = [];
   /** Fotos que no se pudieron enganchar a los paneles, y no se midieron. */
   private fotosSinEnganche: Array<{ fileName: string; fraccionLisa: number }> = [];
   /** Cuanto vinieteo hubo que sacarle a cada foto, en grados en la esquina. */
@@ -278,100 +282,39 @@ export class Acumulador {
      * TODAS las cajas juntas: una caja sola no puede decir si esta bien puesta
      * —tal vez ese modulo esta raro— pero cien cajas a la vez si.
      */
-    const candidatos: Array<{
-      m: ModuleRef;
-      clave: string;
-      caja: CajaDeMedicion;
-      ladoCeldaPx: number;
-      celdaPx: number;
-      d: number;
-    }> = [];
-
-    for (const row of cerca) {
-      /**
-       * Hacia donde corre esta fila DENTRO de la imagen.
-       *
-       * No se deduce del rumbo: se proyecta el propio vector de la fila con la
-       * misma cuenta que ubica los pixeles, asi que cualquier convencion de
-       * signo o de yaw sale igual de los dos lados. Razonarlo aparte es como se
-       * desincronizan estas cosas.
-       */
-      const yawRad = (huella.rotacionDeg * Math.PI) / 180;
-      const cosY = Math.cos(yawRad), sinY = Math.sin(yawRad);
-      const uImg = row.ux * cosY - row.uy * sinY;    // hacia la derecha de la imagen
-      const vImg = row.ux * sinY + row.uy * cosY;    // hacia arriba de la imagen
-      // px crece con u; py crece con -v.
-      const anguloEnImagen = Math.atan2(
-        (-vImg / huella.altoM) * camera.imageH * escalaY,
-        (uImg / huella.anchoM) * camera.imageW * escalaX,
-      );
-
-      for (const m of modulesOfRow(row, this.farm)) {
-        const px = pixelOf(huella, { x: m.x, y: m.y }, camera);
-        if (!px) continue;
-
-        const d = Math.hypot(m.x - huella.centre.x, m.y - huella.centre.y);
-        const clave = `${m.rowId}#${m.positionInRow}`;
-        /*
-          Antes se salteaba el modulo que otra foto ya habia medido mejor.
-
-          Ahora se mide igual, porque esa segunda medicion es la unica prueba
-          que existe de que todo esto funciona: el MISMO panel, visto desde
-          otra posicion del dron, en otra parte del cuadro y con otro angulo,
-          tiene que dar la misma temperatura. Si las dos mediciones no
-          coinciden, no hay ningun defecto que reportar — hay un pipeline roto,
-          y sin esto no se enteraba nadie.
-
-          Cuesta medir de mas los modulos que caen en dos fotos. Con el solape
-          de un vuelo real eso es cerca del doble de mediciones, y vale la pena:
-          es la diferencia entre entregar una lista y poder defenderla.
-        */
-
-        const cx = px.px * escalaX;
-        const cy = px.py * escalaY;
-        /**
-         * La caja del modulo, en el marco de la FILA.
-         *
-         * `largoCaja` va a lo largo de la fila —es `widthMm`, lo que ocupa cada
-         * modulo entre sus vecinos— y `cruzadoCaja` hacia los costados.
-         *
-         * Estaban puestas sobre los ejes de la IMAGEN y cambiadas entre si: el
-         * ancho sobre X y el largo sobre Y. En un parque de filas norte-sur
-         * —Edenvale— la caja de 2,28 m caia A LO LARGO de la fila y cubria casi
-         * dos modulos. Medido con un solo modulo caliente en una escena
-         * sintetica: el vecino SANO salia con severidad moderada. La cuadrilla
-         * sale a caminar hasta el panel equivocado, no lo encuentra roto, y
-         * deja de creerle al informe.
-         */
-        const mPorPxRadio = huella.anchoM / (camera.imageW * escalaX);
-        const largoCaja = (moduloAnchoM * FRACCION_UTIL) / mPorPxRadio;
-        const cruzadoCaja = (moduloLargoM * FRACCION_UTIL) / mPorPxRadio;
-
-        // Cuantos pixeles cubre una celda: es el tamaño del parche mas caliente
-        // que se busca adentro del modulo, y tambien el que decide si se puede
-        // ver o no.
-        // La celda tambien se acorta: es cuadrada sobre el modulo, asi que
-        // vista desde arriba es un rectangulo del mismo largo y mas angosto.
-        const ladoCeldaPx = ((this.opts.celdaM ?? CELDA_M) / mPorPx) * escalaX;
-        const celdaPx = ladoCeldaPx * ladoCeldaPx * Math.min(1, Math.max(0.2, acortamiento));
-
-        candidatos.push({
-          m, clave, ladoCeldaPx, celdaPx, d,
-          caja: { cx, cy, largo: largoCaja, cruzado: cruzadoCaja, rotRad: anguloEnImagen },
-        });
-      }
-    }
+    const candidatos = this.candidatosDe(cerca, huella, foto, camera, escalaX, escalaY, acortamiento);
 
     if (!candidatos.length) return 0;
 
     /*
-      El corrimiento de ESTA foto.
+      La escala, contada en la propia imagen. Se MIDE y se avisa; no se aplica.
 
-      El GPS decide bien QUE modulos entran en el cuadro —para eso 1 o 2 metros
-      de error no alcanzan a cambiar nada— pero no alcanza para decir DONDE
-      caen: la caja de medicion mide 1,3 m de ancho y con 1,3 m de error se sale
-      entera del panel. Asi que la posicion fina la decide la propia foto.
+      La huella se calcula con la altura del EXIF y el campo de vision, y sale
+      mal. Contra las dos distancias que Mateo midio con cinta en Edenvale —el
+      paso entre modulos, 1155 mm, y la separacion entre filas, 5460— el EXIF
+      exagera la escala un 4 a 5 % en las tres fotos del Matrice 4T. La causa
+      mas probable es que la "altura relativa" se mide contra el punto de
+      despegue, que es el suelo, y los paneles estan dos metros mas arriba: a
+      cincuenta metros, dos metros son exactamente el 4 %.
+
+      No es un detalle. Cuatro por ciento sobre un cuadro de 640 px son 26 px
+      en el borde, 1,3 m sobre el terreno — del tamaño del error de GPS. Y
+      peor, porque un error de escala CRECE desde el centro hacia afuera: no lo
+      arregla ningun corrimiento ni ningun giro, que es justamente por que
+      quedaba un residuo despues de los dos.
+
+      Corregirlo no se hace todavia, y esa decision es deliberada. Sobre tres
+      fotos sueltas el paso se puede contar con confianza en una sola fila de
+      cada foto, y el factor solo sale en una de las tres. Aplicarselo a una
+      foto si y a dos no deja el vuelo con dos escalas distintas, que es peor
+      que tener una sola escala mal. Se mide, se dice, y con un vuelo con
+      solape —donde cada fila entra en varias fotos— habra con que decidir.
     */
+    const desvioDeEscala = this.escalaSegunLaImagen(foto, candidatos, huella, camera, escalaX);
+    if (desvioDeEscala && desvioDeEscala !== 1) {
+      this.escalas.push({ fileName: foto.fileName, factor: desvioDeEscala });
+    }
+
     const sd = desvioLocal(foto.radio);
     const limitePx = this.limiteDeBusquedaPx(cerca, mPorPx, escalaX);
     const mPorPxImagen = mPorPx / escalaX;
@@ -544,6 +487,176 @@ export class Acumulador {
     return medidos;
   }
 
+
+  /**
+   * Donde cae cada modulo del vecindario dentro de esta foto.
+   *
+   * Es una funcion de la huella a proposito: se la llama dos veces, una con la
+   * huella que sale del EXIF y otra con la huella ya corregida de escala. Que
+   * sea la MISMA cuenta las dos veces es lo unico que garantiza que la
+   * correccion se aplique de verdad y no a medias.
+   */
+  private candidatosDe(
+    cerca: CompiledFarm["rows"],
+    huella: ReturnType<typeof footprint>,
+    foto: FotoTermica,
+    camera: Camera,
+    escalaX: number,
+    escalaY: number,
+    acortamiento: number,
+  ): Array<{
+    m: ModuleRef;
+    clave: string;
+    caja: CajaDeMedicion;
+    ladoCeldaPx: number;
+    celdaPx: number;
+    d: number;
+  }> {
+    const { moduloAnchoM } = this.opts;
+    const moduloLargoM = this.opts.moduloLargoM * Math.min(1, Math.max(0.2, acortamiento));
+    const mPorPx = huella.anchoM / camera.imageW;
+    const candidatos: Array<{
+      m: ModuleRef;
+      clave: string;
+      caja: CajaDeMedicion;
+      ladoCeldaPx: number;
+      celdaPx: number;
+      d: number;
+    }> = [];
+
+    for (const row of cerca) {
+      /**
+       * Hacia donde corre esta fila DENTRO de la imagen.
+       *
+       * No se deduce del rumbo: se proyecta el propio vector de la fila con la
+       * misma cuenta que ubica los pixeles, asi que cualquier convencion de
+       * signo o de yaw sale igual de los dos lados. Razonarlo aparte es como se
+       * desincronizan estas cosas.
+       */
+      const yawRad = (huella.rotacionDeg * Math.PI) / 180;
+      const cosY = Math.cos(yawRad), sinY = Math.sin(yawRad);
+      const uImg = row.ux * cosY - row.uy * sinY;    // hacia la derecha de la imagen
+      const vImg = row.ux * sinY + row.uy * cosY;    // hacia arriba de la imagen
+      // px crece con u; py crece con -v.
+      const anguloEnImagen = Math.atan2(
+        (-vImg / huella.altoM) * camera.imageH * escalaY,
+        (uImg / huella.anchoM) * camera.imageW * escalaX,
+      );
+
+      for (const m of modulesOfRow(row, this.farm)) {
+        const px = pixelOf(huella, { x: m.x, y: m.y }, camera);
+        if (!px) continue;
+
+        const d = Math.hypot(m.x - huella.centre.x, m.y - huella.centre.y);
+        const clave = `${m.rowId}#${m.positionInRow}`;
+        /*
+          Antes se salteaba el modulo que otra foto ya habia medido mejor.
+
+          Ahora se mide igual, porque esa segunda medicion es la unica prueba
+          que existe de que todo esto funciona: el MISMO panel, visto desde
+          otra posicion del dron, en otra parte del cuadro y con otro angulo,
+          tiene que dar la misma temperatura. Si las dos mediciones no
+          coinciden, no hay ningun defecto que reportar — hay un pipeline roto,
+          y sin esto no se enteraba nadie.
+
+          Cuesta medir de mas los modulos que caen en dos fotos. Con el solape
+          de un vuelo real eso es cerca del doble de mediciones, y vale la pena:
+          es la diferencia entre entregar una lista y poder defenderla.
+        */
+
+        const cx = px.px * escalaX;
+        const cy = px.py * escalaY;
+        /**
+         * La caja del modulo, en el marco de la FILA.
+         *
+         * `largoCaja` va a lo largo de la fila —es `widthMm`, lo que ocupa cada
+         * modulo entre sus vecinos— y `cruzadoCaja` hacia los costados.
+         *
+         * Estaban puestas sobre los ejes de la IMAGEN y cambiadas entre si: el
+         * ancho sobre X y el largo sobre Y. En un parque de filas norte-sur
+         * —Edenvale— la caja de 2,28 m caia A LO LARGO de la fila y cubria casi
+         * dos modulos. Medido con un solo modulo caliente en una escena
+         * sintetica: el vecino SANO salia con severidad moderada. La cuadrilla
+         * sale a caminar hasta el panel equivocado, no lo encuentra roto, y
+         * deja de creerle al informe.
+         */
+        const mPorPxRadio = huella.anchoM / (camera.imageW * escalaX);
+        const largoCaja = (moduloAnchoM * FRACCION_UTIL) / mPorPxRadio;
+        const cruzadoCaja = (moduloLargoM * FRACCION_UTIL) / mPorPxRadio;
+
+        // Cuantos pixeles cubre una celda: es el tamaño del parche mas caliente
+        // que se busca adentro del modulo, y tambien el que decide si se puede
+        // ver o no.
+        // La celda tambien se acorta: es cuadrada sobre el modulo, asi que
+        // vista desde arriba es un rectangulo del mismo largo y mas angosto.
+        const ladoCeldaPx = ((this.opts.celdaM ?? CELDA_M) / mPorPx) * escalaX;
+        const celdaPx = ladoCeldaPx * ladoCeldaPx * Math.min(1, Math.max(0.2, acortamiento));
+
+        candidatos.push({
+          m, clave, ladoCeldaPx, celdaPx, d,
+          caja: { cx, cy, largo: largoCaja, cruzado: cruzadoCaja, rotRad: anguloEnImagen },
+        });
+      }
+    }
+
+    return candidatos;
+  }
+
+  /**
+   * El factor de escala que pide la propia imagen, contando el paso entre
+   * modulos en unas cuantas filas.
+   */
+  private escalaSegunLaImagen(
+    foto: FotoTermica,
+    candidatos: Array<{ m: ModuleRef; caja: CajaDeMedicion }>,
+    huella: ReturnType<typeof footprint>,
+    camera: Camera,
+    escalaX: number,
+  ): number | null {
+    const porFila = new Map<string, Array<{ m: ModuleRef; caja: CajaDeMedicion }>>();
+    for (const c of candidatos) {
+      const l = porFila.get(c.m.rowId);
+      if (l) l.push(c); else porFila.set(c.m.rowId, [c]);
+    }
+
+    const medidas: Array<{ pasoPx: number; esperadoPx: number }> = [];
+    for (const [, lista] of porFila) {
+      if (lista.length < 6) continue;
+      lista.sort((a, b) => a.m.positionInRow - b.m.positionInRow);
+      /*
+        El paso que PREDICE la proyeccion, medido sobre la propia proyeccion:
+        la distancia en pixeles entre dos modulos consecutivos de la fila. Sale
+        de la misma cuenta que dibuja las cajas, asi que compara manzanas con
+        manzanas — usar el ancho del modulo del perfil dejaba afuera el hueco
+        de 20 mm entre paneles y metia un 2 % de error en la comparacion.
+      */
+      const saltos: number[] = [];
+      for (let i = 1; i < lista.length; i++) {
+        if (lista[i]!.m.positionInRow - lista[i - 1]!.m.positionInRow !== 1) continue;
+        saltos.push(Math.hypot(
+          lista[i]!.caja.cx - lista[i - 1]!.caja.cx,
+          lista[i]!.caja.cy - lista[i - 1]!.caja.cy,
+        ));
+      }
+      if (saltos.length < 4) continue;
+      saltos.sort((a, b) => a - b);
+      const esperadoPx = saltos[saltos.length >> 1]!;
+      if (!Number.isFinite(esperadoPx) || esperadoPx < 6) continue;
+      // El tramo que ocupa la fila adentro del cuadro, y su centro.
+      const xs = lista.map((c) => c.caja.cx), ys = lista.map((c) => c.caja.cy);
+      const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+      const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+      const largoPx = Math.hypot(
+        Math.max(...xs) - Math.min(...xs),
+        Math.max(...ys) - Math.min(...ys),
+      ) + esperadoPx;
+      const uno = lista[0]!.caja;
+      const p = pasoEnLaImagen(foto.radio, { cx, cy }, uno.rotRad, largoPx, uno.cruzado, esperadoPx);
+      if (p) medidas.push({ pasoPx: p.pasoPx, esperadoPx });
+    }
+    return escalaDeLaImagen(medidas);
+  }
+
   muestras(): Muestra[] {
     return [...this.mejor.values()];
   }
@@ -604,6 +717,16 @@ export class Acumulador {
     const v = this.repeticiones.map((r) => r.diferencia).sort((a, b) => a - b);
     const en = (q: number) => v[Math.min(v.length - 1, Math.floor(v.length * q))]!;
     return { modulos: v.length, mediana: en(0.5), p90: en(0.9), peor: v[v.length - 1]! };
+  }
+
+  /**
+   * Cuanto se despega la escala del EXIF de la que se cuenta en la imagen.
+   *
+   * Uno significa que coinciden. Se mide contando el paso entre modulos sobre
+   * la propia foto y comparandolo con el que predice la proyeccion.
+   */
+  desviosDeEscala(): Array<{ fileName: string; factor: number }> {
+    return this.escalas;
   }
 
   /** Los corrimientos que hubo que aplicarle a cada foto, en metros. */

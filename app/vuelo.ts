@@ -349,6 +349,29 @@ export async function analizarFotos(
       conviene saberlo. Y porque es grande — mas que el umbral de anomalia
       leve, o sea que sin corregirlo cada vuelo trae defectos inventados.
     */
+    /*
+      La escala del EXIF contra la que se cuenta en la imagen.
+
+      Todavia no se corrige, se dice. Es el ultimo error grande que queda y el
+      unico que un corrimiento o un giro no pueden arreglar, porque crece desde
+      el centro del cuadro hacia afuera.
+    */
+    const escalas = acc.desviosDeEscala();
+    if (escalas.length) {
+      const peor = escalas.reduce((a, b) => (Math.abs(b.factor - 1) > Math.abs(a.factor - 1) ? b : a));
+      const pct = Math.abs(peor.factor - 1) * 100;
+      fallos.push(
+        `En ${escalas.length} de ${termicas} fotos, el paso entre modulos contado sobre la imagen ` +
+        `no coincide con el que predice la altura del EXIF: hasta ${pct.toFixed(0)} % de diferencia. ` +
+        "Sobre un cuadro de 640 px eso es mas de un metro de error en el borde, y no lo arregla " +
+        "ningun corrimiento porque crece del centro hacia afuera. La causa mas probable es que la " +
+        "altura del EXIF se mide contra el punto de despegue —el suelo— y los paneles estan dos " +
+        "metros mas arriba. Todavia NO se corrige: con fotos sueltas el paso se cuenta en muy " +
+        "pocas filas y corregir a medias deja el vuelo con dos escalas. Con solape va a haber con " +
+        "que decidir.",
+      );
+    }
+
     const vinieteo = acc.vinieteo();
     if (vinieteo.length) {
       const peor = Math.max(...vinieteo.map((v) => v.maximoC));

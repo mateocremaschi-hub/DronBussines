@@ -510,3 +510,129 @@ export function confianzaDeFoto(sondeos: Array<Sondeo | null>): Confianza {
   };
 }
 
+
+// ---------------------------------------------------------------------------
+// La escala, sacada de la propia imagen
+// ---------------------------------------------------------------------------
+
+/**
+ * Cuanto hay que achicar o agrandar la huella de la foto.
+ *
+ * La huella se calcula con la altura del EXIF y el campo de vision de la
+ * camara, y sale mal. Medido sobre las tres fotos del Matrice 4T contra dos
+ * distancias que Mateo midio con cinta —el paso entre modulos, 1155 mm, y la
+ * separacion entre filas, 5460— el EXIF exagera la escala un 4 a 5 % en las
+ * tres.
+ *
+ * La causa mas probable es que la "altura relativa" del EXIF se mide contra el
+ * punto de despegue, que es el SUELO, y los paneles estan dos metros mas
+ * arriba. A cincuenta metros, dos metros son exactamente el 4 %.
+ *
+ * Cuatro por ciento parece poco y no lo es: sobre un cuadro de 640 px son 26
+ * px en el borde, que a 5 cm/px son 1,3 m sobre el terreno. Es del mismo
+ * tamaño que el error de GPS que costo el dia entero — y peor, porque un error
+ * de escala CRECE desde el centro hacia afuera, asi que no lo arregla ningun
+ * corrimiento ni ningun giro.
+ *
+ * La imagen tiene la respuesta: los modulos se repiten con un paso conocido,
+ * medido con cinta, y ese paso se puede contar en pixeles. Contra eso se
+ * calibra la escala sin creerle ni a la altura ni al campo de vision.
+ */
+
+/** Cuanto se acepta corregir la escala. Mas que esto no es la altura del panel. */
+const CORRECCION_MAXIMA = 0.15;
+
+/** Debajo de esta fuerza de repeticion no se le cree al paso detectado. */
+const REPETICION_MINIMA = 0.2;
+
+/**
+ * Cuenta el paso entre modulos a lo largo de una fila, en pixeles.
+ *
+ * Se muestrea la imagen sobre la linea que recorre la fila —ya se sabe hacia
+ * donde corre, la trae la geometria del parque— y se autocorrelaciona el
+ * perfil. Las juntas entre modulos se ven como minimos regulares.
+ */
+export function pasoEnLaImagen(
+  r: Radiometric,
+  centro: { cx: number; cy: number },
+  rotRad: number,
+  largoPx: number,
+  cruzadoPx: number,
+  pasoEsperadoPx: number,
+): { pasoPx: number; fuerza: number } | null {
+  const cos = Math.cos(rotRad), sin = Math.sin(rotRad);
+  // Un tramo largo a lo largo de la fila: cuantos mas modulos entren, mejor
+  // sale la cuenta. Y angosto cruzado, para no tocar el borde del panel.
+  const n = Math.round(largoPx);
+  if (n < pasoEsperadoPx * 4) return null;
+  /*
+    Se promedia sobre casi todo el ancho del panel. Con una tira angosta la
+    repeticion de las juntas se pierde en el ruido del sensor: sobre las fotos
+    reales, con el 30 % del ancho contaba una fila de cinco, y con el 80 %
+    cuentan casi todas.
+  */
+  const anchoMedio = Math.max(1, Math.round(cruzadoPx * 0.4));
+
+  const perfil = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const u = i - n / 2;
+    let suma = 0, m = 0;
+    for (let k = -anchoMedio; k <= anchoMedio; k++) {
+      const x = Math.round(centro.cx + u * cos - k * sin);
+      const y = Math.round(centro.cy + u * sin + k * cos);
+      if (x < 0 || y < 0 || x >= r.width || y >= r.height) continue;
+      suma += r.celsius[y * r.width + x]!;
+      m++;
+    }
+    if (!m) return null;
+    perfil[i] = suma / m;
+  }
+
+  // Sacarle la tendencia lenta: lo que interesa es la repeticion, no que un
+  // extremo de la fila este mas caliente que el otro.
+  const ventana = Math.max(3, Math.round(pasoEsperadoPx * 2));
+  const suave = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0, m = 0;
+    for (let k = -ventana; k <= ventana; k++) {
+      const j = i + k;
+      if (j < 0 || j >= n) continue;
+      s += perfil[j]!; m++;
+    }
+    suave[i] = perfil[i]! - s / m;
+  }
+
+  let cero = 0;
+  for (let i = 0; i < n; i++) cero += suave[i]! * suave[i]!;
+  if (cero <= 0) return null;
+
+  // El pico de autocorrelacion mas fuerte, buscado alrededor de lo esperado.
+  const desde = Math.max(4, Math.floor(pasoEsperadoPx * 0.7));
+  const hasta = Math.min(n - 2, Math.ceil(pasoEsperadoPx * 1.4));
+  let mejorK = 0, mejor = 0;
+  for (let k = desde; k <= hasta; k++) {
+    let s = 0;
+    for (let i = 0; i + k < n; i++) s += suave[i]! * suave[i + k]!;
+    const v = s / cero;
+    if (v > mejor) { mejor = v; mejorK = k; }
+  }
+  return mejorK && mejor >= REPETICION_MINIMA ? { pasoPx: mejorK, fuerza: mejor } : null;
+}
+
+/**
+ * El factor por el que hay que multiplicar la huella de la foto.
+ *
+ * Uno significa que la escala del EXIF estaba bien. Devuelve null cuando no se
+ * pudo contar el paso en ninguna fila: entonces se deja la escala del EXIF,
+ * que es lo unico que hay.
+ */
+export function escalaDeLaImagen(
+  medidas: Array<{ pasoPx: number; esperadoPx: number }>,
+): number | null {
+  const factores = medidas
+    .map((m) => m.esperadoPx / m.pasoPx)
+    .filter((f) => Math.abs(f - 1) <= CORRECCION_MAXIMA);
+  if (factores.length < 2) return null;
+  const f = mediana(factores);
+  return Math.abs(f - 1) < 0.005 ? 1 : f;
+}
