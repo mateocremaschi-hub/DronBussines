@@ -86,6 +86,16 @@ export interface OpcionesDeVuelo {
   moduloLargoM: number;
   celdaM: number;
   ajuste: Ajuste;
+  /**
+   * Si el largo del modulo lo declara el perfil o es el valor por defecto.
+   *
+   * Importa mas de lo que parece: de ese numero sale el tamano del recuadro
+   * con el que se mide cada modulo. Si esta mal, la caja sobresale del panel
+   * —y entonces mide el riel y el hueco— o se queda corta y deja el defecto
+   * afuera. En Edenvale el supuesto (2278 mm) y el real (2255) casi coinciden,
+   * pero eso fue suerte: nadie lo habia medido.
+   */
+  largoDeclarado?: boolean;
 }
 
 /**
@@ -351,6 +361,15 @@ export async function analizarFotos(
         "existe.",
       );
     }
+  }
+
+  if (opts.largoDeclarado === false) {
+    fallos.push(
+      `El perfil del parque no dice cuanto mide un modulo del lado largo, asi que se uso ` +
+      `${opts.moduloLargoM.toFixed(3)} m. De ese numero sale el tamano del recuadro con el que se ` +
+      "mide cada panel: si esta mal, la caja sobresale y mide el riel y el hueco, o se queda " +
+      "corta y deja el defecto afuera. Medilo con cinta una vez y cargalo en el parque.",
+    );
   }
 
   if (superRes) {

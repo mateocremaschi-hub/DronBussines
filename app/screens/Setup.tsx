@@ -1418,6 +1418,36 @@ export function Setup({ onDone, onCancel, existing, soloParametros }: SetupProps
                 lo medí con cinta
               </label>
             </div>
+            {/*
+              El OTRO lado del modulo. No entra en la geometria de la fila —para
+              ubicar un panel alcanza con el ancho sobre el eje— pero decide el
+              tamaño del recuadro con el que se mide la temperatura. Sin este
+              numero el motor supone 2278 mm: si el modulo real es mas chico la
+              caja sobresale y mide el riel y el hueco, y si es mas grande se
+              queda corta y deja afuera las substrings de las puntas.
+            */}
+            <div className="field">
+              <label>Largo del modulo, el otro lado (mm)</label>
+              <input
+                type="number" min={0} value={profileDraft.module.lengthMm ?? ""}
+                placeholder="2278"
+                onChange={(e) => setProfileDraft((d) => {
+                  const { lengthMm: _, ...resto } = d.module;
+                  return e.target.value === ""
+                    ? { ...d, module: resto }
+                    : { ...d, module: { ...resto, lengthMm: Number(e.target.value) } };
+                })}
+              />
+              <span className="help">
+                Vacio: se supone 2278 mm. No cambia donde esta cada panel, pero si el recuadro
+                con el que se mide su temperatura — vale la cinta.
+              </span>
+              <label className="cinta">
+                <input type="checkbox" checked={!!medidos.largoModulo}
+                  onChange={(e) => setMedidos((m) => ({ ...m, largoModulo: e.target.checked }))} />
+                lo medí con cinta
+              </label>
+            </div>
             <div className="field">
               <label>Bahia entre strings (mm)</label>
               <input

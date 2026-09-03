@@ -153,7 +153,13 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
       farm,
       frame,
       files,
-      { moduloAnchoM: anchoM, moduloLargoM: largoM, celdaM, ajuste: conAjuste },
+      {
+        moduloAnchoM: anchoM,
+        moduloLargoM: largoM,
+        celdaM,
+        ajuste: conAjuste,
+        largoDeclarado: stored.profile.module.lengthMm != null,
+      },
       (hecho, total) => setProgreso({ hecho, total }),
     );
     setResultado(r);
