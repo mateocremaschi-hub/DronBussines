@@ -223,6 +223,13 @@ export class Acumulador {
   private fotosSinEnganche: Array<{ fileName: string; fraccionLisa: number }> = [];
   /** Cuanto vinieteo hubo que sacarle a cada foto, en grados en la esquina. */
   private vinietas: Array<{ fileName: string; maximoC: number }> = [];
+  /**
+   * Modulos medidos dos veces, desde fotos distintas, y cuanto se diferencian.
+   *
+   * Es la unica prueba de que el motor funciona que no necesita saber de
+   * antemano que panel esta roto.
+   */
+  private repeticiones: Array<{ clave: string; diferencia: number }> = [];
 
   constructor(
     private farm: CompiledFarm,
@@ -305,8 +312,20 @@ export class Acumulador {
 
         const d = Math.hypot(m.x - huella.centre.x, m.y - huella.centre.y);
         const clave = `${m.rowId}#${m.positionInRow}`;
-        const previo = this.mejor.get(clave);
-        if (previo && previo.distanciaAlCentroM <= d) continue;
+        /*
+          Antes se salteaba el modulo que otra foto ya habia medido mejor.
+
+          Ahora se mide igual, porque esa segunda medicion es la unica prueba
+          que existe de que todo esto funciona: el MISMO panel, visto desde
+          otra posicion del dron, en otra parte del cuadro y con otro angulo,
+          tiene que dar la misma temperatura. Si las dos mediciones no
+          coinciden, no hay ningun defecto que reportar — hay un pipeline roto,
+          y sin esto no se enteraba nadie.
+
+          Cuesta medir de mas los modulos que caen en dos fotos. Con el solape
+          de un vuelo real eso es cerca del doble de mediciones, y vale la pena:
+          es la diferencia entre entregar una lista y poder defenderla.
+        */
 
         const cx = px.px * escalaX;
         const cy = px.py * escalaY;
@@ -481,13 +500,33 @@ export class Acumulador {
       // la diferencia tiene que quedar igual.
       const resta = vinieta ? correccion(vinieta, x.r) : 0;
 
+      /*
+        La misma medicion, hecha desde otra foto.
+
+        Se guarda la diferencia ANTES de quedarse con una de las dos. Es la
+        repetibilidad del instrumento entero —lector, enganche, vinieteo,
+        geometria— medida sin ninguna verdad de campo: nadie tiene que saber
+        que panel esta roto para que este numero signifique algo.
+      */
+      const previo = this.mejor.get(x.clave);
+      const celsius = x.hit.celsius - resta;
+      if (previo && previo.fileName !== foto.fileName) {
+        this.repeticiones.push({
+          clave: x.clave,
+          diferencia: Math.abs(celsius - previo.celsius),
+        });
+      }
+      // De las dos se guarda la que vio el modulo mas cerca del centro del
+      // cuadro: en el borde la termica miente mas.
+      if (previo && previo.distanciaAlCentroM <= x.d) continue;
+
       medidos++;
       this.sinPanel.delete(x.clave);
       this.mejor.set(x.clave, {
         modulo: x.m,
         ...(x.retrato ? { retrato: x.retrato } : {}),
         ...(foto.cuando != null ? { cuando: foto.cuando } : {}),
-        celsius: x.hit.celsius - resta,
+        celsius,
         pixeles: x.hit.pixeles,
         puntoCalienteC: x.hit.puntoCalienteC - resta,
         pixelesPorCelda: x.ladoCeldaPx * x.ladoCeldaPx,
@@ -551,6 +590,20 @@ export class Acumulador {
   /** El vinieteo que hubo que sacarle a cada foto, en grados en la esquina. */
   vinieteo(): Array<{ fileName: string; maximoC: number }> {
     return this.vinietas;
+  }
+
+  /**
+   * Que tan repetible es la medicion: el mismo panel medido en dos fotos.
+   *
+   * Devuelve null si el vuelo no tiene solape —fotos sueltas, o una pasada sin
+   * superposicion— y entonces no hay nada que comparar. Eso tambien hay que
+   * decirlo: un vuelo sin solape no se puede auditar a si mismo.
+   */
+  repetibilidad(): { modulos: number; mediana: number; p90: number; peor: number } | null {
+    if (this.repeticiones.length < REPETICIONES_MINIMAS) return null;
+    const v = this.repeticiones.map((r) => r.diferencia).sort((a, b) => a - b);
+    const en = (q: number) => v[Math.min(v.length - 1, Math.floor(v.length * q))]!;
+    return { modulos: v.length, mediana: en(0.5), p90: en(0.9), peor: v[v.length - 1]! };
   }
 
   /** Los corrimientos que hubo que aplicarle a cada foto, en metros. */
@@ -727,6 +780,14 @@ export const UMBRALES_INTERNOS: Umbrales = { leve: 8, moderada: 15, critica: 25 
  * medido, la habia dibujado y la habia clasificado como diodo — y despues la
  * llamo normal.
  */
+/**
+ * Con menos repeticiones que esto no se dice nada de la repetibilidad.
+ *
+ * Veinte modulos vistos dos veces alcanzan para una mediana honesta y son
+ * pocos: los da una sola pasada corta con el solape de siempre.
+ */
+const REPETICIONES_MINIMAS = 20;
+
 /** Cuantos modulos de una fila hacen falta para poder juzgar si algo es de la fila. */
 const MODULOS_PARA_JUZGAR_LA_FILA = 8;
 

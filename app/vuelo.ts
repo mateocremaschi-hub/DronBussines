@@ -65,6 +65,18 @@ export interface ResultadoDeVuelo {
   fotosTermicas: number;
   /** Modulos que aparecieron solo cortados por el borde y no se midieron. */
   soloEnElBorde: number;
+  /**
+   * La prueba que el vuelo se hace a si mismo.
+   *
+   * El mismo panel, visto en dos fotos distintas —otra posicion del dron, otra
+   * parte del cuadro, otro angulo— tiene que dar la misma temperatura. Si no
+   * coinciden, no hay ningun defecto que reportar: hay un pipeline roto.
+   *
+   * Es lo unico que dice si el motor esta funcionando SIN saber de antemano
+   * que panel esta roto. `null` cuando el vuelo no tiene solape y no hay nada
+   * que comparar — que tambien hay que decirlo.
+   */
+  repetibilidad: { modulos: number; mediana: number; p90: number; peor: number } | null;
   /** Fotos que se ubicaron con un supuesto porque les faltaba un dato. */
   posesSupuestas: Array<{ motivo: string; fotos: number }>;
   /** Angulo medio de los trackers durante el vuelo, si se pudo saber. */
@@ -80,6 +92,15 @@ export interface ResultadoDeVuelo {
    */
   fixes: Map<string, PhotoFix>;
 }
+
+/**
+ * Cuanto pueden diferir dos mediciones del mismo panel y seguir sirviendo.
+ *
+ * Un grado. El umbral de anomalia leve anda por los tres, asi que con un grado
+ * de dispersion entre dos mediciones del mismo panel un defecto leve sigue
+ * siendo distinguible del ruido. Con dos grados ya no.
+ */
+export const REPETIBLE_C = 1;
 
 export interface OpcionesDeVuelo {
   moduloAnchoM: number;
@@ -363,6 +384,42 @@ export async function analizarFotos(
     }
   }
 
+  /*
+    La prueba que el vuelo se hace a si mismo, y va PRIMERA.
+
+    Todo lo demas que dice este informe —cuantos hallazgos, de que tipo, con
+    que delta— depende de que la medicion sea repetible. Si el mismo panel
+    medido dos veces da dos numeros distintos, la lista de defectos es ruido
+    ordenado, y eso hay que leerlo antes que la lista.
+  */
+  if (acc) {
+    const rep = acc.repetibilidad();
+    if (!rep) {
+      fallos.push(
+        "Este vuelo no tiene solape: ningun modulo salio en dos fotos, asi que no hay forma de " +
+        "chequear la medicion contra si misma. Con solape, cada panel se mide dos veces desde " +
+        "posiciones distintas y las dos tienen que coincidir — es la unica prueba de que el motor " +
+        "funciona que no necesita saber de antemano que panel esta roto.",
+      );
+    } else {
+      const veredicto =
+        rep.p90 <= REPETIBLE_C
+          ? "La medicion es repetible."
+          : rep.p90 <= REPETIBLE_C * 2
+            ? "La medicion es repetible a medias: sirve para encontrar defectos grandes, no para " +
+              "afirmar un ΔT."
+            : "LA MEDICION NO ES REPETIBLE. Los hallazgos de abajo no se pueden defender: antes " +
+              "de mirarlos hay que averiguar por que el mismo panel da dos numeros distintos.";
+      fallos.push(
+        `${rep.modulos} modulos salieron en dos fotos y se midieron dos veces. Entre las dos ` +
+        `mediciones hay ${rep.mediana.toFixed(1)} °C de diferencia tipica, ${rep.p90.toFixed(1)} °C ` +
+        `en el 10 % peor y ${rep.peor.toFixed(1)} °C en el peor caso. ${veredicto} ` +
+        `Como referencia, el umbral de anomalia leve de este vuelo es de varios grados: la ` +
+        "diferencia entre dos mediciones del mismo panel tiene que ser bastante menor que eso.",
+      );
+    }
+  }
+
   if (opts.largoDeclarado === false) {
     fallos.push(
       `El perfil del parque no dice cuanto mide un modulo del lado largo, asi que se uso ` +
@@ -407,6 +464,7 @@ export async function analizarFotos(
     gsdCm: nGsd ? sumaGsd / nGsd : 0,
     fotosTermicas: termicas,
     soloEnElBorde: acc ? acc.soloEnElBorde() : 0,
+    repetibilidad: acc ? acc.repetibilidad() : null,
     posesSupuestas: acc ? acc.posesSupuestas() : [],
     anguloMedio: nAngulo ? sumaAngulo / nAngulo : null,
     problemas,

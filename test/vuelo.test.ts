@@ -26,6 +26,7 @@ import {
   hallazgosAFindings,
   idDeModulo,
   reclasificarFindings,
+  REPETIBLE_C,
   vueloDesdeAnalisis,
   type ResultadoDeVuelo,
 } from "../app/vuelo";
@@ -358,6 +359,7 @@ describe("el vuelo guardado y vuelto a abrir conserva las dos mitades", () => {
     gsdCm: 3.2,
     fotosTermicas: 1,
     soloEnElBorde: 4,
+    repetibilidad: null,
     posesSupuestas: [],
     anguloMedio: 12,
     problemas: [],
@@ -498,5 +500,65 @@ describe("los vuelos que quedaron guardados con el modelo viejo", () => {
     // Y dice lo que ese formato no guardaba, en vez de dejar el hueco en
     // blanco — que se leeria como "no falto ningun modulo".
     expect(v.cobertura!.limitaciones.join(" ")).toContain("NO trae la cobertura");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * La prueba que el vuelo se hace a si mismo.
+ *
+ * Salio de la objecion correcta de Mateo: "si no funciono con 3 fotos
+ * centradas, ¿como querés que revisemos miles de fotos de un bloque? primero
+ * hay que saber si funciona antes de cargar millones de fotos".
+ *
+ * No alcanza con probar contra defectos conocidos: eso es una muestra de tres
+ * y se le puede ajustar cualquier cosa. Lo que si prueba algo sin ninguna
+ * verdad de campo es la repetibilidad — el MISMO panel, visto en dos fotos
+ * distintas, desde otra posicion del dron y en otra parte del cuadro, tiene
+ * que dar la misma temperatura. Si no coincide, no hay defecto que reportar:
+ * hay un pipeline roto.
+ *
+ * Y lo mejor es que sale gratis: cualquier vuelo con solape la trae puesta.
+ */
+describe("el mismo panel medido dos veces", () => {
+  /** El mismo modulo caliente, fotografiado desde dos posiciones distintas. */
+  function dosPasadas(corrimientoM: number) {
+    const acc = volar(pareja());
+    const elegido = acc.muestras().reduce((a, b) =>
+      a.distanciaAlCentroM <= b.distanciaAlCentroM ? a : b,
+    );
+    const celsius = calentar(pareja(), elegido, 25);
+    const dos = new Acumulador(farm, frame, {
+      camera: camara, moduloAnchoM: ANCHO_M, moduloLargoM: LARGO_M,
+    });
+    const ms = modulesOfRow(farm.rows[0]!, farm);
+    const cx = ms.reduce((a, m) => a + m.x, 0) / ms.length;
+    const cy = ms.reduce((a, m) => a + m.y, 0) / ms.length;
+    for (const dx of [0, corrimientoM]) {
+      const g = toGeo(frame, cx + dx, cy);
+      dos.agregar({
+        fileName: `DJI_000${dx ? 2 : 1}_T.JPG`,
+        radio: termica(celsius),
+        pose: {
+          lat: g.lat, lon: g.lon, altitudeAglM: 60,
+          gimbalYawDeg: 0, gimbalPitchDeg: -90,
+        },
+      });
+    }
+    return dos;
+  }
+
+  it("sin solape no hay nada que comparar, y lo dice", () => {
+    expect(volar(pareja()).repetibilidad()).toBeNull();
+  });
+
+  it("con solape, las dos mediciones del mismo panel tienen que coincidir", () => {
+    const rep = dosPasadas(4)!.repetibilidad();
+    expect(rep, "las dos pasadas tenian que compartir modulos").not.toBeNull();
+    expect(rep!.modulos).toBeGreaterThan(20);
+    // La escena es la misma en las dos fotos: si el motor es consistente, la
+    // diferencia tiene que ser practicamente cero.
+    expect(rep!.p90).toBeLessThan(REPETIBLE_C);
   });
 });
