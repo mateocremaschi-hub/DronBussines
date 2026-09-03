@@ -219,3 +219,44 @@ describe("con los trackers inclinados", () => {
     expect(con.peor).toBe("normal");
   });
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * La caja tiene que saber en que cuadro estan sus coordenadas.
+ *
+ * Sin eso es un par de numeros sin unidad, y eso costo caro. El recuadro se
+ * dibuja sobre el JPEG, y con "Super Resolution" prendida el JPEG mide
+ * 1280x1024 mientras que la caja esta en el marco de la termica cruda,
+ * 640x512. La pantalla escalaba con el tamano del JPEG y dibujaba TODOS los
+ * recuadros a la mitad de su posicion — exactamente la mitad — asi que un
+ * defecto real aparecia senalado sobre el pasto.
+ *
+ * La medicion estaba bien todo el tiempo. Lo que estaba mal era el dibujo, que
+ * es lo unico que una persona puede mirar para creerle al informe.
+ */
+describe("la caja guarda su propio marco", () => {
+  it("trae el tamaño de la termica, no el del archivo", () => {
+    const hs = medir(28, 25, 0);
+    const uno = hs.find((h) => h.caja)!;
+    expect(uno.caja!.ancho).toBe(640);
+    expect(uno.caja!.alto).toBe(512);
+  });
+
+  /*
+    El caso que rompio: la termica cruda entra a 640x512 aunque el JPEG venga
+    al doble. La caja tiene que quedar en el marco de la termica.
+  */
+  it("con el JPEG al doble, la caja sigue en el marco de la termica", () => {
+    const acc = new Acumulador(farm, marco, {
+      camera: camara, moduloAnchoM: ANCHO_M, moduloLargoM: LARGO_M,
+    });
+    const foto = escena(28, 25, 0);
+    // El lector devuelve el crudo a 640x512 y marca la foto como super
+    // resolucion: el archivo media 1280x1024.
+    acc.agregar({ ...foto, radio: { ...foto.radio, superResolucion: true } });
+    const uno = acc.muestras().find((m) => m.caja)!;
+    expect(uno.caja!.ancho).toBe(640);
+    expect(uno.caja!.alto).toBe(512);
+  });
+});

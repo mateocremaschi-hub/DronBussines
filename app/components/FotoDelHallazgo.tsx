@@ -96,9 +96,21 @@ export function FotoDelHallazgo({ fileName, caja, archivos, explicar = true }: P
             pantalla — sin recalcular nada.
           */}
           {caja && dim && (
+            /*
+              El viewBox va en el marco de la CAJA, no en el del JPEG.
+
+              Con "Super Resolution" prendida el JPEG mide 1280x1024 y la caja
+              esta en el marco de la termica cruda, 640x512. Usando el tamano
+              del JPEG, todos los recuadros se dibujaban a la mitad de su
+              posicion — y ahi es donde una persona mira para decidir si le
+              cree al informe. Las mediciones estaban bien todo el tiempo.
+
+              Los vuelos viejos guardaron la caja sin su marco: para esos se
+              cae al tamano del archivo, que es lo que se venia haciendo.
+            */
             <svg
               className="marca"
-              viewBox={`0 0 ${dim.w} ${dim.h}`}
+              viewBox={`0 0 ${caja.ancho ?? dim.w} ${caja.alto ?? dim.h}`}
               preserveAspectRatio="none"
             >
               <rect
@@ -109,7 +121,7 @@ export function FotoDelHallazgo({ fileName, caja, archivos, explicar = true }: P
                 transform={`rotate(${(caja.rotRad * 180) / Math.PI} ${caja.cx} ${caja.cy})`}
                 fill="none"
                 stroke="#00e5ff"
-                strokeWidth={Math.max(2, dim.w / 320)}
+                strokeWidth={Math.max(2, (caja.ancho ?? dim.w) / 320)}
               />
             </svg>
           )}

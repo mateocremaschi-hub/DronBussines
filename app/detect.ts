@@ -129,6 +129,23 @@ export interface Caja {
   largo: number;
   cruzado: number;
   rotRad: number;
+  /**
+   * El cuadro en el que estan estas coordenadas, en pixeles.
+   *
+   * Sin esto la caja es un par de numeros sin unidad, y eso costo caro. El
+   * recuadro se dibuja sobre el JPEG, y con "Super Resolution" prendida el
+   * JPEG mide 1280x1024 mientras que la caja esta en el marco de la termica
+   * cruda, 640x512. La pantalla usaba el tamano del JPEG para escalar, asi que
+   * dibujaba TODOS los recuadros a la mitad de la posicion correcta —
+   * exactamente la mitad— y cualquier defecto aparecia senalado sobre el pasto
+   * de la fila de al lado.
+   *
+   * La medicion siempre estuvo bien; lo que estaba mal era el dibujo. Peor
+   * todavia: es el dibujo lo unico que una persona puede mirar para creerle o
+   * no al informe.
+   */
+  ancho?: number;
+  alto?: number;
 }
 
 /**
@@ -480,6 +497,7 @@ export class Acumulador {
         caja: {
           cx: x.caja.cx, cy: x.caja.cy,
           largo: x.caja.largo, cruzado: x.caja.cruzado, rotRad: x.caja.rotRad,
+          ancho: foto.radio.width, alto: foto.radio.height,
         },
       });
     }
