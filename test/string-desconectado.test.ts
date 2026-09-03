@@ -77,6 +77,39 @@ describe("un string entero mas caliente que sus vecinos", () => {
     expect(ev[0]!.deltaTMedio).toBeCloseTo(8, 0);
   });
 
+  /*
+    El caso de verdad, medido. El 3 de septiembre saco una foto de un string
+    desconectado en Edenvale: la fila mala dio 45,2 °C y las cinco sanas de la
+    misma foto entre 40,7 y 41,5. ΔT = 4,0 contra un umbral que era de 4 — un
+    decimo menos y el defecto mas caro de la lista se perdia en silencio.
+
+    Este test fija ese numero. Si alguien vuelve a subir el umbral, se rompe
+    aca con la foto real de por medio.
+  */
+  it("el string desconectado que medimos en el campo se reporta", () => {
+    const comoEnEdenvale = [
+      ...Array.from({ length: 28 }, (_, i) => m(i + 1, 45.2, 0)),
+      ...Array.from({ length: 28 }, (_, i) => m(i + 1, 41.2, 1)),
+    ];
+    const ev = eventosDeString(comparar(comoEnEdenvale, UMBRALES), 28);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.motivo).toBe("string-entero");
+    expect(ev[0]!.stringNumber).toBe(1);
+    expect(ev[0]!.deltaTMedio).toBeCloseTo(4, 1);
+  });
+
+  /*
+    Y la contracara: las filas sanas de esa misma foto se despegan hasta 0,8 °C
+    entre si. Esa dispersion no puede reportar nada.
+  */
+  it("la dispersion entre filas sanas de esa misma foto no reporta nada", () => {
+    const sanas = [
+      ...Array.from({ length: 28 }, (_, i) => m(i + 1, 41.5, 0)),
+      ...Array.from({ length: 28 }, (_, i) => m(i + 1, 40.7, 1)),
+    ];
+    expect(eventosDeString(comparar(sanas, UMBRALES), 28)).toHaveLength(0);
+  });
+
   it("dos strings sanos no reportan nada", () => {
     const sanos = [
       ...Array.from({ length: 28 }, (_, i) => m(i + 1, 45.2, 0)),

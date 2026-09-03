@@ -748,13 +748,21 @@ export interface EventoDeString {
 /**
  * Cuanto tiene que despegarse un string entero de los otros para reportarlo.
  *
- * Cuatro grados. Un string desconectado no entrega corriente, asi que toda la
- * energia que le entra se va en calor: en la practica corre bastante mas que
- * eso sobre sus vecinos. El umbral esta bajo a proposito — perder un string
- * entero es lo mas caro de esta lista, no es un panel, son 28, y un falso
- * positivo se descarta mirando una foto.
+ * Tres grados. Estaba en cuatro, apoyado en que un string desconectado corre
+ * "bastante mas" que sus vecinos. La primera foto real de uno desconectado dijo
+ * otra cosa: 45,2 °C contra cinco filas sanas entre 40,7 y 41,5. ΔT = 4,0 —
+ * justo el umbral. Un decimo menos y el defecto mas caro de la lista no se
+ * reportaba.
+ *
+ * Tres es seguro por lo de al lado: en esa misma foto las cinco filas sanas
+ * caen dentro de 0,8 °C entre si. Tres grados es cuatro veces esa dispersion,
+ * asi que sigue muy por arriba del ruido entre filas.
+ *
+ * El umbral esta bajo a proposito — perder un string entero es lo mas caro de
+ * esta lista, no es un panel, son 28, y un falso positivo se descarta mirando
+ * una foto.
  */
-export const DELTA_STRING_ENTERO = 4;
+export const DELTA_STRING_ENTERO = 3;
 
 /** Cuantos modulos medidos hacen falta para creerle a la temperatura de un string. */
 const MODULOS_PARA_CREERLE_AL_STRING = 6;
