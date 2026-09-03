@@ -733,7 +733,31 @@ export interface EventoDeString {
   /** Cuantos de los modulos del string estan calientes. */
   fraccion: number;
   deltaTMedio: number;
+  /**
+   * Como se encontro. Los dos casos le piden cosas distintas al que lee:
+   *
+   * - `modulos-calientes`: la mayoria de los modulos del string dieron
+   *   anomalia por su cuenta. El string esta caliente Y desparejo.
+   * - `string-entero`: NINGUN modulo dio anomalia contra sus hermanos, pero el
+   *   string completo esta por encima de los OTROS strings. Es el caso del
+   *   string desconectado — el que era invisible.
+   */
+  motivo: "modulos-calientes" | "string-entero";
 }
+
+/**
+ * Cuanto tiene que despegarse un string entero de los otros para reportarlo.
+ *
+ * Cuatro grados. Un string desconectado no entrega corriente, asi que toda la
+ * energia que le entra se va en calor: en la practica corre bastante mas que
+ * eso sobre sus vecinos. El umbral esta bajo a proposito — perder un string
+ * entero es lo mas caro de esta lista, no es un panel, son 28, y un falso
+ * positivo se descarta mirando una foto.
+ */
+export const DELTA_STRING_ENTERO = 4;
+
+/** Cuantos modulos medidos hacen falta para creerle a la temperatura de un string. */
+const MODULOS_PARA_CREERLE_AL_STRING = 6;
 
 /**
  * Cuantos modulos tiene un string.
@@ -753,10 +777,25 @@ export type ModulosPorString = number | ((rowId: string) => number | undefined);
  * veces lo paga otro. Reportar 28 hallazgos donde hay uno solo es lo que hace
  * que un informe de 3000 filas sea inutilizable.
  */
+/**
+ * Desde que fraccion del string se deja de reportar modulos y se reporta el
+ * string.
+ *
+ * Estaba en 0,5 y con ese numero este camino era INALCANZABLE. Medido: con 13
+ * de 28 modulos calientes salen 13 hallazgos anomalos y ningun evento, porque
+ * 13/28 no llega a la mitad; con 14 de 28 la mediana del string se corre a la
+ * zona caliente, todos los ΔT dan cero y no queda un solo modulo anomalo que
+ * agrupar. O sea que el umbral solo se alcanzaba justo donde el sintoma
+ * desaparece.
+ *
+ * Un tercio es un umbral que se puede alcanzar de verdad, y ademas dice algo:
+ * cuando un tercio del string esta anomalo, el problema es del string y no de
+ * N paneles. Es lo que evita el informe de 767 filas para 15 trackers.
+ */
 export function eventosDeString(
   hallazgos: Hallazgo[],
   modulosPorString: ModulosPorString,
-  fraccionMinima = 0.5,
+  fraccionMinima = 0.35,
 ): EventoDeString[] {
   const largoDe = (rowId: string): number | undefined =>
     typeof modulosPorString === "number" ? modulosPorString : modulosPorString(rowId);
@@ -768,6 +807,7 @@ export function eventosDeString(
   }
 
   const out: EventoDeString[] = [];
+  const yaReportado = new Set<string>();
   for (const g of grupos.values()) {
     const m = g[0]!.modulo;
     // El largo del string de ESTA fila. Sin el no hay fraccion que calcular:
@@ -783,11 +823,80 @@ export function eventosDeString(
       modulos: g.length,
       fraccion,
       deltaTMedio: g.reduce((s, h) => s + h.deltaT, 0) / g.length,
+      motivo: "modulos-calientes",
+    };
+    yaReportado.add(`${m.rowId}#${m.chunkIndex}`);
+    if (m.row) ev.row = m.row;
+    if (m.stringLabel) ev.stringLabel = m.stringLabel;
+    out.push(ev);
+  }
+  /*
+    El string entero, que era invisible por construccion.
+    =========================================================================
+    Cada modulo se compara contra sus hermanos del MISMO string. Si el string
+    entero esta desconectado, todos sus modulos estan igual de calientes: la
+    mediana del string sube con ellos, cada modulo da ΔT cero, ninguno sale
+    anomalo — y el bucle de arriba, que agrupa hallazgos anomalos, no tiene
+    nada que agrupar. Cero hallazgos y cero eventos, con dos strings apagados
+    delante de la camara. Probado: 28 modulos a 60 °C contra 28 a 45 dan ΔT 0.
+
+    Y es el defecto mas caro de la lista: no es un panel, son 28.
+
+    La comparacion tiene que subir un nivel: el string contra los OTROS
+    strings. Misma escalera que usan los modulos —primero los de su fila, si no
+    los de su bloque, si no los del vuelo— porque dos strings de la misma fila
+    estan bajo el mismo sol y con la misma suciedad.
+  */
+  const porString = new Map<string, Hallazgo[]>();
+  for (const h of hallazgos) push2(porString, `${h.modulo.rowId}#${h.modulo.chunkIndex}`, h);
+
+  const medianas = new Map<string, { t: number; h: Hallazgo[] }>();
+  for (const [k, g] of porString) {
+    if (g.length < MODULOS_PARA_CREERLE_AL_STRING) continue;
+    medianas.set(k, { t: percentil(g.map((x) => x.celsius), 50), h: g });
+  }
+
+  const deLaFila = new Map<string, number[]>();
+  const delBloque = new Map<string, number[]>();
+  const todas: number[] = [];
+  for (const [k, v] of medianas) {
+    const m = v.h[0]!.modulo;
+    push2(deLaFila, m.rowId, v.t);
+    push2(delBloque, m.block, v.t);
+    todas.push(v.t);
+  }
+
+  for (const [k, v] of medianas) {
+    if (yaReportado.has(k)) continue;   // ya salio por sus modulos calientes
+    const m = v.h[0]!.modulo;
+
+    // Contra los OTROS strings, sacandose a si mismo del vecindario: con dos
+    // strings por fila, incluirse es compararse contra el promedio de uno mismo
+    // y el vecino, que parte la diferencia al medio.
+    const otros = (lista: number[] | undefined) => (lista ?? []).filter((t) => t !== v.t);
+    const fila = otros(deLaFila.get(m.rowId));
+    const bloque = otros(delBloque.get(m.block));
+    const vuelo = otros(todas);
+    const contra = fila.length ? fila : bloque.length ? bloque : vuelo;
+    if (!contra.length) continue;
+
+    const delta = v.t - percentil(contra, 50);
+    if (delta < DELTA_STRING_ENTERO) continue;
+
+    const largo = largoDe(m.rowId) ?? v.h.length;
+    const ev: EventoDeString = {
+      rowId: m.rowId, block: m.block, tracker: m.tracker,
+      stringNumber: m.stringNumber,
+      modulos: v.h.length,
+      fraccion: v.h.length / largo,
+      deltaTMedio: delta,
+      motivo: "string-entero",
     };
     if (m.row) ev.row = m.row;
     if (m.stringLabel) ev.stringLabel = m.stringLabel;
     out.push(ev);
   }
+
   return out.sort((a, b) => b.modulos - a.modulos);
 }
 

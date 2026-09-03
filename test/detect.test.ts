@@ -173,14 +173,29 @@ describe("cuando el problema es del string entero", () => {
     // Con el largo del otro tipo de tracker, los mismos 28 dan media fila.
     expect(eventosDeString(h, 56)[0]!.fraccion).toBeCloseTo(0.5, 3);
 
-    // Y con un poco menos ya no hay evento: 20 de 28 es un tracker, 20 de 56 no.
+    /*
+      Y con un poco menos ya no hay evento: 15 de 28 es medio tracker, 15 de 56
+      es un cuarto. El numero se movio de 20 a 15 cuando el umbral bajo de la
+      mitad a un tercio — la mitad era inalcanzable, porque al llegar ahi la
+      mediana del string se corre a la zona caliente y no queda ningun modulo
+      anomalo que agrupar.
+    */
     const parcial = h.map((x) =>
-      x.modulo.chunkIndex === 0 && x.modulo.positionInRow > 20
+      x.modulo.chunkIndex === 0 && x.modulo.positionInRow > 15
         ? { ...x, severidad: "normal" as const }
         : x,
     );
-    expect(eventosDeString(parcial, largoDeLaFila)).toHaveLength(1);
-    expect(eventosDeString(parcial, 56)).toHaveLength(0);
+    /*
+      Se filtra por MOTIVO. Desde que existe la deteccion del string entero, un
+      string caliente sale igual aunque ningun modulo llegue a la fraccion —
+      porque se lo compara contra los otros strings, no contra el conteo. Lo
+      que este test mira es el otro camino, el que agrupa modulos anomalos, y
+      ese si depende del largo del string de la fila.
+    */
+    const porConteo = (largo: Parameters<typeof eventosDeString>[1]) =>
+      eventosDeString(parcial, largo).filter((e) => e.motivo === "modulos-calientes");
+    expect(porConteo(largoDeLaFila)).toHaveLength(1);
+    expect(porConteo(56)).toHaveLength(0);
   });
 });
 

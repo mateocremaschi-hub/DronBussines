@@ -1,0 +1,155 @@
+/**
+ * Un string entero desconectado: el defecto que era invisible.
+ *
+ * Salio de una pregunta suya —"le saque una foto a dos strings que estaban de
+ * diferente color porque estaban desconectados, que puedo probar con eso"— y de
+ * ir a mirar el codigo antes de contestar.
+ *
+ * El motor compara cada modulo contra sus hermanos del MISMO string. Si el
+ * string entero esta desconectado, todos sus modulos estan igual de calientes:
+ * la mediana del string sube con ellos, cada modulo da ΔT cero, ninguno sale
+ * anomalo. Cero hallazgos y cero eventos, con dos strings apagados delante de
+ * la camara.
+ *
+ * Y no es un panel: son 28. Es el defecto mas caro que puede haber en la lista.
+ */
+
+import { describe, expect, it } from "vitest";
+import { comparar, eventosDeString, UMBRALES, type Muestra } from "../app/detect";
+
+/** Un modulo del string `chunk` de la fila `05-042-R1`. */
+const m = (pos: number, celsius: number, chunk = 0, rowId = "05-042-R1"): Muestra => ({
+  modulo: {
+    rowId, block: rowId.slice(0, 2), tracker: rowId.slice(0, 6), row: "R1",
+    chunkIndex: chunk, stringNumber: chunk + 1, module: pos, positionInRow: pos + chunk * 28,
+    x: pos * 1.14, y: 0,
+  },
+  celsius, pixeles: 600, fileName: "t.jpg", distanciaAlCentroM: 1,
+});
+
+/** Una fila con dos strings: el 1 desconectado a 60 °C, el 2 sano a 45 °C. */
+const unoApagado = [
+  ...Array.from({ length: 28 }, (_, i) => m(i + 1, 60, 0)),
+  ...Array.from({ length: 28 }, (_, i) => m(i + 1, 45, 1)),
+];
+
+describe("un string entero mas caliente que sus vecinos", () => {
+  /*
+    Esto es lo que el motor NO puede ver, y esta bien que no lo vea asi: la
+    comparacion contra los hermanos del propio string es la que encuentra el
+    modulo suelto, y por definicion no puede encontrar algo que le pasa a todo
+    el string. El test lo deja fijado para que quede claro por que hace falta
+    el segundo nivel de comparacion.
+  */
+  it("ningun modulo sale anomalo, porque se comparan entre ellos", () => {
+    const h = comparar(unoApagado, UMBRALES);
+    expect(h.filter((x) => x.severidad !== "normal")).toHaveLength(0);
+    expect(h.find((x) => x.modulo.chunkIndex === 0)!.deltaT).toBeCloseTo(0, 5);
+  });
+
+  it("pero el string SI sale, comparado contra el otro string de su fila", () => {
+    const ev = eventosDeString(comparar(unoApagado, UMBRALES), 28);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.motivo).toBe("string-entero");
+    expect(ev[0]!.stringNumber).toBe(1);
+    expect(ev[0]!.deltaTMedio).toBeCloseTo(15, 0);
+    expect(ev[0]!.modulos).toBe(28);
+  });
+
+  it("y no reporta el string sano", () => {
+    const ev = eventosDeString(comparar(unoApagado, UMBRALES), 28);
+    expect(ev.every((e) => e.stringNumber === 1)).toBe(true);
+  });
+
+  /*
+    Sacarse a si mismo del vecindario importa. Con dos strings por fila,
+    incluirse es compararse contra el promedio de uno mismo y el vecino — la
+    diferencia se parte al medio y con un umbral de 4 °C un caso real de 8 °C
+    se cae.
+  */
+  it("se compara contra los OTROS, no contra el promedio que lo incluye", () => {
+    const ochoGrados = [
+      ...Array.from({ length: 28 }, (_, i) => m(i + 1, 53, 0)),
+      ...Array.from({ length: 28 }, (_, i) => m(i + 1, 45, 1)),
+    ];
+    const ev = eventosDeString(comparar(ochoGrados, UMBRALES), 28);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.deltaTMedio).toBeCloseTo(8, 0);
+  });
+
+  it("dos strings sanos no reportan nada", () => {
+    const sanos = [
+      ...Array.from({ length: 28 }, (_, i) => m(i + 1, 45.2, 0)),
+      ...Array.from({ length: 28 }, (_, i) => m(i + 1, 45, 1)),
+    ];
+    expect(eventosDeString(comparar(sanos, UMBRALES), 28)).toHaveLength(0);
+  });
+
+  /*
+    Sin vecinos en la fila se sube a los del bloque. Un tracker de un solo
+    string existe —las filas cortas de las puntas— y no puede quedar sin
+    chequear por eso.
+  */
+  it("un string solo en su fila se compara contra los del bloque", () => {
+    const muestras = [
+      ...Array.from({ length: 28 }, (_, i) => m(i + 1, 60, 0, "05-042-R1")),
+      ...Array.from({ length: 28 }, (_, i) => m(i + 1, 45, 0, "05-043-R1")),
+      ...Array.from({ length: 28 }, (_, i) => m(i + 1, 45, 0, "05-044-R1")),
+    ];
+    const ev = eventosDeString(comparar(muestras, UMBRALES), 28);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.rowId).toBe("05-042-R1");
+  });
+
+  it("con pocos modulos medidos no se le cree a la temperatura del string", () => {
+    const pocos = [
+      ...Array.from({ length: 3 }, (_, i) => m(i + 1, 70, 0)),
+      ...Array.from({ length: 28 }, (_, i) => m(i + 1, 45, 1)),
+    ];
+    expect(eventosDeString(comparar(pocos, UMBRALES), 28)
+      .filter((e) => e.motivo === "string-entero")).toHaveLength(0);
+  });
+
+  /*
+    El camino viejo, que estaba muerto.
+
+    Agrupaba modulos anomalos cuando pasaban de la MITAD del string, y eso era
+    inalcanzable: medido, con 13 de 28 calientes salen 13 hallazgos anomalos y
+    ningun evento —13/28 no llega a la mitad— y con 14 de 28 la mediana del
+    string se corre a la zona caliente, todos los ΔT dan cero y no queda un solo
+    modulo anomalo que agrupar. El umbral solo se alcanzaba justo donde el
+    sintoma desaparece.
+
+    Con un tercio se alcanza de verdad, y dice algo: cuando un tercio del string
+    esta anomalo, el problema es del string y no de N paneles.
+  */
+  it("con un tercio del string anomalo se reporta el string, no los modulos", () => {
+    const desparejo = [
+      ...Array.from({ length: 12 }, (_, i) => m(i + 1, 62, 0)),
+      ...Array.from({ length: 16 }, (_, i) => m(i + 13, 45, 0)),
+      ...Array.from({ length: 28 }, (_, i) => m(i + 1, 45, 1)),
+    ];
+    const ev = eventosDeString(comparar(desparejo, UMBRALES), 28);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.motivo).toBe("modulos-calientes");
+    expect(ev[0]!.modulos).toBe(12);
+  });
+
+  /*
+    Y el punto de todo esto: los dos caminos juntos cubren el rango entero. Con
+    la mediana corrida —de la mitad para arriba— entra el camino nuevo; abajo,
+    el viejo. Sin el nuevo, un string apagado de 14 modulos para arriba no
+    aparecia en ningun lado.
+  */
+  it("los dos caminos cubren todas las fracciones", () => {
+    for (const n of [10, 12, 14, 18, 24, 28]) {
+      const ms = [
+        ...Array.from({ length: n }, (_, i) => m(i + 1, 62, 0)),
+        ...Array.from({ length: 28 - n }, (_, i) => m(i + n + 1, 45, 0)),
+        ...Array.from({ length: 28 }, (_, i) => m(i + 1, 45, 1)),
+      ];
+      const ev = eventosDeString(comparar(ms, UMBRALES), 28);
+      expect(ev, `con ${n} de 28 calientes`).toHaveLength(1);
+    }
+  });
+});
