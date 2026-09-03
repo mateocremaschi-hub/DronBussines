@@ -89,6 +89,30 @@ describe("lectura del crudo termico", () => {
   it("no acepta un crudo mas corto que la imagen", () => {
     expect(readRadiometric(jpegTermico(64, 64, escena(8, 8, 40)))).toBeNull();
   });
+
+  /*
+   * El Matrice 4T con "Super Resolution" encendida guarda el JPEG a 1280x1024
+   * cuando el sensor es de 640x512: los pixeles de mas son interpolados, pero
+   * el crudo del APP3 viene al tamano real. Creerle al encabezado dejaba la
+   * camara nueva muda — se esperaban cuatro veces mas bytes de los que hay y
+   * la foto se descartaba entera.
+   */
+  it("lee el crudo al tamano del sensor aunque el JPEG venga al doble", () => {
+    const jpeg = jpegTermico(64, 64, escena(32, 32, 42, { x: 10, y: 10, c: 61 }));
+    const r = readRadiometric(jpeg)!;
+    expect(r).not.toBeNull();
+    expect([r.width, r.height]).toEqual([32, 32]);
+    expect(r.superResolucion).toBe(true);
+    expect(r.celsius.length).toBe(32 * 32);
+    // El punto caliente cae donde lo pusimos, no corrido por el cambio de ancho.
+    expect(r.celsius[10 * 32 + 10]).toBeCloseTo(61, 1);
+  });
+
+  it("una foto al tamano real no se marca como super resolucion", () => {
+    const r = readRadiometric(jpegTermico(32, 32, escena(32, 32, 42)))!;
+    expect(r.superResolucion).toBe(false);
+    expect([r.width, r.height]).toEqual([32, 32]);
+  });
 });
 
 describe("elegir la escala", () => {

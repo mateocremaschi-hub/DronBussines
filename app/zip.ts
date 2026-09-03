@@ -17,7 +17,16 @@
 export interface EntradaZip {
   /** Ruta adentro del archivo, con barras normales. */
   ruta: string;
-  contenido: string;
+  /**
+   * Texto —una mision es KML— o bytes crudos, para las fotos.
+   *
+   * Los bytes importan: la entrega al cliente incluye un ZIP con la foto de
+   * cada defecto. Si un JPEG entra por aca como texto, se le aplica
+   * `TextEncoder` a un arreglo de numeros y adentro del ZIP queda la cadena
+   * "255,216,255,..." en vez de la foto. El ZIP abre igual y los archivos
+   * estan todos, con el nombre correcto — solo que ninguno se puede ver.
+   */
+  contenido: string | Uint8Array;
 }
 
 /**
@@ -36,7 +45,7 @@ export function zip(entradas: EntradaZip[], fecha: Date): Uint8Array<ArrayBuffer
 
   for (const e of entradas) {
     const nombre = enc.encode(e.ruta);
-    const datos = enc.encode(e.contenido);
+    const datos = typeof e.contenido === "string" ? enc.encode(e.contenido) : e.contenido;
     const crc = crc32(datos);
 
     const cabecera = new Uint8Array(30 + nombre.length);

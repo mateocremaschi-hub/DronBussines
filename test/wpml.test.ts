@@ -73,6 +73,23 @@ describe("el ZIP escrito a mano", () => {
     );
   });
 
+  /*
+   * La entrega al cliente incluye un ZIP con la foto de cada defecto. Las
+   * fotos entran como bytes, no como texto: si se los pasa por TextEncoder
+   * adentro del ZIP queda "255,216,255,..." en vez del JPEG. El ZIP abre, los
+   * nombres estan todos, y ninguna foto se puede ver — el tipo de falla que
+   * solo se descubre del otro lado, cuando el cliente ya la recibio.
+   */
+  it("guarda los bytes de una foto tal cual, sin pasarlos por texto", () => {
+    const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe1, 0x00, 0x10, 0x41, 0x42, 0xff, 0xd9]);
+    const bytes = zip([{ ruta: "fotos/p.jpg", contenido: jpeg }], new Date(2026, 0, 2, 3, 4, 5));
+    const dir = mkdtempSync(join(tmpdir(), "z-"));
+    writeFileSync(join(dir, "z.zip"), bytes);
+    execFileSync("unzip", ["-q", "z.zip"], { cwd: dir });
+    const salida = readFileSync(join(dir, "fotos", "p.jpg"));
+    expect(Buffer.from(salida).equals(Buffer.from(jpeg))).toBe(true);
+  });
+
   it("el mismo contenido y la misma fecha dan el mismo archivo", () => {
     const f = new Date(2026, 3, 1, 12, 0, 0);
     const a = zip([{ ruta: "x.txt", contenido: "y" }], f);

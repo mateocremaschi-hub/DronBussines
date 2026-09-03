@@ -145,6 +145,16 @@ export async function analizarFotos(
   let nAngulo = 0;
   /** Tamanios de imagen distintos al de la primera foto. */
   const otraCamara = new Set<string>();
+  /**
+   * Fotos guardadas al doble del tamano del sensor.
+   *
+   * El Matrice 4T tiene una opcion —"Super Resolution"— que guarda la termica
+   * a 1280x1024 cuando el sensor es de 640x512. La mitad de cada pixel es
+   * inventada por interpolacion: no agrega ni un dato de temperatura. Se mide
+   * igual, porque el crudo viene al tamano real, pero el vuelo pesa cuatro
+   * veces mas de lo necesario y tarda cuatro veces mas en subirse.
+   */
+  let superRes = 0;
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i]!;
@@ -159,6 +169,8 @@ export async function analizarFotos(
         onProgreso?.(i + 1, files.length);
         continue;
       }
+
+      if (radio.superResolucion) superRes++;
 
       if (!escalaDelVuelo) escalaDelVuelo = radio.escala;
       else if (radio.escalaAuto !== escalaDelVuelo) discrepan.push(file.name);
@@ -272,6 +284,16 @@ export async function analizarFotos(
       `tambien aparecen ${[...otraCamara].join(", ")}. Todo el vuelo se proyecto con la primera, ` +
       "asi que las demas pueden estar ubicadas en la fila de al lado. Separá los vuelos en " +
       "carpetas distintas y volvé a correr cada uno.",
+    );
+  }
+
+  if (superRes) {
+    fallos.push(
+      `${superRes} de ${termicas} fotos vienen con "Super Resolution" prendida en la camara. ` +
+      "Se midieron bien —la temperatura se lee del dato crudo, que viene al tamano real del " +
+      "sensor— pero la imagen esta agrandada al doble con pixeles inventados: no ves un detalle " +
+      "mas y cada archivo pesa cuatro veces. Apagala en la camara y el mismo vuelo entra en un " +
+      "cuarto del espacio y sube cuatro veces mas rapido.",
     );
   }
 

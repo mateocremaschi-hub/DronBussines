@@ -105,6 +105,14 @@ export interface Radiometric {
    */
   topeC: number;
   fraccionEnElTope: number;
+  /**
+   * La foto venia guardada al doble del tamano real del sensor.
+   *
+   * No rompe nada —se mide sobre el crudo, que es lo real— pero conviene
+   * avisarle al piloto: la mitad de cada archivo son pixeles inventados y el
+   * vuelo pesa cuatro veces mas de lo necesario.
+   */
+  superResolucion?: boolean;
 }
 
 const APP3 = 0xe3;
@@ -148,8 +156,33 @@ export function readRadiometric(
 
   if (!trozos.length || !width || !height) return null;
 
-  const esperado = width * height * 2;
   const total = trozos.reduce((s, t) => s + t.length, 0);
+
+  /*
+   * El JPEG puede ser mas grande que el sensor.
+   *
+   * El Matrice 4T tiene una opcion —"Super Resolution"— que guarda la imagen
+   * termica al doble: 1280x1024 en el encabezado del JPEG, cuando el sensor
+   * es de 640x512. Los pixeles de mas son inventados por interpolacion, pero
+   * el crudo radiometrico del APP3 sigue viniendo al tamano real del sensor.
+   *
+   * Si se cree lo que dice el encabezado, se esperan cuatro veces mas bytes de
+   * los que hay y la foto se descarta entera: la camara nueva quedaba muda.
+   * Asi que cuando el crudo no alcanza para el tamano declarado, se prueba la
+   * mitad exacta, que es lo unico que hace el modo. Se exige coincidencia
+   * exacta para no adivinar con fotos truncadas.
+   */
+  let esperado = width * height * 2;
+  let superResolucion = false;
+  if (total < esperado && width % 2 === 0 && height % 2 === 0) {
+    const mitad = (width / 2) * (height / 2) * 2;
+    if (total === mitad) {
+      width /= 2;
+      height /= 2;
+      esperado = mitad;
+      superResolucion = true;
+    }
+  }
   // Se acepta que sobre (algunos equipos meten un encabezado), nunca que falte.
   if (total < esperado) return null;
 
@@ -185,6 +218,7 @@ export function readRadiometric(
     escalaAuto: auto?.nombre ?? escala.nombre,
     topeC: escala.aCelsius(tope),
     fraccionEnElTope: crudo.length ? enElTope / crudo.length : 0,
+    superResolucion,
   };
 }
 
