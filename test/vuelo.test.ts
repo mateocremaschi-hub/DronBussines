@@ -124,12 +124,28 @@ const vueloConUnModuloCaliente = (() => {
   // caja que despues se mide, asi que lo que se calienta es exactamente lo que
   // el motor va a leer.
   const previas = volar(pareja()).muestras();
-  // El modulo mas cerca del centro del cuadro: es el que la camara ve mejor, y
-  // el unico que se puede elegir sin fijar un numero que depende de la altura
-  // del vuelo sintetico.
-  const elegido = previas.reduce((a, b) =>
-    a.distanciaAlCentroM <= b.distanciaAlCentroM ? a : b,
-  );
+  /*
+    El modulo mas cerca del centro del cuadro: es el que la camara ve mejor, y
+    el unico que se puede elegir sin fijar un numero que depende de la altura
+    del vuelo sintetico.
+
+    Se saltean las PUNTAS de cada string —el primer y el ultimo modulo— porque
+    ahi el motor ya no mide si la caja no cae sobre un panel: en el campo ese
+    lugar lo ocupa el hueco entre filas y el motor del tracker, y medirlo era
+    lo que llenaba la lista de hallazgos falsos. Un modulo de punta calentado
+    sobre una termica sintetica PAREJA no tiene con que distinguirse de eso, y
+    lo que esta prueba fija es otra cosa: que un modulo caliente sale como
+    hallazgo y trae su medicion. Las puntas tienen sus propias pruebas en
+    puntas-de-string.test.ts.
+  */
+  const todos = modulesOfRow(farm.rows[0]!, farm);
+  const esPunta = (m: { stringNumber: number; module: number }) => {
+    const nums = todos.filter((o) => o.stringNumber === m.stringNumber).map((o) => o.module);
+    return m.module === Math.min(...nums) || m.module === Math.max(...nums);
+  };
+  const elegido = previas
+    .filter((m) => !esPunta(m.modulo))
+    .reduce((a, b) => (a.distanciaAlCentroM <= b.distanciaAlCentroM ? a : b));
   const acc = volar(calentar(pareja(), elegido, 25));
   return { muestras: acc.muestras(), acc, caliente: elegido.modulo };
 })();

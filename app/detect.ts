@@ -231,6 +231,28 @@ const FRACCION_MINIMA_MEDIDA = 0.9;
  */
 const CAJAS_PARA_JUZGAR_LA_FILA = 6;
 
+/**
+ * Que parte de la caja tiene que caer sobre panel para que la medicion valga.
+ *
+ * Este es el freno que faltaba y es el que ordena la lista. Sobre los dos
+ * vuelos reales, los modulos del MEDIO de una fila dan 0,63 en el peor decil y
+ * 0,79 tipico: la caja cae entera sobre el panel y no hay nada que discutir.
+ * Los modulos de la PUNTA dan 0,00 a 0,25 — y ahi es donde estaban casi todos
+ * los hallazgos: 9 de 10 en un vuelo, 8 de 9 en el otro, todos en el modulo 28
+ * o en el 1. Mirando la foto de cerca se ve por que: la ultima caja de la fila
+ * no cae sobre un panel, cae sobre el motor del tracker y el hueco que hay
+ * entre una fila y la siguiente. El parque dice que ahi hay un modulo mas de
+ * los que hay.
+ *
+ * El corte va en 0,35 y no mas arriba a proposito. Un defecto DE VERDAD
+ * tambien despega puntos de la mediana: un diodo de bypass caliente parte el
+ * modulo al medio y deja la mitad de los sondeos afuera, o sea 0,5. Con el
+ * corte en 0,6 —que es donde estaba en un intento anterior— ese diodo se
+ * perdia, y perder un defecto de verdad cuesta mucho mas que reportar uno
+ * falso. Entre 0,35 y 0,5 no hay nada medido: es tierra de nadie a proposito.
+ */
+const FRACCION_PANEL_MINIMA = 0.35;
+
 export class Acumulador {
   private mejor = new Map<string, Muestra>();
   /** Fotos que llegaron sin rumbo o sin angulo de gimbal, por motivo. */
@@ -257,6 +279,15 @@ export class Acumulador {
    * distintas y la de las filas es cinco veces mas larga, asi que decide ella.
    */
   private pasosDeFila: Array<{ fileName: string; factor: number }> = [];
+  /**
+   * Los modulos cuya caja no cayo sobre un panel.
+   *
+   * Se guarda CUAL modulo de la fila era, no solo cuantos. Si siempre es el
+   * mismo numero —y lo es: el 28— no es un problema del vuelo, es que la fila
+   * del parque tiene un modulo mas de los que hay en el campo, y eso se
+   * arregla una vez en los datos en vez de una vez por vuelo.
+   */
+  private fueraDelPanel: Array<{ rowId: string; module: number }> = [];
   /** Fotos que no se pudieron enganchar a los paneles, y no se midieron. */
   private fotosSinEnganche: Array<{ fileName: string; fraccionLisa: number }> = [];
   /**
@@ -441,6 +472,37 @@ export class Acumulador {
       r: number;
     }> = [];
 
+    /*
+      Cual es el primer y el ultimo modulo de cada STRING.
+
+      De cada string y no de cada fila, porque los huecos del campo estan en
+      las dos puntas: al final de la fila esta el motor del tracker, y en el
+      medio —entre un string y el siguiente— hay 555 mm de separacion. Los dos
+      salieron en los hallazgos falsos de los vuelos reales, el 28 de un string
+      y el 1 del otro, uno a cada lado del mismo hueco.
+
+      Sale del parque entero y no de lo que entro en el cuadro: un string
+      cortado por el borde de la foto tiene su propia primera caja, y esa no es
+      una punta de string — es una punta de foto, que ya se descarta por otro
+      lado.
+    */
+    const extremos = new Map<string, { min: number; max: number }>();
+    for (const row of cerca) {
+      for (const m of modulesOfRow(row, this.farm)) {
+        const k = `${m.rowId}|${m.stringNumber}`;
+        const e = extremos.get(k);
+        if (!e) extremos.set(k, { min: m.module, max: m.module });
+        else {
+          if (m.module < e.min) e.min = m.module;
+          if (m.module > e.max) e.max = m.module;
+        }
+      }
+    }
+    const esPunta = (m: ModuleRef) => {
+      const e = extremos.get(`${m.rowId}|${m.stringNumber}`);
+      return !!e && (m.module === e.min || m.module === e.max);
+    };
+
     for (let i = 0; i < candidatos.length; i++) {
       const { m, clave, ladoCeldaPx, celdaPx, d } = candidatos[i]!;
       const caja = puesta(candidatos[i]!.caja);
@@ -461,6 +523,30 @@ export class Acumulador {
       const sondeo = sondeos[i];
       if (sondeo && sondeo.celsius < confianza.medianaC - FRIO_QUE_NO_ES_PANEL_C) {
         this.sinPanel.add(clave);
+        continue;
+      }
+
+      /*
+        Y la PUNTA de fila cuya caja no esta sobre un panel.
+
+        El freno de arriba solo mira el lado frio, asi que dejaba pasar el
+        hueco entre una fila y la siguiente —que al sol lee CALIENTE— y con el
+        pasaba el motor del tracker, que es donde cae la ultima caja de cada
+        fila. Eso no da una medicion mala: da un hallazgo, porque el suelo
+        caliente contra los hermanos del string es exactamente lo que busca la
+        deteccion.
+
+        Solo la punta del string, y esto es lo importante. En el medio la caja
+        SIEMPRE esta sobre un panel —medido: el 99 % de los modulos del medio
+        dan mas de 0,6 de caja sobre panel en los dos vuelos reales— y ahi este
+        freno no puede hacer mas que daño: un defecto grande tambien despega
+        puntos de la mediana de su caja, asi que aplicarlo en el medio seria
+        cambiar hallazgos falsos por defectos perdidos. En la punta es al
+        reves: es donde el parque se equivoca y donde no hay panel que medir.
+      */
+      if (esPunta(m) && sondeo && sondeo.fraccionPanel < FRACCION_PANEL_MINIMA) {
+        this.sinPanel.add(clave);
+        this.fueraDelPanel.push({ rowId: m.rowId, module: m.module });
         continue;
       }
 
@@ -841,6 +927,19 @@ export class Acumulador {
    * donde estan los paneles, y eso hay que decirlo en vez de entregar una
    * lista de defectos que en realidad es la textura del suelo.
    */
+  /**
+   * En que posicion de la fila caen los modulos que quedaron fuera del panel.
+   *
+   * Ordenado de mas a menos. Lo que interesa es si se concentran.
+   */
+  modulosFueraDelPanel(): Array<{ module: number; casos: number }> {
+    const cuenta = new Map<number, number>();
+    for (const f of this.fueraDelPanel) cuenta.set(f.module, (cuenta.get(f.module) ?? 0) + 1);
+    return [...cuenta]
+      .map(([module, casos]) => ({ module, casos }))
+      .sort((a, b) => b.casos - a.casos);
+  }
+
   cajasFueraDelPanel(): number {
     let n = 0;
     for (const k of this.sinPanel) if (!this.mejor.has(k)) n++;

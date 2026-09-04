@@ -800,10 +800,30 @@ export async function analizarFotos(
     const fuera = acc.cajasFueraDelPanel();
     if (fuera) {
       fallos.push(
-        `${fuera} modulos quedaron sin medir porque su recuadro caia sobre algo mas frio que los ` +
-        "paneles de su propia foto — la sombra al borde de la fila, casi siempre. No se midieron " +
-        "en vez de reportarlos: un recuadro sobre la sombra da un punto caliente de +15 °C que no " +
-        "existe.",
+        `${fuera} modulos quedaron sin medir porque su recuadro no caia sobre un panel — la sombra ` +
+        "al borde de la fila, o el hueco caliente entre una fila y la siguiente. No se midieron en " +
+        "vez de reportarlos: un recuadro sobre el suelo da un punto caliente que no existe.",
+      );
+    }
+
+    /*
+      Y si esos modulos son SIEMPRE el mismo numero de fila, hay que decirlo.
+
+      Sobre los dos vuelos reales casi todos son el modulo 28, el ultimo de la
+      fila: ahi no hay panel, hay motor de tracker y el hueco hasta la fila
+      siguiente. Eso no se arregla volando de nuevo — se arregla en los datos
+      del parque, una vez, y despues todos los vuelos de la zona salen bien.
+    */
+    const donde = acc.modulosFueraDelPanel();
+    if (donde.length && donde[0]!.casos >= 5 && donde[0]!.casos >= fuera * 0.4) {
+      const p = donde[0]!;
+      fallos.push(
+        `De esos, ${p.casos} son el modulo ${p.module} de su fila. Que sea SIEMPRE el mismo numero ` +
+        "no es casualidad ni es del vuelo: quiere decir que en los datos del parque esa fila tiene " +
+        `un modulo mas de los que hay en el campo, y el recuadro del ${p.module} cae sobre el motor ` +
+        "del tracker y el hueco hasta la fila siguiente. Antes de este freno, esos recuadros eran " +
+        "casi todos los hallazgos de la lista. Corregí el largo de las filas en el parque y el " +
+        `modulo ${p.module} vuelve a revisarse como cualquier otro.`,
       );
     }
   }
