@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32, zip } from "../app/zip";
-import { avisosDeKmz, PERFILES_DJI, toKmz, type OpcionesKmz } from "../app/wpml";
+import { archivosDelKmz, avisosDeKmz, loQueFaltaEnElKmz, PERFILES_DJI, toKmz, type OpcionesKmz } from "../app/wpml";
 import { camaraDesdeEquivalente35, planMission, type MissionOptions } from "../app/mission";
 import edenvaleJson from "../farms/edenvale.json" with { type: "json" };
 import type { FarmProfile } from "../src/types.js";
@@ -211,5 +211,110 @@ describe("los avisos antes de copiar el archivo", () => {
 
   it("con el M3T no inventa una advertencia que no corresponde", () => {
     expect(avisosDeKmz(mission, opts, kmzOpts).join(" ")).not.toMatch(/provisorios/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * La altura de los waypoints en el archivo que Pilot 2 LEE.
+ *
+ * El 4 de septiembre, en el bloque 1 de Wellington, el dron despego solo con
+ * la mision, subio a la altura de seguridad, se fue al primer waypoint —que
+ * cae contra el alambrado y los arboles— y ahi bajo a unos cinco metros. Hubo
+ * que sacarlo a mano.
+ *
+ * El archivo decia 52 m, pero lo decia en waylines.wpml. En template.kml, que
+ * es lo que Pilot 2 lee y con lo que rearma la linea de vuelo, los catorce
+ * waypoints no llevaban ninguna altura: llevaban `wpml:executeHeight`, que es
+ * un elemento del OTRO archivo y aca se ignora, y no llevaban
+ * `wpml:useGlobalHeight`, sin el cual el `globalHeight` de la carpeta tampoco
+ * se aplica.
+ *
+ * Un waypoint sin altura no da error en ningun lado. Se abre, se dibuja, y el
+ * dron baja.
+ */
+describe("la altura tiene que estar escrita en los dos archivos", () => {
+  const archivos = abrir(toKmz(mission, opts, kmzOpts));
+  const template = archivos["wpmz/template.kml"]!;
+  const waylines = archivos["wpmz/waylines.wpml"]!;
+  const placemarksDe = (texto: string) => texto.split("<Placemark>").slice(1);
+
+  it("cada waypoint del template lleva su altura y los cuatro useGlobal", () => {
+    const puntos = placemarksDe(template);
+    expect(puntos.length).toBe(mission.waypoints.length);
+    for (const p of puntos) {
+      expect(p).toContain(`<wpml:height>${opts.altitudeM}</wpml:height>`);
+      expect(p).toContain(`<wpml:ellipsoidHeight>${opts.altitudeM}</wpml:ellipsoidHeight>`);
+      expect(p).toContain("<wpml:useGlobalHeight>1</wpml:useGlobalHeight>");
+      expect(p).toContain("<wpml:useGlobalSpeed>1</wpml:useGlobalSpeed>");
+      expect(p).toContain("<wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>");
+      expect(p).toContain("<wpml:useGlobalTurnParam>1</wpml:useGlobalTurnParam>");
+    }
+  });
+
+  /*
+    `executeHeight` es de waylines.wpml. Escribirlo en el template fue
+    exactamente el error: parece que la altura esta puesta, y no esta.
+  */
+  it("el template no usa el elemento de altura del otro archivo", () => {
+    expect(template).not.toContain("wpml:executeHeight");
+  });
+
+  it("cada waypoint de la linea de vuelo lleva su altura", () => {
+    const puntos = placemarksDe(waylines);
+    expect(puntos.length).toBe(mission.waypoints.length);
+    for (const p of puntos) {
+      expect(p).toContain(`<wpml:executeHeight>${opts.altitudeM}</wpml:executeHeight>`);
+    }
+  });
+
+  it("la carpeta del template dice como girar y hacia donde mirar", () => {
+    expect(template).toContain(`<wpml:globalHeight>${opts.altitudeM}</wpml:globalHeight>`);
+    expect(template).toContain("<wpml:globalWaypointTurnMode>");
+    expect(template).toContain("<wpml:globalWaypointHeadingParam>");
+    expect(template).toContain("<wpml:heightMode>relativeToStartPoint</wpml:heightMode>");
+  });
+
+  /*
+    El traslado hasta el primer waypoint. Se hacia a 30 m fijos, y el primer
+    waypoint de un bloque cae contra el borde del parque, que es donde estan
+    los arboles. No hay ninguna razon para cruzar por debajo de la altura a la
+    que se va a volar igual.
+  */
+  it("sube a la altura de la mision antes de irse al primer punto", () => {
+    expect(template).toContain(`<wpml:takeOffSecurityHeight>${opts.altitudeM}</wpml:takeOffSecurityHeight>`);
+    expect(waylines).toContain(`<wpml:takeOffSecurityHeight>${opts.altitudeM}</wpml:takeOffSecurityHeight>`);
+  });
+});
+
+/**
+ * La revision del propio archivo, para que esto no dependa de que alguien se
+ * acuerde de mirar.
+ */
+describe("el archivo se revisa a si mismo antes de salir", () => {
+  it("el que genera la app esta completo", () => {
+    const { template, waylines } = archivosDelKmz(mission, opts, kmzOpts);
+    expect(loQueFaltaEnElKmz(template, waylines)).toEqual([]);
+    expect(avisosDeKmz(mission, opts, kmzOpts).find((a) => a.includes("NO SE VUELA"))).toBeUndefined();
+  });
+
+  it("un template sin la altura se marca, y con nombre y numero", () => {
+    const { template, waylines } = archivosDelKmz(mission, opts, kmzOpts);
+    const roto = template.replaceAll("<wpml:useGlobalHeight>1</wpml:useGlobalHeight>", "");
+    const faltan = loQueFaltaEnElKmz(roto, waylines);
+    expect(faltan.length).toBe(1);
+    expect(faltan[0]).toContain("wpml:useGlobalHeight");
+    expect(faltan[0]).toContain("template.kml");
+  });
+
+  it("el aviso de que no se vuela sale primero en la lista", () => {
+    // La lista de avisos la lee una persona apurada, en el campo.
+    expect(avisosDeKmz(mission, opts, { ...kmzOpts, perfil: m3t })[0]).not.toContain("NO SE VUELA");
+  });
+
+  it("y avisa que hay que mirar la altura en Pilot 2 antes de despegar", () => {
+    const avisos = avisosDeKmz(mission, opts, kmzOpts);
+    expect(avisos.some((a) => a.includes("Pilot 2") && a.includes(`${opts.altitudeM} m`))).toBe(true);
   });
 });
