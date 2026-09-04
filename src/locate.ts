@@ -281,8 +281,20 @@ export function locate(fix: Fix, farm: CompiledFarm): LocateResult {
       });
     }
 
+    /*
+      Fuera de la fila es PASADO el ultimo modulo, no adentro de el.
+
+      `raw` es continua y el modulo k ocupa de k a k+1: parado en el centro del
+      ultimo modulo de una fila de 56 vale 56,5. Comparando contra 56, el aviso
+      saltaba en toda la mitad de afuera del ultimo modulo de TODAS las filas
+      —"posicion cruda 56.5 de 56"— justo donde mas se lo va a leer, y decia
+      que la coordenada cae fuera de la fila cuando cae sobre un panel. Un
+      aviso que grita siempre es un aviso que se aprende a ignorar, y este
+      tiene que servir para cuando el punto de verdad cayo en la fila de al
+      lado.
+    */
     const raw = winnerHit.raw;
-    if (raw < 1 || raw > row.modulesPerRow) {
+    if (raw < 1 || raw >= row.modulesPerRow + 1) {
       warnings.push({
         code: "outside-row-extent",
         rowId: row.source.id,

@@ -268,6 +268,24 @@ describe("candidatos, confianza y avisos", () => {
     expect(res.best?.positionInRow).toBe(1); // recortado al modulo del extremo
   });
 
+  /*
+    Y NO avisa parado sobre el ultimo modulo, que es la mitad de la fila que
+    mas se consulta. El aviso comparaba la posicion continua contra el numero
+    de modulos: parado en el centro del modulo 56 de 56 la posicion vale 56,5 y
+    el aviso saltaba, diciendo que la coordenada cae fuera de la fila cuando
+    cae justo en el medio de un panel.
+  */
+  it("no avisa parado sobre el ultimo modulo de la fila", () => {
+    const total = profile.topology.modulesPerString * profile.topology.stringsPerRow;
+    for (const slot of [1, Math.round(total / 2), total]) {
+      const res = locate({ ...pointAtSlot(rowNorthMid, slot, profile), accuracyM: 0.5 }, farm);
+      expect(
+        res.warnings.map((w) => w.code),
+        `parado sobre el modulo ${slot} de ${total}`,
+      ).not.toContain("outside-row-extent");
+    }
+  });
+
   it("no marca como ambiguo el vecino de al lado dentro del mismo string", () => {
     // Sin RTK, dudar entre el modulo 10 y el 11 pasa siempre: eso ya lo dice la
     // lista de vecinos. Si el aviso saltara ahi, seria ruido en cada consulta.
