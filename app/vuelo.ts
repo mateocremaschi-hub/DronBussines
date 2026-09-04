@@ -192,6 +192,8 @@ export interface MedidasDelVuelo {
   giro: GiroDeLaCamara | null;
   /** Cuantos pares se pudieron mirar, decidan o no. */
   paresMirados: number;
+  /** Cuantas fotos termicas alcanzo a mirar la pasada previa. */
+  fotosMiradas: number;
 }
 
 /**
@@ -215,6 +217,7 @@ async function medirElVuelo(
   /** Lo que midio el laser, y la altura que decia el EXIF en esa misma foto. */
   const laser: Array<{ laserM: number; relM: number }> = [];
   const votos: VotoDeUnPar[] = [];
+  let fotosMiradas = 0;
   /*
     Los pares se reparten a lo largo del vuelo, no se toman los primeros.
 
@@ -227,18 +230,39 @@ async function medirElVuelo(
   const pasoDelGiro = Math.max(paso, Math.ceil(files.length / PARES_PARA_EL_GIRO));
   let proximoGiro = 0;
 
-  for (let i = 0; i < files.length; i += paso) {
+  /*
+    Se avanza de a UNA foto y el salto se cuenta desde la ultima TERMICA.
+
+    Se saltaba de a `paso` archivos sobre la lista entera, y en una carpeta del
+    dron dos de cada tres archivos son la foto visible: el muestreo caia sobre
+    un _V o un _S, esa vuelta no medi­a nada, y el presupuesto de cuarenta
+    fotos se gastaba en archivos sin temperatura adentro.
+
+    No es un detalle de rendimiento. Sobre el vuelo entero de Wellington
+    cargado con la carpeta completa —1359 archivos— el aviso decia "de 0 pares
+    de fotos seguidas, ninguno decidio": el giro de la camara no se corregia,
+    el parque se proyectaba espejado otra vez y salian 306 hallazgos en vez de
+    3. Con las mismas fotos cargadas sueltas, sin las visibles, andaba. La app
+    tiene que dar lo mismo de las dos maneras.
+  */
+  let proximo = 0;
+  for (let i = 0; i < files.length; i++) {
+    if (i < proximo) continue;
     const file = files[i]!;
     try {
       const radio = readRadiometric(await file.arrayBuffer(), escala ?? undefined);
+      // Un archivo sin temperatura adentro no gasta el turno: se sigue
+      // buscando la termica en el siguiente.
       if (!radio) continue;
+      proximo = i + paso;
+      fotosMiradas++;
       if (!escala) escala = radio.escala;
       const leida = await readPhoto(file, false);
       const fix = leida.fix;
       if (!fix || fix.relativeAltitudeM == null) continue;
       if (!cam) {
         cam = camaraFrom(fix, radio.width, radio.height);
-        if (!cam) return { escala: null, giro: null, paresMirados: 0 };
+        if (!cam) return { escala: null, giro: null, paresMirados: 0, fotosMiradas: 0 };
         acc = new Acumulador(farm, frame, {
           camera: cam,
           moduloAnchoM: opts.moduloAnchoM,
@@ -319,6 +343,7 @@ async function medirElVuelo(
       (acc ? escalaDeLaHuella(acc.desviosDeEscala().map((e) => e.factor)) : null),
     giro: decidirElGiro(votos),
     paresMirados: votos.length,
+    fotosMiradas,
   };
 }
 
@@ -338,7 +363,14 @@ async function votarElGiro(
   escala: string | null,
 ): Promise<VotoDeUnPar | null> {
   if (!radio || fix.gimbalYawDeg == null || fix.relativeAltitudeM == null) return null;
-  for (let j = i + 1; j < Math.min(files.length, i + 4); j++) {
+  /*
+    Hasta seis archivos adelante, no tres.
+
+    En la carpeta completa del dron cada disparo son tres archivos y solo uno
+    trae temperatura: la termica siguiente esta a tres de distancia, justo en
+    el borde de la ventana vieja. Con seis entran dos disparos completos.
+  */
+  for (let j = i + 1; j < Math.min(files.length, i + 7); j++) {
     try {
       const otro = readRadiometric(await files[j]!.arrayBuffer(), escala ?? undefined);
       if (!otro) continue;
@@ -744,6 +776,26 @@ export async function analizarFotos(
         "esta correccion las cajas de medicion quedan estiradas desde el centro del cuadro hacia " +
         "afuera —mas de un metro en el borde, casi un modulo entero— y el informe se llena de " +
         "hallazgos que son del recuadro y no del panel.",
+      );
+    }
+
+    /*
+      Cuando la pasada previa no llego a mirar las fotos que necesita.
+
+      La pasada previa es la que mide la escala y el giro de la camara, y las
+      dos corrigen el vuelo entero. Si se queda corta, las dos se caen a la vez
+      y en silencio: el aviso de abajo dice que no se pudo medir el giro, pero
+      no dice POR QUE, y la respuesta puede ser simplemente que no llego a
+      mirar suficientes fotos.
+    */
+    const necesarias = Math.min(FOTOS_PARA_LA_ESCALA, termicas);
+    if (medidas.fotosMiradas < necesarias * 0.6) {
+      fallos.push(
+        `La pasada previa —la que mide la escala y de que lado esta puesta la camara— solo alcanzo ` +
+        `a mirar ${medidas.fotosMiradas} fotos de las ${necesarias} que necesita. Las dos ` +
+        "correcciones que salen de ahi valen para el vuelo entero, asi que si se queda corta se " +
+        "caen las dos juntas. Volve a cargar el vuelo; si vuelve a pasar, decilo, porque no tendria " +
+        "que pasar.",
       );
     }
 
