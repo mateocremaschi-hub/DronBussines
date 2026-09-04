@@ -136,6 +136,32 @@ describe("la punta de un string donde no hay panel", () => {
     expect(donde[0]!.casos).toBeGreaterThan(0);
   });
 
+  it("cuenta cada modulo una vez, no cada vez que cayo mal", () => {
+    /*
+      El aviso decia "293 modulos quedaron sin medir" y arriba "de esos, 663
+      son el modulo 28". Mas que el total: se contaban las veces y no los
+      modulos, y un numero que no cierra deja de servir justo cuando lo que
+      dice es la pista para arreglar el parque.
+    */
+    const c = pasto();
+    for (const m of previas) {
+      if (!puntas.has(m.modulo.positionInRow)) pintar(c, m.caja, PANEL_C, 1.3);
+    }
+    const acc = volar(c);
+    // La misma foto dos veces: los mismos modulos caen mal dos veces.
+    acc.agregar({
+      fileName: "T2.JPG",
+      radio: termica(c),
+      pose: {
+        lat: centro.lat, lon: centro.lon,
+        altitudeAglM: 60, gimbalYawDeg: 0, gimbalPitchDeg: -90,
+      },
+    });
+    const total = acc.modulosFueraDelPanel().reduce((a, x) => a + x.casos, 0);
+    expect(total).toBe(acc.cajasFueraDelPanel());
+    expect(total).toBeLessThanOrEqual(puntasEnCuadro.size);
+  });
+
   it("si en la punta SI hay panel, se mide como cualquier otro", () => {
     const c = pasto();
     for (const m of previas) pintar(c, m.caja, PANEL_C, 1.3);

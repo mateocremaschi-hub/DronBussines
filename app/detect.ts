@@ -253,6 +253,26 @@ const CAJAS_PARA_JUZGAR_LA_FILA = 6;
  */
 const FRACCION_PANEL_MINIMA = 0.35;
 
+/**
+ * Que parte de lo que da un modulo normal se le pide a una punta de string.
+ *
+ * Tres cuartos. La caja de un modulo del medio cae sobre panel casi entera
+ * —0,75 tipico sobre el vuelo entero— y la de una punta que TAMBIEN esta sobre
+ * panel da lo mismo: la mediana de las puntas es 0,75 igual que la del medio.
+ * Las que no llegan a tres cuartos de eso son las que estan mordiendo el hueco,
+ * y son las que daban hallazgos que en el campo no existen.
+ */
+const PARTE_DE_UN_MODULO_NORMAL = 0.75;
+
+/**
+ * Cuantos modulos del medio hacen falta para saber que es "normal" en esta foto.
+ *
+ * Con menos, la mediana la puede mover un solo modulo raro y el freno de la
+ * punta se vuelve arbitrario. Sin ellos se usa el minimo fijo, que es el que
+ * habia antes.
+ */
+const MODULOS_PARA_JUZGAR_LA_PUNTA = 10;
+
 export class Acumulador {
   private mejor = new Map<string, Muestra>();
   /** Fotos que llegaron sin rumbo o sin angulo de gimbal, por motivo. */
@@ -287,7 +307,7 @@ export class Acumulador {
    * del parque tiene un modulo mas de los que hay en el campo, y eso se
    * arregla una vez en los datos en vez de una vez por vuelo.
    */
-  private fueraDelPanel: Array<{ rowId: string; module: number }> = [];
+  private fueraDelPanel: Array<{ rowId: string; module: number; clave: string }> = [];
   /** Fotos que no se pudieron enganchar a los paneles, y no se midieron. */
   private fotosSinEnganche: Array<{ fileName: string; fraccionLisa: number }> = [];
   /**
@@ -503,6 +523,29 @@ export class Acumulador {
       return !!e && (m.module === e.min || m.module === e.max);
     };
 
+    /*
+      Cuanto tiene que caer sobre panel la caja de una PUNTA de string.
+
+      Medido contra los modulos del MEDIO de esta misma foto, no contra un
+      numero fijo. Un modulo del medio siempre cae sobre panel: sobre el vuelo
+      entero de 453 fotos su fraccion tipica es 0,75 y solo el 5 % baja de
+      0,58. Pedirle a la punta tres cuartos de lo que da un modulo normal la
+      deja pasar cuando de verdad hay panel ahi, y la frena cuando la caja esta
+      mordiendo el hueco.
+
+      Con el corte fijo en 0,35 pasaban igual: de los 14 hallazgos del vuelo
+      entero, 12 eran punta y sus cajas daban 0,38 a 0,50 — arriba del corte
+      viejo y muy por debajo de lo que da un panel de verdad. Mateo los miro
+      uno por uno: no habia defecto en ninguno.
+    */
+    const normales = candidatos
+      .map((c, i) => (esPunta(c.m) ? null : sondeos[i]?.fraccionPanel))
+      .filter((v): v is number => v != null)
+      .sort((a, b) => a - b);
+    const minimoDePunta = normales.length >= MODULOS_PARA_JUZGAR_LA_PUNTA
+      ? Math.max(FRACCION_PANEL_MINIMA, PARTE_DE_UN_MODULO_NORMAL * normales[normales.length >> 1]!)
+      : FRACCION_PANEL_MINIMA;
+
     for (let i = 0; i < candidatos.length; i++) {
       const { m, clave, ladoCeldaPx, celdaPx, d } = candidatos[i]!;
       const caja = puesta(candidatos[i]!.caja);
@@ -544,9 +587,9 @@ export class Acumulador {
         cambiar hallazgos falsos por defectos perdidos. En la punta es al
         reves: es donde el parque se equivoca y donde no hay panel que medir.
       */
-      if (esPunta(m) && sondeo && sondeo.fraccionPanel < FRACCION_PANEL_MINIMA) {
+      if (esPunta(m) && sondeo && sondeo.fraccionPanel < minimoDePunta) {
         this.sinPanel.add(clave);
-        this.fueraDelPanel.push({ rowId: m.rowId, module: m.module });
+        this.fueraDelPanel.push({ rowId: m.rowId, module: m.module, clave });
         continue;
       }
 
@@ -933,8 +976,24 @@ export class Acumulador {
    * Ordenado de mas a menos. Lo que interesa es si se concentran.
    */
   modulosFueraDelPanel(): Array<{ module: number; casos: number }> {
+    /*
+      Cada modulo cuenta UNA vez, y solo si no lo salvo otra foto.
+
+      Se contaban las veces, no los modulos: el aviso decia "293 modulos
+      quedaron sin medir" y arriba "de esos, 663 son el modulo 28", que es mas
+      que el total y deja de ser creible justo cuando lo que dice importa. Un
+      modulo que en una foto cayo sobre el hueco y en la siguiente cayo sobre
+      el panel esta medido, y no tiene por que aparecer aca.
+    */
+    const vistos = new Set<string>();
     const cuenta = new Map<number, number>();
-    for (const f of this.fueraDelPanel) cuenta.set(f.module, (cuenta.get(f.module) ?? 0) + 1);
+    for (const f of this.fueraDelPanel) {
+      const clave = `${f.rowId}#${f.module}`;
+      if (vistos.has(clave)) continue;
+      vistos.add(clave);
+      if (this.mejor.has(f.clave)) continue;
+      cuenta.set(f.module, (cuenta.get(f.module) ?? 0) + 1);
+    }
     return [...cuenta]
       .map(([module, casos]) => ({ module, casos }))
       .sort((a, b) => b.casos - a.casos);
