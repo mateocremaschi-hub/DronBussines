@@ -28,6 +28,7 @@ import {
   engancharFoto,
   escalaDeLaImagen,
   girar,
+  pasoDeFilasEnLaImagen,
   pasoEnLaImagen,
   sondearCaja,
   FRIO_QUE_NO_ES_PANEL_C,
@@ -249,6 +250,13 @@ export class Acumulador {
   private encajes: Array<{ fileName: string; metros: number }> = [];
   /** Cuanto se despega la escala del EXIF de la contada en la imagen, por foto. */
   private escalas: Array<{ fileName: string; factor: number }> = [];
+  /**
+   * Lo que dice el paso ENTRE FILAS de cada foto sobre la escala del vuelo.
+   *
+   * Aparte de `escalas`, que cuenta el paso entre MODULOS. Son dos reglas
+   * distintas y la de las filas es cinco veces mas larga, asi que decide ella.
+   */
+  private pasosDeFila: Array<{ fileName: string; factor: number }> = [];
   /** Fotos que no se pudieron enganchar a los paneles, y no se midieron. */
   private fotosSinEnganche: Array<{ fileName: string; fraccionLisa: number }> = [];
   /**
@@ -363,6 +371,10 @@ export class Acumulador {
     }
 
     const sd = desvioLocal(foto.radio);
+
+    const porFilas = this.escalaSegunLasFilas(candidatos, foto, sd);
+    if (porFilas != null) this.pasosDeFila.push({ fileName: foto.fileName, factor: porFilas });
+
     const limitePx = this.limiteDeBusquedaPx(cerca, mPorPx, escalaX);
     const mPorPxImagen = mPorPx / escalaX;
 
@@ -696,6 +708,51 @@ export class Acumulador {
    * El factor de escala que pide la propia imagen, contando el paso entre
    * modulos en unas cuantas filas.
    */
+  /**
+   * La escala de esta foto, contada con el paso ENTRE FILAS.
+   *
+   * Los dos lados de la comparacion salen del mismo lugar que las cajas: lo
+   * que PREDICE la proyeccion es la separacion entre las lineas de fila ya
+   * proyectadas, y lo que HAY es la repeticion del perfil de lisura cruzado.
+   * Comparar la prediccion contra la imagen y no contra un numero de catalogo
+   * es lo que hace que el resultado sea directamente el factor que le falta a
+   * la huella.
+   */
+  private escalaSegunLasFilas(
+    candidatos: Array<{ m: ModuleRef; caja: CajaDeMedicion }>,
+    foto: FotoTermica,
+    sd: Float32Array,
+  ): number | null {
+    if (!candidatos.length) return null;
+    const rot = candidatos[0]!.caja.rotRad;
+    const cos = Math.cos(rot), sin = Math.sin(rot);
+
+    // Donde cae el eje de cada fila, cruzado.
+    const porFila = new Map<string, { suma: number; n: number }>();
+    for (const c of candidatos) {
+      const cruce = -c.caja.cx * sin + c.caja.cy * cos;
+      const v = porFila.get(c.m.rowId);
+      if (v) { v.suma += cruce; v.n++; } else porFila.set(c.m.rowId, { suma: cruce, n: 1 });
+    }
+    // Con dos filas no hay paso; con tres hay uno solo y no hay mediana.
+    if (porFila.size < 4) return null;
+
+    const ejes = [...porFila.values()].map((v) => v.suma / v.n).sort((a, b) => a - b);
+    const saltos: number[] = [];
+    for (let i = 1; i < ejes.length; i++) {
+      const d = ejes[i]! - ejes[i - 1]!;
+      // Dos strings de la misma fila comparten eje: no son un paso.
+      if (d > 1) saltos.push(d);
+    }
+    if (saltos.length < 3) return null;
+    saltos.sort((a, b) => a - b);
+    const esperadoPx = saltos[saltos.length >> 1]!;
+
+    const medido = pasoDeFilasEnLaImagen(foto.radio, sd, rot, esperadoPx);
+    if (!medido) return null;
+    return esperadoPx / medido.pasoPx;
+  }
+
   private escalaSegunLaImagen(
     foto: FotoTermica,
     candidatos: Array<{ m: ModuleRef; caja: CajaDeMedicion }>,
@@ -815,6 +872,16 @@ export class Acumulador {
    * Uno significa que coinciden. Se mide contando el paso entre modulos sobre
    * la propia foto y comparandolo con el que predice la proyeccion.
    */
+  /**
+   * Lo que cada foto dice de la escala contando el paso entre filas.
+   *
+   * Es lo que decide la escala del vuelo: es la regla mas larga de la foto y
+   * la unica que sale en TODAS las fotos de un parque de filas paralelas.
+   */
+  desviosDeFila(): Array<{ fileName: string; factor: number }> {
+    return this.pasosDeFila;
+  }
+
   desviosDeEscala(): Array<{ fileName: string; factor: number }> {
     return this.escalas;
   }

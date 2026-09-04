@@ -159,7 +159,13 @@ const FOTOS_PARA_LA_ESCALA = 40;
 const PARES_PARA_EL_GIRO = 16;
 
 export interface MedidasDelVuelo {
-  escala: { factor: number; fotos: number; dispersion: number; deLaser?: boolean } | null;
+  escala: {
+    factor: number;
+    fotos: number;
+    dispersion: number;
+    deLaser?: boolean;
+    deFilas?: boolean;
+  } | null;
   giro: GiroDeLaCamara | null;
   /** Cuantos pares se pudieron mirar, decidan o no. */
   paresMirados: number;
@@ -266,9 +272,26 @@ async function medirElVuelo(
     poste. Sobre el bloque 1: 40 lecturas entre 46.8 y 47.1, y una que dio
     48.7. La mediana es 46.9 contra 52.0 del EXIF.
   */
+  /*
+    Cual regla decide la escala del vuelo, en orden.
+
+    1. El paso ENTRE FILAS contado sobre la imagen. Es la regla mas larga que
+       hay —cinco metros y pico, mas de cien pixeles— y del otro lado tiene un
+       numero de replanteo, que es una cinta metrica. Sale en todas las fotos.
+    2. El telemetro laser. Bueno cuando le pega al panel; en el vuelo de las
+       11:26 leyo casi dos metros de mas —le pego al suelo entre filas— y con
+       eso los recuadros del borde del cuadro se van sesenta centimetros.
+    3. El paso entre MODULOS. Un metro quince, veinte pixeles, y hay que verle
+       las juntas al panel: salio en 7 de 44 fotos.
+    4. La altura del EXIF sola, que es contra lo que se compara todo esto.
+  */
+  const porFilas = acc
+    ? escalaDeLaHuella(acc.desviosDeFila().map((e) => e.factor))
+    : null;
   const porLaser = escalaPorLaser(laser);
   return {
     escala:
+      (porFilas ? { ...porFilas, deFilas: true } : null) ??
       porLaser ??
       (acc ? escalaDeLaHuella(acc.desviosDeEscala().map((e) => e.factor)) : null),
     giro: decidirElGiro(votos),
@@ -677,7 +700,13 @@ export async function analizarFotos(
     */
     if (escalaMedida) {
       const pct = (1 - escalaMedida.factor) * 100;
-      const comoSeMidio = escalaMedida.deLaser
+      const comoSeMidio = escalaMedida.deFilas
+        ? `Se conto el paso entre filas sobre la imagen en ${escalaMedida.fotos} fotos y no coincide ` +
+          "con la altura del EXIF: SE USO EL DE LA IMAGEN. Las filas del parque estan replanteadas con " +
+          "estacas, asi que cada cuanto se repite una fila es una cinta metrica, y contarlas sobre la " +
+          "foto son cien pixeles de regla contra los veinte del paso entre modulos. Las distancias " +
+          "reales son un "
+        : escalaMedida.deLaser
         ? `El telemetro laser del dron midio la distancia a los paneles en ${escalaMedida.fotos} fotos y ` +
           "no coincide con la altura del EXIF: SE USO LA DEL LASER. La altura del EXIF es sobre el " +
           "PUNTO DE DESPEGUE, no sobre los paneles, y ahi estuvo la diferencia. Las distancias reales " +

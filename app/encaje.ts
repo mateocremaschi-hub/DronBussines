@@ -692,3 +692,173 @@ export function escalaDeLaImagen(
   const f = mediana(factores);
   return Math.abs(f - 1) < 0.005 ? 1 : f;
 }
+
+/**
+ * El paso ENTRE FILAS contado sobre la imagen.
+ *
+ * Es la regla mas larga que hay en una foto de un parque solar y por eso la
+ * mejor. El paso entre modulos —lo que se contaba hasta ahora— son 1,15 m,
+ * unos veinte pixeles: hay que verle las juntas al panel, sale en una foto de
+ * cada seis, y un pixel de error ya es 5 % de escala. El paso entre filas son
+ * 5,3 m, mas de cien pixeles, y no depende de que se vean las juntas: son
+ * franjas lisas de panel separadas por franjas de pasto, la señal mas fuerte
+ * del cuadro. Sale en todas las fotos y un pixel de error es 1 %.
+ *
+ * Y del otro lado de la comparacion hay un numero de replanteo: cada cuanto se
+ * repite una fila segun las estacas del parque. Eso es una cinta metrica, no
+ * un dato del EXIF.
+ *
+ * Sobre las fotos reales: en el bloque 1 da 110,8 px contra los 111,6 que
+ * predice el laser —medio por ciento— y en el vuelo de las 11:26 da 109,4
+ * contra 105,3 —un 4 % de mas—. En ese vuelo el laser leyo casi dos metros de
+ * mas, y con esos dos metros los recuadros del borde del cuadro se corren
+ * sesenta centimetros y caen al pasto.
+ */
+export function pasoDeFilasEnLaImagen(
+  r: Radiometric,
+  sd: Float32Array,
+  rotRad: number,
+  pasoEsperadoPx: number,
+): { pasoPx: number; fuerza: number } | null {
+  const { width: w, height: h } = r;
+  if (!(pasoEsperadoPx > 8)) return null;
+
+  /*
+    El perfil de lisura cruzado a las filas.
+
+    Cada pixel de la foto aporta a la linea que le toca. No se recorre una
+    banda angosta sino el cuadro entero: cuantos mas pixeles entren en cada
+    linea, menos ruido tiene el perfil, y lo que se busca es una repeticion de
+    cien pixeles que tiene que sobrevivir a que una fila termine en el medio.
+  */
+  const cos = Math.cos(rotRad), sin = Math.sin(rotRad);
+  const cx = w / 2, cy = h / 2;
+  const largo = Math.ceil(Math.abs(w * sin) + Math.abs(h * cos)) + 2;
+  const medio = largo >> 1;
+  const suma = new Float64Array(largo), cuenta = new Float64Array(largo);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const c = Math.round(-(x - cx) * sin + (y - cy) * cos) + medio;
+      if (c < 0 || c >= largo) continue;
+      suma[c]! += sd[y * w + x]!;
+      cuenta[c]! += 1;
+    }
+  }
+
+  /*
+    Solo las lineas que cruzan el cuadro casi enteras. Las de las puntas tocan
+    cuatro pixeles y su promedio salta, que en la autocorrelacion pesa igual
+    que una fila entera.
+  */
+  const lleno = Math.max(...cuenta) * 0.5;
+  let ini = 0; while (ini < largo && cuenta[ini]! < lleno) ini++;
+  let fin = largo - 1; while (fin > ini && cuenta[fin]! < lleno) fin--;
+  const n = fin - ini + 1;
+  // Tres pasos de fila es lo minimo para hablar de repeticion.
+  if (n < pasoEsperadoPx * 3) return null;
+
+  const perfil = new Float64Array(n);
+  for (let i = 0; i < n; i++) perfil[i] = suma[ini + i]! / cuenta[ini + i]!;
+
+  // Sin la tendencia lenta: interesa la repeticion, no que un lado del cuadro
+  // tenga mas pasto que el otro.
+  const ventana = Math.max(3, Math.round(pasoEsperadoPx * 1.5));
+  const suave = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0, m = 0;
+    for (let k = -ventana; k <= ventana; k++) {
+      const j = i + k;
+      if (j < 0 || j >= n) continue;
+      s += perfil[j]!; m++;
+    }
+    suave[i] = perfil[i]! - s / m;
+  }
+
+  let cero = 0;
+  for (let i = 0; i < n; i++) cero += suave[i]! * suave[i]!;
+  if (cero <= 0) return null;
+
+  /*
+    Se busca cerca de lo que predice la proyeccion, no en todo el rango.
+
+    Un parque es periodico: el pico de dos pasos es casi tan alto como el de
+    uno, y el de medio paso existe cuando la fila lleva dos strings. Buscando
+    ancho, la escala sale al doble o a la mitad y no hay ningun sintoma. Un
+    cuarto para cada lado es mas de lo que puede errarle el laser.
+  */
+  const correlacion = (k: number): number => {
+    let s = 0;
+    for (let i = 0; i + k < n; i++) s += suave[i]! * suave[i + k]!;
+    return s / cero;
+  };
+
+  const pico = (centro: number, rango: number): { k: number; v: number } | null => {
+    const desde = Math.max(4, Math.floor(centro - rango));
+    const hasta = Math.min(n - 2, Math.ceil(centro + rango));
+    if (hasta <= desde) return null;
+    let mejorK = 0, mejor = -Infinity;
+    const corr: number[] = [];
+    for (let k = desde; k <= hasta; k++) {
+      corr[k] = correlacion(k);
+      if (corr[k]! > mejor) { mejor = corr[k]!; mejorK = k; }
+    }
+    if (!mejorK) return null;
+    const a = corr[mejorK - 1] ?? mejor, b = mejor, c = corr[mejorK + 1] ?? mejor;
+    const den = a - 2 * b + c;
+    const ajuste = den < 0 ? (0.5 * (a - c)) / den : 0;
+    return { k: mejorK + Math.max(-0.5, Math.min(0.5, ajuste)), v: mejor };
+  };
+
+  const primero = pico(pasoEsperadoPx, pasoEsperadoPx * 0.25);
+  if (!primero) return null;
+
+  /*
+    Que se repita no alcanza: tiene que repetirse Y no repetirse a medio paso.
+
+    Sacarle la tendencia lenta a ruido puro deja un perfil con una joroba
+    ancha, y esa joroba sola da 0,69 de autocorrelacion en la ventana de
+    busqueda — mas que muchos parques de verdad, y siempre en el mismo lugar.
+    Lo que la delata es que a medio paso tambien vale 0,59: una joroba no
+    alterna. Un parque de filas si: a medio paso el panel cae sobre el pasto y
+    la correlacion se va a cero o abajo. Sobre ruido el contraste da 0,10 y
+    sobre filas 0,89.
+  */
+  const aMedioPaso = correlacion(Math.round(primero.k / 2));
+  const contraste = primero.v - aMedioPaso;
+  if (contraste < CONTRASTE_DE_FILAS_MINIMO) return null;
+
+  /*
+    El paso se mide sobre varias filas, no sobre una.
+
+    El primer pico de la autocorrelacion se corre para abajo cuando el paso no
+    es perfectamente constante —y no lo es: sobre la foto 0013 las filas se
+    separan 111 px de un lado del cuadro y 115 del otro, que es el terreno que
+    se inclina—. Medir de la fila 1 a la fila 4 y dividir por tres promedia esa
+    pendiente y multiplica por tres la punteria: da 114,7 contra 111,6 del
+    primer pico, y lo mismo dice contar los centros de las franjas a mano.
+
+    Se sube de armonico mientras quede mas de la mitad del perfil solapado. Con
+    menos, el pico se hace de cuatro filas y ruido.
+  */
+  let paso = primero.k;
+  for (let m = 2; m <= 4; m++) {
+    if (m * paso > n * 0.55) break;
+    // Una ventana angosta para no saltar al armonico de al lado.
+    const p = pico(m * paso, paso * 0.3);
+    if (!p) break;
+    paso = p.k / m;
+  }
+
+  return { pasoPx: paso, fuerza: contraste };
+}
+
+/**
+ * Cuanto tiene que alternar el perfil para creerle.
+ *
+ * Es la diferencia entre la autocorrelacion a un paso y la de medio paso. Un
+ * parque de filas paralelas da 0,89 sintetico y 0,6 a 0,9 sobre las fotos
+ * reales; ruido con la tendencia sacada da 0,10. Un tercio deja pasar
+ * cualquier parque y frena cualquier cosa que no lo sea — y frenar importa:
+ * con esto se decide la escala del vuelo entero.
+ */
+const CONTRASTE_DE_FILAS_MINIMO = 0.35;
