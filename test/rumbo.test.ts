@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Radiometric } from "../app/thermal";
 import {
   corrimientoEsperado,
+  GIROS,
   decidirElGiro,
   normalizarAzimut,
   rumboDeLaFoto,
@@ -10,6 +11,13 @@ import {
 } from "../app/rumbo";
 
 const W = 160, H = 160;
+
+/** El indice del puntaje mas alto. */
+function mejorDe(puntajes: number[]): number {
+  let m = 0;
+  for (let i = 1; i < puntajes.length; i++) if (puntajes[i]! > puntajes[m]!) m = i;
+  return m;
+}
 
 /** Un terreno con detalle en las dos direcciones, siempre el mismo. */
 function terreno(): (x: number, y: number) => number {
@@ -65,8 +73,7 @@ describe("hacia donde mira la foto", () => {
       a, b, dEsteM: 0, dNorteM: -2, mPorPx: 0.05, gimbalYawDeg: 0,
     });
     expect(voto).not.toBeNull();
-    expect(voto!.giroDeg).toBe(180);
-    expect(voto!.margen).toBeGreaterThan(0.15);
+    expect(GIROS[mejorDe(voto!.puntajes)]).toBe(180);
   });
 
   it("no inventa un giro cuando el EXIF ya estaba bien", () => {
@@ -75,8 +82,7 @@ describe("hacia donde mira la foto", () => {
     const voto = votoDeUnPar({
       a, b, dEsteM: 0, dNorteM: 2, mPorPx: 0.05, gimbalYawDeg: 0,
     });
-    expect(voto!.giroDeg).toBe(0);
-    expect(voto!.margen).toBeGreaterThan(0.15);
+    expect(GIROS[mejorDe(voto!.puntajes)]).toBe(0);
   });
 
   it("no contesta cuando el dron no se movio o cuando las fotos no se pisan", () => {
@@ -85,20 +91,32 @@ describe("hacia donde mira la foto", () => {
     expect(votoDeUnPar({ a, b, dEsteM: 0, dNorteM: 40, mPorPx: 0.05, gimbalYawDeg: 0 })).toBeNull();
   });
 
-  const firme = (giroDeg: number): VotoDeUnPar => ({ giroDeg, puntaje: 0.9, margen: 0.4 });
-  const flojo = (giroDeg: number): VotoDeUnPar => ({ giroDeg, puntaje: 0.9, margen: 0.02 });
+  /** Un par que prefiere `giroDeg` por la diferencia dada. */
+  const par = (giroDeg: number, ventaja: number): VotoDeUnPar => ({
+    puntajes: GIROS.map((g) => (g === giroDeg ? 0.8 + ventaja : 0.8)),
+  });
 
-  it("decide con los pares que deciden y descarta los que no", () => {
-    const giro = decidirElGiro([firme(180), firme(180), firme(180), flojo(0), flojo(90)]);
-    expect(giro).toEqual({ giroDeg: 180, votos: 3, aFavor: 3, mirados: 5 });
+  it("suma pares que por su cuenta no deciden nada", () => {
+    /*
+      El caso del bloque 1: ningun par decide solo, pero todos prefieren lo
+      mismo. Contando ganadores esto daba null y no se corregia nada.
+    */
+    const giro = decidirElGiro(Array.from({ length: 12 }, () => par(180, 0.1)));
+    expect(giro?.giroDeg).toBe(180);
+    expect(giro?.aFavor).toBe(12);
+    expect(giro?.ventaja).toBeCloseTo(0.1, 6);
   });
 
   it("no decide nada si los pares se contradicen", () => {
-    expect(decidirElGiro([firme(180), firme(180), firme(0), firme(90)])).toBeNull();
+    expect(decidirElGiro([par(180, 0.4), par(180, 0.4), par(0, 0.4), par(90, 0.4)])).toBeNull();
+  });
+
+  it("no decide nada cuando la ventaja promedio es un empate", () => {
+    expect(decidirElGiro(Array.from({ length: 12 }, () => par(180, 0.01)))).toBeNull();
   });
 
   it("no decide nada con dos pares, por mas de acuerdo que esten", () => {
-    expect(decidirElGiro([firme(180), firme(180)])).toBeNull();
+    expect(decidirElGiro([par(180, 0.5), par(180, 0.5)])).toBeNull();
   });
 
   it("sin medicion, el rumbo sigue siendo el del EXIF", () => {
@@ -107,7 +125,7 @@ describe("hacia donde mira la foto", () => {
   });
 
   it("con medicion, el angulo fino lo pone el EXIF y el lado lo pone la foto", () => {
-    const giro = { giroDeg: 180, votos: 4, aFavor: 4, mirados: 14 };
+    const giro = { giroDeg: 180, pares: 14, aFavor: 14, ventaja: 0.14 };
     // Las dos pasadas del bloque 1: el EXIF dice cosas opuestas y las dos
     // terminan mirando al mismo lado, que es lo que se midio.
     expect(rumboDeLaFoto(giro, -178.9)).toBeCloseTo(1.1, 6);

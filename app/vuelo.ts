@@ -709,10 +709,10 @@ export async function analizarFotos(
       fallos.push(
         `El rumbo que declara el EXIF esta ${giroDeLaCamara.giroDeg} grados corrido del lado para ` +
         `el que mira la imagen, y SE CORRIGIO. Se comparo cada foto con la siguiente en ` +
-        `${giroDeLaCamara.mirados} pares: ${giroDeLaCamara.votos} deciden con margen y ` +
-        `${giroDeLaCamara.aFavor} dicen lo mismo. Sin esta correccion el parque entero se proyecta ` +
-        "espejado sobre la foto: las cajas caen en el suelo de al lado, los hallazgos son del pasto " +
-        "y nada lo delata, porque el recuadro que se lee sigue siendo el correcto.",
+        `${giroDeLaCamara.pares} pares y ${giroDeLaCamara.aFavor} prefieren ese giro. Sin esta ` +
+        "correccion el parque entero se proyecta espejado sobre la foto: las cajas caen en el " +
+        "suelo de al lado, los hallazgos son del pasto y nada lo delata, porque el recuadro que " +
+        "se lee sigue siendo el correcto.",
       );
     } else if (!giroDeLaCamara) {
       fallos.push(

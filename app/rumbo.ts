@@ -130,14 +130,21 @@ export interface ParDeFotos {
 }
 
 export interface VotoDeUnPar {
-  /** 0, 90, 180 o 270: cuanto hay que girarle al rumbo del EXIF. */
-  giroDeg: number;
-  puntaje: number;
-  /** Cuanto le gano al segundo: sin margen el par no decide nada. */
-  margen: number;
+  /**
+   * Cuanto se parece la foto de al lado con cada uno de los cuatro giros, en
+   * el mismo orden que `GIROS`.
+   *
+   * Se guardan los cuatro y no el ganador. Un par suelto casi nunca decide: en
+   * el medio de una fila de trescientos metros el terreno es igual a lo largo,
+   * asi que ir para adelante y para atras correlacionan casi igual —0,88
+   * contra 0,78— y eso no alcanza para afirmar nada. Lo que si alcanza es que
+   * los catorce pares del vuelo prefieran SIEMPRE el mismo, cada uno por poco.
+   */
+  puntajes: number[];
 }
 
-const GIROS = [0, 90, 180, 270];
+/** Los cuatro lados por los que puede estar puesta una camara. */
+export const GIROS = [0, 90, 180, 270];
 
 /**
  * El giro que explica como se movio la imagen entre dos fotos.
@@ -153,63 +160,87 @@ export function votoDeUnPar(par: ParDeFotos): VotoDeUnPar | null {
   if (recorrido < 1) return null;
   if (recorrido / par.mPorPx > Math.min(par.a.width, par.a.height) * 0.75) return null;
 
-  let mejor = { giroDeg: 0, puntaje: -2 };
-  let segundo = -2;
-  for (const giro of GIROS) {
+  const puntajes = GIROS.map((giro) => {
     const p = corrimientoEsperado(
       normalizarAzimut(par.gimbalYawDeg + giro), par.dEsteM, par.dNorteM, par.mPorPx,
     );
-    const r = mejorParecido(par.a, par.b, p.sx, p.sy);
-    if (r > mejor.puntaje) { segundo = mejor.puntaje; mejor = { giroDeg: giro, puntaje: r }; }
-    else if (r > segundo) segundo = r;
-  }
-  if (mejor.puntaje < -1) return null;
-  return { giroDeg: mejor.giroDeg, puntaje: mejor.puntaje, margen: mejor.puntaje - segundo };
+    return mejorParecido(par.a, par.b, p.sx, p.sy);
+  });
+  // Si ni el mejor de los cuatro engancha, esta foto no sirve para preguntar.
+  if (Math.max(...puntajes) < 0.3) return null;
+  return { puntajes };
 }
 
 export interface GiroDeLaCamara {
   giroDeg: number;
-  /** Pares que decidieron con margen. */
-  votos: number;
-  /** De esos, cuantos votaron lo que salio. */
+  /** Pares que se pudieron mirar. */
+  pares: number;
+  /** De esos, cuantos prefirieron por su cuenta el giro que salio. */
   aFavor: number;
-  /** Pares mirados en total, decidan o no. */
-  mirados: number;
+  /** Cuanto le saca al segundo, promediado sobre todos los pares. */
+  ventaja: number;
 }
 
 /**
- * Un par decide si su candidato le gana al segundo por esto. Sobre las fotos
- * reales los pares que deciden separan 0,3 a 0,8, y los que no, menos de 0,1:
- * el corte cae en tierra de nadie a proposito.
+ * Tres pares son pocos para un promedio, pero son el vuelo mas corto que vale
+ * la pena revisar. Menos que eso no se corrige nada y se avisa.
  */
-const MARGEN_MINIMO = 0.15;
-/** Y ademas tiene que haber enganchado: media correlacion no es un enganche. */
-const PUNTAJE_MINIMO = 0.5;
-const VOTOS_MINIMOS = 3;
-/** Un solo par en contra ya obliga a no tocar nada y avisar. */
+const PARES_MINIMOS = 3;
+/**
+ * Cuanto tiene que sacarle el ganador al segundo, promediando los pares.
+ *
+ * Cinco centesimas. Sobre las fotos del bloque 1 el ganador saca 0,14 de
+ * promedio; los pares que no deciden por su cuenta aportan 0,10 cada uno y
+ * siempre para el mismo lado. Un empate real anda en 0,00 a 0,02.
+ */
+const VENTAJA_MINIMA = 0.05;
+/**
+ * Y ademas casi todos los pares tienen que preferirlo por su cuenta.
+ *
+ * Esto es lo que separa "poca ventaja pero siempre la misma" de "ventaja
+ * promedio que sale de dos pares raros": catorce de catorce es una cosa, ocho
+ * de catorce es otra.
+ */
 const ACUERDO_MINIMO = 0.8;
 
 /**
  * Cuanto hay que girarle al rumbo del EXIF para todo el vuelo.
  *
+ * Se promedian los cuatro puntajes de cada par en vez de contar ganadores.
+ * Contando ganadores se perdia el vuelo entero: de catorce pares del bloque 1
+ * solo tres decidian por su cuenta con margen, y con pocas fotos podian ser
+ * cero — y entonces no se corregia nada, que es exactamente el error que esto
+ * viene a arreglar. Los catorce prefieren el mismo giro; lo que cambia es que
+ * once lo prefieren por poco.
+ *
  * Devuelve `null` cuando las fotos no alcanzan para decidir: ahi se sigue
  * usando el EXIF como siempre, pero hay que decirlo.
  */
 export function decidirElGiro(votos: VotoDeUnPar[]): GiroDeLaCamara | null {
-  const firmes = votos.filter(
-    (v) => v.margen >= MARGEN_MINIMO && v.puntaje >= PUNTAJE_MINIMO,
+  if (votos.length < PARES_MINIMOS) return null;
+
+  const medias = GIROS.map(
+    (_, i) => votos.reduce((a, v) => a + (v.puntajes[i] ?? -2), 0) / votos.length,
   );
-  if (firmes.length < VOTOS_MINIMOS) return null;
-  const cuenta = new Map<number, number>();
-  for (const v of firmes) cuenta.set(v.giroDeg, (cuenta.get(v.giroDeg) ?? 0) + 1);
-  let gana = { giroDeg: 0, n: 0 };
-  for (const [giroDeg, n] of cuenta) if (n > gana.n) gana = { giroDeg, n };
-  if (gana.n / firmes.length < ACUERDO_MINIMO) return null;
+  let mejor = 0;
+  for (let i = 1; i < medias.length; i++) if (medias[i]! > medias[mejor]!) mejor = i;
+  let segundo = -Infinity;
+  for (let i = 0; i < medias.length; i++) if (i !== mejor && medias[i]! > segundo) segundo = medias[i]!;
+  if (medias[mejor]! - segundo < VENTAJA_MINIMA) return null;
+
+  let aFavor = 0;
+  for (const v of votos) {
+    let suyo = 0;
+    for (let i = 1; i < v.puntajes.length; i++) if (v.puntajes[i]! > v.puntajes[suyo]!) suyo = i;
+    if (suyo === mejor) aFavor++;
+  }
+  if (aFavor / votos.length < ACUERDO_MINIMO) return null;
+
   return {
-    giroDeg: gana.giroDeg,
-    votos: firmes.length,
-    aFavor: gana.n,
-    mirados: votos.length,
+    giroDeg: GIROS[mejor]!,
+    pares: votos.length,
+    aFavor,
+    ventaja: medias[mejor]! - segundo,
   };
 }
 
