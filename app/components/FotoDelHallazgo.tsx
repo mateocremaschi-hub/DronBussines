@@ -113,23 +113,59 @@ export function FotoDelHallazgo({ fileName, caja, archivos, explicar = true }: P
               viewBox={`0 0 ${caja.ancho ?? dim.w} ${caja.alto ?? dim.h}`}
               preserveAspectRatio="none"
             >
+              {/*
+                Se remarca el MODULO ENTERO, no el pedazo que se midio.
+
+                Medir toca solo la parte de adentro —el marco de aluminio esta
+                a otra temperatura que la celda— pero dibujar esa parte era un
+                rectangulito flotando entre los paneles, y con la rejilla
+                corrida quedaba a caballo de dos. Justo la duda que la foto
+                tiene que despejar. Marcado el modulo entero, el que mira
+                cuenta paneles desde la punta y ve cual es sin adivinar.
+
+                Los vuelos viejos guardaron la caja sin el tamaño del modulo:
+                para esos se dibuja lo que hay, que es lo que se venia
+                dibujando.
+              */}
               <rect
-                x={caja.cx - caja.largo / 2}
-                y={caja.cy - caja.cruzado / 2}
-                width={caja.largo}
-                height={caja.cruzado}
+                x={caja.cx - (caja.largoModulo ?? caja.largo) / 2}
+                y={caja.cy - (caja.cruzadoModulo ?? caja.cruzado) / 2}
+                width={caja.largoModulo ?? caja.largo}
+                height={caja.cruzadoModulo ?? caja.cruzado}
                 transform={`rotate(${(caja.rotRad * 180) / Math.PI} ${caja.cx} ${caja.cy})`}
                 fill="none"
                 stroke="#00e5ff"
                 strokeWidth={Math.max(2, (caja.ancho ?? dim.w) / 320)}
               />
+              {/*
+                Y adentro, finita, la zona de la que salio el numero. Es la
+                unica forma de que el ΔT del informe sea auditable: si alguien
+                duda de la medicion, tiene que poder ver que se midio.
+              */}
+              {caja.largoModulo != null && (
+                <rect
+                  x={caja.cx - caja.largo / 2}
+                  y={caja.cy - caja.cruzado / 2}
+                  width={caja.largo}
+                  height={caja.cruzado}
+                  transform={`rotate(${(caja.rotRad * 180) / Math.PI} ${caja.cx} ${caja.cy})`}
+                  fill="none"
+                  stroke="#00e5ff"
+                  strokeOpacity={0.45}
+                  strokeDasharray="3 3"
+                  strokeWidth={Math.max(1, (caja.ancho ?? dim.w) / 640)}
+                />
+              )}
             </svg>
           )}
         </div>
       )}
       <p className="help">
         {caja
-          ? "El recuadro es la misma zona que se midio: el 60 % central del modulo, sin el marco de aluminio."
+          ? caja.largoModulo != null
+            ? "El recuadro lleno es el modulo entero. El punteado de adentro es la zona de la que " +
+              "salio el numero: se deja afuera el marco de aluminio, que al sol lee distinto que la celda."
+            : "El recuadro es la zona que se midio, sin el marco de aluminio."
           : "Este hallazgo no guardo la posicion del modulo en la foto, asi que no se puede marcar."}
         {explicar && (
           <>

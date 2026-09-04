@@ -418,7 +418,7 @@ describe("el vuelo guardado y vuelto a abrir conserva las dos mitades", () => {
     posesSupuestas: [],
     anguloMedio: 12,
     problemas: [],
-    corrimientosDeFila: new Map(),
+    alineaciones: [], corregidoPorFila: new Map(),
     fixes: new Map(),
   };
 

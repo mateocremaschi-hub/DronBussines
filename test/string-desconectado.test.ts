@@ -210,13 +210,23 @@ describe("una fila entera con la misma franja es el recuadro, no diodos", () => 
     return { celdas, filas, columnas };
   };
 
+  /*
+    Los modulos con franja se reparten SALTEADOS, no seguidos.
+
+    Dos modulos pegados con la misma franja en el mismo extremo ya no son dos
+    diodos: es el borde del panel, y `comparar` los baja de categoria por
+    vecindad. Ponerlos seguidos hacia que esta prueba midiera el filtro de
+    vecinos creyendo que medía el de fila.
+  */
   const fila = (cuantosConFranja: number) =>
     Array.from({ length: 20 }, (_, i) => ({
       ...m(i + 1, 45, 0),
       fileName: "DJI_0001_T.JPG",
       pixelesPorCelda: 9,
       puntoCalienteC: 45,
-      ...(i < cuantosConFranja ? { retrato: conFranja(3) } : { retrato: conFranja(0) }),
+      ...(i % 2 === 0 && i / 2 < cuantosConFranja
+        ? { retrato: conFranja(3) }
+        : { retrato: conFranja(0) }),
     }));
 
   it("dos modulos de veinte con franja se reportan", () => {
@@ -224,8 +234,8 @@ describe("una fila entera con la misma franja es el recuadro, no diodos", () => 
     expect(hs.filter((h) => h.patron?.patron === "diodo")).toHaveLength(2);
   });
 
-  it("doce de veinte no: eso es el borde del recuadro", () => {
-    const hs = comparar(fila(12), UMBRALES);
+  it("diez de veinte no: eso es el borde del recuadro", () => {
+    const hs = comparar(fila(10), UMBRALES);
     expect(hs.filter((h) => h.patron?.patron === "diodo")).toHaveLength(0);
     // Y lo dice, en vez de borrarlos en silencio.
     const uno = hs.find((h) => h.patron?.patron === "sin-patron")!;

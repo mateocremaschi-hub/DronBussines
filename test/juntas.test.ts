@@ -1,0 +1,140 @@
+/**
+ * Las juntas entre modulos, que son lo que dice donde empieza cada panel.
+ *
+ * La prueba que importa es la ultima: una rejilla corrida medio modulo tiene
+ * que volver a su lugar. Es el caso real —el diodo de bypass del modulo 26 que
+ * el informe llamaba 25— y es el unico error de esta app que un cliente puede
+ * ver sin instrumentos: cuenta paneles desde la punta y encuentra uno sano.
+ */
+import { describe, expect, it } from "vitest";
+import { corrimientoDeLaRejilla, perfilALoLargo } from "../app/juntas";
+
+const PASO = 25;
+
+/**
+ * Una fila de modulos vista por las dos reglas.
+ *
+ * `c` es la temperatura: panel a 38 grados y junta a 34, que es lo que dan las
+ * fotos de Wellington. `aspero` es el desvio local: 0,3 sobre el panel —lo que
+ * da un modulo sano de los vuelos reales— y 2 sobre la junta, que es un
+ * escalon.
+ */
+function fila(n: number, fase: number, ruido = 0, juntaCaliente = false) {
+  const c = new Float64Array(n), aspero = new Float64Array(n);
+  let semilla = 7;
+  const azar = () => ((semilla = (semilla * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff - 0.5);
+  for (let i = 0; i < n; i++) {
+    const d = Math.abs(((i - fase) % PASO + PASO + PASO / 2) % PASO - PASO / 2);
+    const enJunta = d < 1.5;
+    c[i] = (enJunta ? (juntaCaliente ? 44 : 34) : 38) + azar() * ruido;
+    aspero[i] = (enJunta ? 2 : 0.3) + azar() * ruido * 0.2;
+  }
+  return { c, aspero };
+}
+
+describe("corrimientoDeLaRejilla", () => {
+  it("no encuentra nada donde no hay juntas", () => {
+    const plano = new Float64Array(300).fill(38);
+    const planoAspero = new Float64Array(300).fill(0.3);
+    const centros = Array.from({ length: 10 }, (_, i) => i * PASO);
+    expect(corrimientoDeLaRejilla(plano, planoAspero, 0, centros, PASO)).toBeNull();
+  });
+
+  it("una rejilla ya alineada no se mueve", () => {
+    const { c, aspero } = fila(300, PASO / 2);           // juntas en 12.5, 37.5...
+    const centros = Array.from({ length: 10 }, (_, i) => i * PASO + 25);
+    const j = corrimientoDeLaRejilla(c, aspero, 0, centros, PASO)!;
+    expect(j).not.toBeNull();
+    expect(Math.abs(j.corrimientoPx)).toBeLessThan(1);
+  });
+
+  it("una rejilla corrida vuelve a su lugar", () => {
+    // El caso del modulo 26: la rejilla del parque cae 11 px tarde, casi medio
+    // modulo, y por eso la caja del 25 se comia la franja del 26.
+    const { c, aspero } = fila(300, PASO / 2);
+    const centros = Array.from({ length: 10 }, (_, i) => i * PASO + 25 + 11);
+    const j = corrimientoDeLaRejilla(c, aspero, 0, centros, PASO)!;
+    expect(j).not.toBeNull();
+    expect(j.corrimientoPx).toBeCloseTo(-11, 0);
+    expect(Math.abs(j.corrimientoModulos)).toBeCloseTo(11 / PASO, 1);
+  });
+
+  it("nunca corrige mas de medio modulo, asi que no puede renumerar", () => {
+    // Con la rejilla corrida DOS TERCIOS de modulo, lo correcto no es correrla
+    // dos tercios para atras —eso seria decir que el modulo 25 es el 26— sino
+    // un tercio para adelante, hasta el panel que ya tenia mas cerca.
+    const { c, aspero } = fila(300, PASO / 2);
+    const centros = Array.from({ length: 10 }, (_, i) => i * PASO + 25 + 17);
+    const j = corrimientoDeLaRejilla(c, aspero, 0, centros, PASO)!;
+    expect(Math.abs(j.corrimientoPx)).toBeLessThanOrEqual(PASO / 2);
+    expect(j.corrimientoPx).toBeCloseTo(PASO - 17, 0);
+  });
+
+  it("aguanta ruido de camara", () => {
+    const { c, aspero } = fila(300, PASO / 2, 0.3);
+    const centros = Array.from({ length: 10 }, (_, i) => i * PASO + 25 + 8);
+    const j = corrimientoDeLaRejilla(c, aspero, 0, centros, PASO)!;
+    expect(j).not.toBeNull();
+    /*
+      Lo que hay que exigirle al ruido no es el pixel exacto: es que la caja no
+      se acerque al panel de al lado. Con un octavo de modulo de margen, la
+      caja —que mide seis decimos del paso— sigue entera adentro del suyo.
+    */
+    expect(Math.abs(j.corrimientoPx + 8)).toBeLessThan(PASO / 8);
+  });
+
+  it("no se deja arrastrar por el hueco entre dos strings", () => {
+    /*
+      Entre el modulo 28 de un string y el 1 del siguiente hay 555 mm sin
+      panel: un pozo frio de un ancho que no es el de una junta. Si se lo
+      contara como junta, la fase saldria un poco corrida hacia el. Se
+      construye el perfil con ese hueco adentro y se pide la misma respuesta.
+    */
+    const { c, aspero } = fila(400, PASO / 2);
+    for (let i = 137; i < 150; i++) { c[i] = 30; aspero[i] = 2.5; }
+    const centros: number[] = [];
+    for (let i = 0; i < 6; i++) centros.push(i * PASO + 25);
+    for (let i = 0; i < 6; i++) centros.push(150 + i * PASO + 25);
+    const j = corrimientoDeLaRejilla(c, aspero, 0, centros, PASO)!;
+    expect(j).not.toBeNull();
+    expect(Math.abs(j.corrimientoPx)).toBeLessThan(2);
+  });
+
+  it("con las juntas CALIENTES no se alinea al reves", () => {
+    /*
+      Es el error que no da ningun sintoma. Entre modulo y modulo hay suelo, y
+      al mediodia el suelo lee por encima del panel. Buscando la junta como un
+      pozo frio, la respuesta sale medio modulo corrida y cada caja queda
+      apoyada justo en el hueco entre dos paneles — con las cajas pareciendo
+      igual de bien puestas que siempre.
+
+      Lo que lo resuelve es la aspereza, que no cambia de signo: el panel es
+      liso y el hueco no.
+    */
+    const { c, aspero } = fila(300, PASO / 2, 0, true);
+    const centros = Array.from({ length: 10 }, (_, i) => i * PASO + 25);
+    const j = corrimientoDeLaRejilla(c, aspero, 0, centros, PASO)!;
+    expect(j).not.toBeNull();
+    expect(Math.abs(j.corrimientoPx)).toBeLessThan(PASO / 8);
+  });
+
+  it("con pocos modulos no contesta", () => {
+    const { c, aspero } = fila(300, PASO / 2);
+    expect(corrimientoDeLaRejilla(c, aspero, 0, [25, 50, 75], PASO)).toBeNull();
+  });
+});
+
+describe("perfilALoLargo", () => {
+  it("toma la mediana cruzada, asi que un defecto no le tapa la junta", () => {
+    const w = 60, h = 60;
+    const sd = new Float32Array(w * h).fill(0.3);
+    // Junta aspera cruzada en y=30, y un defecto que tambien levanta el desvio
+    // pero solo en una franja angosta a lo ancho.
+    for (let x = 0; x < w; x++) sd[30 * w + x] = 2;
+    for (let y = 0; y < h; y++) for (let x = 28; x < 32; x++) sd[y * w + x] = 5;
+    const p = perfilALoLargo(sd, w, h, 30, 30, Math.PI / 2, 30, -10, 10);
+    // t=0 es y=30: la junta. La mediana cruzada la ve pese al defecto.
+    expect(p[10]!).toBeCloseTo(2, 1);
+    expect(p[0]!).toBeCloseTo(0.3, 1);
+  });
+});

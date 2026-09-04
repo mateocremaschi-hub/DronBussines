@@ -28,13 +28,13 @@ import {
   engancharFoto,
   escalaDeLaImagen,
   girar,
-  centroDelHueco,
   pasoDeFilasEnLaImagen,
   pasoEnLaImagen,
   sondearCaja,
   FRIO_QUE_NO_ES_PANEL_C,
   type Caja as CajaDeMedicion,
 } from "./encaje";
+import { corrimientoDeLaRejilla, perfilALoLargo, type Juntas } from "./juntas";
 import { correccion, medirVinieta, radioNormalizado, type Vinieta } from "./vinieta";
 import { calorDeLaPunta } from "./puntaDeFila";
 import { claseSugerida, clasificarPatron } from "./patron";
@@ -161,29 +161,43 @@ export interface Caja {
    */
   pasoPx?: number;
   sentido?: number;
+  /**
+   * El modulo ENTERO, no solo la parte que se midio.
+   *
+   * Se mide una parte de adentro del modulo para no tocar el marco de aluminio
+   * ni el hueco de al lado, y durante mucho tiempo eso fue tambien lo unico
+   * que se dibujaba. En la foto se veia un rectangulito flotando en el medio
+   * de los paneles, y cuando la rejilla estaba corrida quedaba a caballo de
+   * dos — que es exactamente la duda que la foto tenia que despejar.
+   *
+   * Marcar el modulo entero es lo que convierte la foto en prueba: el que la
+   * mira cuenta paneles desde la punta y ve cual esta remarcado, sin tener que
+   * adivinar a cual de los dos pertenece un recuadro chico.
+   */
+  largoModulo?: number;
+  cruzadoModulo?: number;
 }
 
 /**
  * Que fraccion del modulo se mide, para no tocar el marco ni el suelo.
  *
  * El borde de un modulo tiene marco de aluminio, que al sol esta a otra
- * temperatura que la celda, y hay que dejarlo afuera.
+ * temperatura que la celda, y hay que dejarlo afuera. Y pegado al marco esta
+ * la union con el modulo siguiente, que es un escalon.
  *
- * Estaba en 0,6 y era demasiado. El marco mide unos 4 cm sobre un modulo de
- * 2,28 m: es el 1,7 % del largo. Recortar al 60 % tiraba el 40 % del modulo
- * para esquivar un 2 %, y ese 40 % no es cualquier parte — es donde caen las
- * substrings de las puntas.
+ * Seis decimos, y esta MEDIDO, no elegido. Con la rejilla ya alineada a lo
+ * largo se probo agrandar la caja a 0,75 sobre el vuelo entero de Wellington:
+ * los hallazgos pasaron de 3 a 17, y de esos 17, once tenian ΔT contra sus
+ * hermanos de entre -1,0 y +0,7 °C — o sea, ninguna diferencia de temperatura.
+ * Salieron por la FORMA: con la caja al 75 % el marco de aluminio entra en el
+ * retrato y dibuja una franja que cruza el modulo de lado a lado, que es la
+ * firma de un diodo de bypass. Peor todavia, el unico defecto de verdad del
+ * vuelo volvia a salir en el modulo 25 en vez del 26, porque la caja mas
+ * grande vuelve a agarrar panel del vecino.
  *
- * Se vio en el vuelo real. Mateo fotografio a mano un modulo con una franja
- * caliente de diodo de bypass; la franja estaba en el 20 % de arriba del
- * modulo, o sea justo afuera de la caja, y el motor midio el panel sano de
- * abajo y no reporto nada. La foto es inequivoca: la caja dibujada queda
- * limpiamente debajo de la franja naranja.
- *
- * Con 0,9 quedan 11 cm de margen en cada punta, que es casi tres veces el
- * marco. Esto se puede subir ahora y antes no, porque antes la caja se
- * apoyaba donde el GPS decia: hoy se engancha a los paneles de la foto y se
- * mide cuanta caja cae sobre panel.
+ * O sea que agrandar la caja no compra resolucion: compra el marco. Lo que si
+ * se gano alineando la rejilla es que estos seis decimos caen ENTEROS adentro
+ * del modulo — antes quedaban a caballo de dos.
  */
 const FRACCION_UTIL = 0.6;
 
@@ -286,17 +300,6 @@ const PARTE_DE_UN_MODULO_NORMAL = 0.75;
  */
 const MODULOS_PARA_JUZGAR_LA_PUNTA = 10;
 
-/**
- * A partir de cuantos grados vale la pena contar que la punta estaba caliente.
- *
- * Medio grado. El umbral de anomalia leve anda por los tres, asi que medio
- * grado no cambia ninguna clasificacion por si solo — pero sobre las puntas de
- * Wellington la correccion llega a dos y medio, que si la cambia entera.
- */
-const PUNTA_QUE_SE_NOTA_C = 0.5;
-
-/** Cuantos modulos de una fila tienen que entrar para medirle la union. */
-const MODULOS_PARA_ANCLAR_LA_FILA = 12;
 
 export class Acumulador {
   private mejor = new Map<string, Muestra>();
@@ -333,8 +336,11 @@ export class Acumulador {
    * arregla una vez en los datos en vez de una vez por vuelo.
    */
   private fueraDelPanel: Array<{ rowId: string; module: number; clave: string }> = [];
-  /** Lo que dice el hueco entre strings sobre donde esta la fila a lo largo. */
-  private uniones: Array<{ fileName: string; rowId: string; modulos: number; realce: number }> = [];
+  /**
+   * Cuanto habia que correr cada fila a lo largo para que las cajas cayeran
+   * sobre los modulos, medido con las juntas de la propia foto. Ya aplicado.
+   */
+  private alineaciones: Array<{ fileName: string; rowId: string; modulos: number; contraste: number }> = [];
   /** Fotos que no se pudieron enganchar a los paneles, y no se midieron. */
   private fotosSinEnganche: Array<{ fileName: string; fraccionLisa: number }> = [];
   /**
@@ -354,8 +360,6 @@ export class Acumulador {
   private fotosFueraDelParque: Array<{ fileName: string; metros: number }> = [];
   /** Cuanto vinieteo hubo que sacarle a cada foto, en grados en la esquina. */
   private vinietas: Array<{ fileName: string; maximoC: number }> = [];
-  /** El calor que trae la punta de la fila y no el modulo, por foto y posicion. */
-  private puntasCalientes: Array<{ fileName: string; posicion: number; grados: number }> = [];
   /**
    * Modulos medidos dos veces, desde fotos distintas, y cuanto se diferencian.
    *
@@ -491,7 +495,36 @@ export class Acumulador {
       las cajas de la foto por igual. Una foto que no engancho no da algunos
       hallazgos malos — los da todos malos, y con la seguridad de siempre.
     */
-    const sondeos = candidatos.map((c) => sondearCaja(foto.radio, sd, puesta(c.caja), dx, dy));
+    /*
+      Y AHORA la rejilla se acomoda tambien A LO LARGO de la fila.
+
+      Es lo que faltaba, y es lo que rompia el informe de la peor manera: con
+      el numero de panel corrido uno. `engancharFoto` solo corrige cruzado
+      porque "una fila de modulos es igual a lo largo" — y no lo es. Cada 24,8
+      px hay una junta, dos marcos de aluminio y el aire entre ellos, y en la
+      termica lee de 2 a 4 grados mas fria que la celda. Con esa regla se puede
+      preguntar si la rejilla del parque cae sobre los modulos o entre ellos.
+
+      Se busca por FILA porque el error es de la fila: es donde quedo el
+      replanteo, no como volo el dron. Y se busca en medio modulo para cada
+      lado, asi que ninguna caja se puede ir al modulo de al lado — lo unico
+      que cambia es que la caja del modulo 26 se apoya sobre el modulo 26.
+    */
+    const pasoDeLaFila = this.pasoPorFila(candidatos);
+    const alineado = this.alinearALoLargo(candidatos, foto, sd, puesta, dx, dy, pasoDeLaFila);
+    for (const [rowId, a] of alineado) {
+      this.alineaciones.push({
+        fileName: foto.fileName,
+        rowId,
+        modulos: a.j.corrimientoModulos * (pasoDeLaFila.get(rowId)?.sentido ?? 1),
+        contraste: a.j.contraste,
+      });
+    }
+    const corrX = (m: ModuleRef) => dx + (alineado.get(m.rowId)?.ex ?? 0);
+    const corrY = (m: ModuleRef) => dy + (alineado.get(m.rowId)?.ey ?? 0);
+
+    const sondeos = candidatos.map((c) =>
+      sondearCaja(foto.radio, sd, puesta(c.caja), corrX(c.m), corrY(c.m)));
     const confianza = confianzaDeFoto(sondeos);
     if (!confianza.sirve) {
       this.fotosSinEnganche.push({
@@ -552,8 +585,6 @@ export class Acumulador {
       return !!e && (m.module === e.min || m.module === e.max);
     };
 
-    const pasoDeLaFila = this.pasoPorFila(candidatos);
-    this.medirLasUniones(candidatos, foto, sd, dx, dy);
 
     /*
       Cuanto tiene que caer sobre panel la caja de una PUNTA de string.
@@ -581,8 +612,8 @@ export class Acumulador {
     for (let i = 0; i < candidatos.length; i++) {
       const { m, clave, ladoCeldaPx, celdaPx, d } = candidatos[i]!;
       const caja = puesta(candidatos[i]!.caja);
-      const cx = caja.cx + dx;
-      const cy = caja.cy + dy;
+      const cx = caja.cx + corrX(m);
+      const cy = caja.cy + corrY(m);
 
       /*
         La caja suelta que quedo mucho mas fria que su propia foto.
@@ -706,17 +737,21 @@ export class Acumulador {
       sesgos distintos —uno crece con el radio en el cuadro, el otro con la
       cercania a la punta de la fila— y mezclarlos haria que cada uno se coma
       parte del otro.
+
+      Esta correccion es POR FOTO y hay una segunda, la del vuelo entero, en
+      `comparar`. No sobran: se probo dejar solo la del vuelo y la
+      repetibilidad del motor empeoro de 0,41 a 0,58 °C, o sea que buena parte
+      del calor de la punta depende de COMO se la mira —el angulo con que entra
+      la calle en el cuadro— y eso solo lo puede ver la foto. Lo que la foto no
+      puede ver es la parte pareja, porque para eso hace falta el string
+      entero: en un vuelo a 52 m cada foto agarra cinco o seis modulos de cada
+      fila. Cada una limpia lo que la otra no alcanza.
     */
     const punta = calorDeLaPunta(medidas.map((x) => ({
       string: `${x.m.rowId}|${x.m.stringNumber}`,
       posicion: x.m.module,
       celsius: x.hit.celsius - (vinieta ? correccion(vinieta, x.r) : 0),
     })));
-    for (const [posicion, grados] of punta) {
-      if (Math.abs(grados) >= PUNTA_QUE_SE_NOTA_C) {
-        this.puntasCalientes.push({ fileName: foto.fileName, posicion, grados });
-      }
-    }
 
     for (const x of medidas) {
       // Se le resta lo mismo a la mediana y al punto caliente: el chequeo
@@ -762,6 +797,8 @@ export class Acumulador {
           cx: x.caja.cx, cy: x.caja.cy,
           largo: x.caja.largo, cruzado: x.caja.cruzado, rotRad: x.caja.rotRad,
           ancho: foto.radio.width, alto: foto.radio.height,
+          ...(x.caja.largoModulo != null ? { largoModulo: x.caja.largoModulo } : {}),
+          ...(x.caja.cruzadoModulo != null ? { cruzadoModulo: x.caja.cruzadoModulo } : {}),
           /*
             El paso entre modulos, y hacia que lado crece el numero.
 
@@ -889,7 +926,11 @@ export class Acumulador {
 
         candidatos.push({
           m, clave, ladoCeldaPx, celdaPx, d,
-          caja: { cx, cy, largo: largoCaja, cruzado: cruzadoCaja, rotRad: anguloEnImagen },
+          caja: {
+            cx, cy, largo: largoCaja, cruzado: cruzadoCaja, rotRad: anguloEnImagen,
+            largoModulo: moduloAnchoM / mPorPxRadio,
+            cruzadoModulo: moduloLargoM / mPorPxRadio,
+          },
         });
       }
     }
@@ -942,94 +983,69 @@ export class Acumulador {
   }
 
   /**
-   * Donde dice el hueco entre strings que esta la fila, a lo largo.
+   * Cuanto hay que correr cada fila A LO LARGO para que las cajas caigan sobre
+   * los modulos, medido con las juntas de la propia foto.
    *
-   * Se MIDE y todavia no se aplica: correr una fila a lo largo cambia que
-   * numero de modulo se reporta, y eso no se toca hasta poder demostrar que la
-   * medicion repite entre fotos.
+   * Se hace despues del enganche cruzado y sobre las cajas ya giradas y
+   * corridas: son dos correcciones distintas —una es como volo el dron, la
+   * otra es donde quedo el replanteo de la fila— y medir la segunda sobre las
+   * cajas sin corregir la primera mezcla las dos.
+   *
+   * Devuelve el corrimiento ya descompuesto en pixeles de imagen, porque es
+   * como se usa: se suma a `dx`/`dy` en todos los lugares donde se toca la
+   * caja. Que salga de un solo lugar es lo que impide que la caja que se MIDE
+   * y la que se DIBUJA terminen en sitios distintos.
    */
-  private medirLasUniones(
+  private alinearALoLargo(
     candidatos: Array<{ m: ModuleRef; caja: CajaDeMedicion }>,
     foto: FotoTermica,
     sd: Float32Array,
+    puesta: (c: CajaDeMedicion) => CajaDeMedicion,
     dx: number,
     dy: number,
-  ): void {
+    pasoDeLaFila: Map<string, { pasoPx: number; sentido: number }>,
+  ): Map<string, { j: Juntas; ex: number; ey: number }> {
     const porFila = new Map<string, Array<{ m: ModuleRef; caja: CajaDeMedicion }>>();
     for (const c of candidatos) push2(porFila, c.m.rowId, c);
 
+    const out = new Map<string, { j: Juntas; ex: number; ey: number }>();
     for (const [rowId, lista] of porFila) {
-      if (lista.length < MODULOS_PARA_ANCLAR_LA_FILA) continue;
-      lista.sort((a, b) => a.m.positionInRow - b.m.positionInRow);
-      const rot = lista[0]!.caja.rotRad;
-      const cos = Math.cos(rot), sin = Math.sin(rot);
+      const paso = pasoDeLaFila.get(rowId)?.pasoPx;
+      if (paso == null) continue;
 
-      const saltos: number[] = [];
-      for (let i = 1; i < lista.length; i++) {
-        if (lista[i]!.m.positionInRow - lista[i - 1]!.m.positionInRow !== 1) continue;
-        saltos.push(Math.hypot(
-          lista[i]!.caja.cx - lista[i - 1]!.caja.cx,
-          lista[i]!.caja.cy - lista[i - 1]!.caja.cy,
-        ));
-      }
-      if (saltos.length < 6) continue;
-      saltos.sort((a, b) => a - b);
-      const paso = saltos[saltos.length >> 1]!;
-      if (!(paso > 6)) continue;
-
-      // La union entre dos strings: donde cambia el chunk.
-      let union: number | null = null;
-      for (let i = 1; i < lista.length; i++) {
-        const previo = lista[i - 1]!, actual = lista[i]!;
-        if (actual.m.positionInRow - previo.m.positionInRow !== 1) continue;
-        if (actual.m.chunkIndex === previo.m.chunkIndex) continue;
-        union = ((previo.caja.cx + actual.caja.cx) / 2 + dx - foto.radio.width / 2) * cos
-          + ((previo.caja.cy + actual.caja.cy) / 2 + dy - foto.radio.height / 2) * sin;
-      }
-      if (union == null) continue;
-
-      // Perfil de lisura a lo largo de la fila, centrado en el cuadro.
-      const a = lista[0]!.caja, z = lista[lista.length - 1]!.caja;
-      const u = (c: CajaDeMedicion) =>
-        (c.cx + dx - foto.radio.width / 2) * cos + (c.cy + dy - foto.radio.height / 2) * sin;
-      const desde = Math.min(u(a), u(z)) - paso, hasta = Math.max(u(a), u(z)) + paso;
-      // La union tiene que caer con margen adentro del tramo medido.
-      if (union < desde + paso * 1.5 || union > hasta - paso * 1.5) continue;
-      const n = Math.round(hasta - desde);
-      if (n < paso * 6) continue;
-      const ancho = Math.max(1, Math.round(a.cruzado * 0.35));
-      const perfil = new Float64Array(n);
-      for (let i = 0; i < n; i++) {
-        const t = desde + i;
-        let suma = 0, cuenta = 0;
-        for (let k = -ancho; k <= ancho; k++) {
-          const x = Math.round(foto.radio.width / 2 + t * cos - k * sin);
-          const y = Math.round(foto.radio.height / 2 + t * sin + k * cos);
-          if (x < 0 || y < 0 || x >= foto.radio.width || y >= foto.radio.height) continue;
-          suma += sd[y * foto.radio.width + x]!;
-          cuenta++;
-        }
-        perfil[i] = cuenta ? suma / cuenta : 0;
-      }
-
-      const hueco = centroDelHueco(perfil, union - desde, paso * 0.9);
-      if (!hueco) continue;
       /*
-        El corrimiento se devuelve en el sentido en que CRECE positionInRow.
+        Solo las cajas que de verdad estan en el cuadro.
 
-        El eje de la imagen a lo largo de la fila apunta para un lado o para el
-        otro segun como caiga la fila en el cuadro, y esa fila proyectada al
-        reves da el corrimiento con el signo cambiado. Con el signo cambiado,
-        corregir el numero de modulo lo corre para el lado contrario — que es
-        peor que no corregirlo.
+        `candidatos` trae todo lo que toca la huella, y la huella se calcula
+        sobre el terreno: una fila que cruza la foto entera aporta veinte cajas
+        de las que la mitad caen fuera del sensor. Esas no tienen imagen que
+        mirar, asi que solo diluyen el perfil — y peor, arrastran el promedio
+        de "centro" y el de "junta" hacia el mismo valor, que es exactamente lo
+        que hace que la fila se descarte por falta de contraste.
       */
-      const sentido = Math.sign(u(lista[lista.length - 1]!.caja) - u(lista[0]!.caja)) || 1;
-      this.uniones.push({
-        fileName: foto.fileName, rowId,
-        modulos: ((hueco.centro - (union - desde)) / paso) * sentido,
-        realce: hueco.realce,
-      });
+      const cajas = lista
+        .map((c) => {
+          const g = puesta(c.caja);
+          return { ...g, cx: g.cx + dx, cy: g.cy + dy };
+        })
+        .filter((c) =>
+          c.cx >= 0 && c.cy >= 0 && c.cx < foto.radio.width && c.cy < foto.radio.height);
+      if (cajas.length < 4) continue;
+      const rot = cajas[0]!.rotRad;
+      const ux = Math.cos(rot), uy = Math.sin(rot);
+      const cx = cajas.reduce((a, c) => a + c.cx, 0) / cajas.length;
+      const cy = cajas.reduce((a, c) => a + c.cy, 0) / cajas.length;
+      const centros = cajas.map((c) => (c.cx - cx) * ux + (c.cy - cy) * uy);
+      const t0 = Math.min(...centros) - paso, t1 = Math.max(...centros) + paso;
+
+      const w = foto.radio.width, hh = foto.radio.height, cruz = cajas[0]!.cruzado;
+      const perfilC = perfilALoLargo(foto.radio.celsius, w, hh, cx, cy, rot, cruz, t0, t1);
+      const perfilAspero = perfilALoLargo(sd, w, hh, cx, cy, rot, cruz, t0, t1);
+      const j = corrimientoDeLaRejilla(perfilC, perfilAspero, t0, centros, paso);
+      if (!j) continue;
+      out.set(rowId, { j, ex: j.corrimientoPx * ux, ey: j.corrimientoPx * uy });
     }
+    return out;
   }
 
   /**
@@ -1164,75 +1180,48 @@ export class Acumulador {
    * borde del cuadro—. Muchos quiere decir que la rejilla no esta cayendo
    * donde estan los paneles, y eso hay que decirlo en vez de entregar una
    * lista de defectos que en realidad es la textura del suelo.
+   *
+   * Se cuenta cada MODULO una vez, no cada vez que su caja cayo mal: un modulo
+   * que sale en cuatro fotos y en las cuatro cae sobre el motor del tracker es
+   * un modulo sin medir, no cuatro.
    */
+  cajasFueraDelPanel(): number {
+    return new Set(this.fueraDelPanel.map((f) => f.clave)).size;
+  }
+
   /**
    * En que posicion de la fila caen los modulos que quedaron fuera del panel.
    *
-   * Ordenado de mas a menos. Lo que interesa es si se concentran.
+   * Ordenado de mas a menos. Lo que interesa es si se concentran: si siempre
+   * es el mismo numero, el problema esta en los datos del parque y se arregla
+   * una vez, no vuelo por vuelo.
    */
-  /** Lo que dijo el hueco entre strings de cada fila, foto por foto. */
-  unionesMedidas(): Array<{ fileName: string; rowId: string; modulos: number; realce: number }> {
-    return this.uniones;
-  }
-
-  /**
-   * Cuanto esta corrida cada fila a lo largo, en su propia foto.
-   *
-   * La clave es "archivo|fila". Se devuelve por foto y no promediado por fila:
-   * lo que se hace con esto es AVISAR sobre un hallazgo concreto, que salio de
-   * una foto concreta, y ahi lo que importa es lo que decia esa foto.
-   */
-  corrimientosDeFila(): Map<string, number> {
-    const out = new Map<string, number>();
-    for (const u of this.uniones) out.set(`${u.fileName}|${u.rowId}`, u.modulos);
-    return out;
-  }
-
   modulosFueraDelPanel(): Array<{ module: number; casos: number }> {
-    /*
-      Cada modulo cuenta UNA vez, y solo si no lo salvo otra foto.
-
-      Se contaban las veces, no los modulos: el aviso decia "293 modulos
-      quedaron sin medir" y arriba "de esos, 663 son el modulo 28", que es mas
-      que el total y deja de ser creible justo cuando lo que dice importa. Un
-      modulo que en una foto cayo sobre el hueco y en la siguiente cayo sobre
-      el panel esta medido, y no tiene por que aparecer aca.
-    */
     const vistos = new Set<string>();
-    const cuenta = new Map<number, number>();
+    const porModulo = new Map<number, number>();
     for (const f of this.fueraDelPanel) {
-      const clave = `${f.rowId}#${f.module}`;
-      if (vistos.has(clave)) continue;
-      vistos.add(clave);
-      if (this.mejor.has(f.clave)) continue;
-      cuenta.set(f.module, (cuenta.get(f.module) ?? 0) + 1);
+      if (vistos.has(f.clave)) continue;
+      vistos.add(f.clave);
+      porModulo.set(f.module, (porModulo.get(f.module) ?? 0) + 1);
     }
-    return [...cuenta]
+    return [...porModulo]
       .map(([module, casos]) => ({ module, casos }))
       .sort((a, b) => b.casos - a.casos);
   }
 
-  cajasFueraDelPanel(): number {
-    let n = 0;
-    for (const k of this.sinPanel) if (!this.mejor.has(k)) n++;
-    return n;
-  }
-
-  /** El vinieteo que hubo que sacarle a cada foto, en grados en la esquina. */
-  /**
-   * Lo que se le saco a cada posicion de la fila por estar cerca de la punta.
-   *
-   * Se dice porque es del PARQUE y no del vuelo: si la punta de las filas de
-   * una zona lee tres grados de mas, va a leerlos en todos los vuelos, y es la
-   * diferencia entre una lista corta con un defecto adentro y una lista corta
-   * llena de modulos 1.
-   */
-  calorDeLasPuntas(): Array<{ fileName: string; posicion: number; grados: number }> {
-    return this.puntasCalientes;
-  }
-
   vinieteo(): Array<{ fileName: string; maximoC: number }> {
     return this.vinietas;
+  }
+
+  /**
+   * Cuanto habia que correr cada fila a lo largo, medido con sus juntas.
+   *
+   * Ya esta aplicado: esto es para poder decirlo. Un parque cuyas filas estan
+   * medio modulo corridas en los datos se arregla una vez en las coordenadas y
+   * no una vez por vuelo, y sin este numero nadie sabe que hay que arreglarlo.
+   */
+  alineacionesDeFila(): Array<{ fileName: string; rowId: string; modulos: number; contraste: number }> {
+    return this.alineaciones;
   }
 
   /**
@@ -1614,6 +1603,42 @@ export function stringsEnVariasTandas(muestras: Muestra[]): number {
   return n;
 }
 
+/**
+ * A partir de cuantos grados vale la pena contar que la punta estaba caliente.
+ *
+ * Medio grado. El umbral de anomalia leve anda por los tres, asi que medio
+ * grado no cambia ninguna clasificacion por si solo — pero sobre las puntas de
+ * Wellington la correccion llega a tres, que si la cambia entera.
+ */
+export const PUNTA_QUE_SE_NOTA_C = 0.5;
+
+/**
+ * El calor que traen las puntas de fila EN ESTE PARQUE, medido con el vuelo
+ * entero.
+ *
+ * Se hacia foto por foto y por eso no se aplicaba nunca. Para separar "esta
+ * punta esta caliente" de "todas las puntas de aca estan calientes" hay que
+ * ver el mismo numero de modulo en varias filas Y el string entero para saber
+ * su nivel. En una foto a 52 m entran cinco o seis modulos de cada fila: no
+ * alcanza para ninguna de las dos cosas. En el vuelo entran los veintiocho, y
+ * cada posicion aparece en doscientas filas.
+ *
+ * La tanda va adentro de la clave del string a proposito: entre las nueve y
+ * las once el parque se calienta, y un string medido en dos pasadas tiene dos
+ * niveles distintos. Mezclarlos le pondria a la punta un calor que es del
+ * reloj.
+ */
+export function sesgoDePunta(muestras: Muestra[]): Map<number, number> {
+  const tandas = tandasPorString(muestras);
+  return calorDeLaPunta(
+    muestras.map((m) => ({
+      string: tandas.get(m) ?? `${m.modulo.rowId}#${m.modulo.chunkIndex}`,
+      posicion: m.modulo.module,
+      celsius: m.celsius,
+    })),
+  );
+}
+
 export function comparar(
   muestras: Muestra[],
   umbrales: Umbrales = UMBRALES,
@@ -1660,6 +1685,16 @@ export function comparar(
 
   const medianaGlobal = percentil(todo, 50);
 
+  /*
+    Y lo que traen las puntas de fila, que no es de esos modulos.
+
+    Se calcula antes de clasificar porque el ΔT corregido entra en la
+    clasificacion: un modulo entero "caliente y parejo" se reconoce justamente
+    por su ΔT contra los hermanos, y con los tres grados de la punta adentro,
+    el modulo 1 de cualquier fila se clasifica como circuito abierto.
+  */
+  const punta = sesgoDePunta(muestras);
+
   const crudos: Hallazgo[] = muestras.map((m) => {
     const s = porString.get(claveString(m)) ?? [];
     const f = porFila.get(m.modulo.rowId) ?? [];
@@ -1675,7 +1710,7 @@ export function comparar(
       referenciaC = medianaGlobal; vecinos = todo.length - 1; ambito = "vuelo";
     }
 
-    const deltaT = m.celsius - referenciaC;
+    const deltaT = m.celsius - referenciaC - (punta.get(m.modulo.module) ?? 0);
     /*
       Que defecto es. Se hace aca y no al medir porque hace falta el ΔT contra
       el string, que solo existe una vez que estan todas las muestras: un modulo
@@ -1718,26 +1753,64 @@ export function comparar(
     if (l) l.push(h); else porFilaYFoto.set(k, [h]);
   }
   const enFila = new Set<string>();
+  const enElVecino = new Set<string>();
   for (const [, lista] of porFilaYFoto) {
-    if (lista.length < MODULOS_PARA_JUZGAR_LA_FILA) continue;
-    const diodos = lista.filter((h) => h.patron?.patron === "diodo");
-    if (diodos.length / lista.length > FRACCION_DE_DIODOS_QUE_NO_EXISTE) {
-      for (const h of diodos) enFila.add(`${h.fileName}|${h.modulo.rowId}#${h.modulo.positionInRow}`);
+    if (lista.length >= MODULOS_PARA_JUZGAR_LA_FILA) {
+      const diodos = lista.filter((h) => h.patron?.patron === "diodo");
+      if (diodos.length / lista.length > FRACCION_DE_DIODOS_QUE_NO_EXISTE) {
+        for (const h of diodos) enFila.add(`${h.fileName}|${h.modulo.rowId}#${h.modulo.positionInRow}`);
+      }
+    }
+
+    /*
+      Y el mismo argumento entre VECINOS, que es el que llega a disparar.
+
+      El filtro de arriba pide ocho modulos de la misma fila en la misma foto,
+      y a 52 m de altura cada foto agarra cinco o seis: sobre el vuelo de
+      Wellington no se disparo ni una vez. Lo que si se puede ver con cinco
+      modulos es el de al lado, y alcanza: la franja del borde del panel le
+      sale a los DOS vecinos en el MISMO extremo, porque el borde es lo que
+      comparten. Un diodo de bypass es un componente que se quema solo — que se
+      quemen dos seguidos, los dos en el mismo tercio de la placa y el mismo
+      dia, es la definicion de un problema de medicion.
+
+      Se comparan el eje y el extremo, no solo el hecho de que haya franja. Dos
+      diodos vecinos en tercios distintos de la placa siguen saliendo los dos.
+    */
+    const porPos = new Map<number, (typeof crudos)[number]>();
+    for (const h of lista) porPos.set(h.modulo.positionInRow, h);
+    for (const h of lista) {
+      const f = h.patron?.franja;
+      if (h.patron?.patron !== "diodo" || !f) continue;
+      for (const d of [-1, 1]) {
+        const v = porPos.get(h.modulo.positionInRow + d);
+        const g = v?.patron?.franja;
+        if (!g || v!.patron?.patron !== "diodo") continue;
+        if (g.eje !== f.eje || g.de !== f.de) continue;
+        if (Math.abs(g.desde - f.desde) > 1 || Math.abs(g.hasta - f.hasta) > 1) continue;
+        enElVecino.add(`${h.fileName}|${h.modulo.rowId}#${h.modulo.positionInRow}`);
+        enElVecino.add(`${v!.fileName}|${v!.modulo.rowId}#${v!.modulo.positionInRow}`);
+      }
     }
   }
 
   return crudos.map((h) => {
-    if (enFila.has(`${h.fileName}|${h.modulo.rowId}#${h.modulo.positionInRow}`)) {
+    const clave = `${h.fileName}|${h.modulo.rowId}#${h.modulo.positionInRow}`;
+    const porQue = enFila.has(clave)
+      ? "Se le vio una franja caliente, pero a demasiados modulos de esta misma fila les salio " +
+        "la misma franja en el mismo extremo. Un diodo de bypass no se quema en fila: eso es el " +
+        "borde del recuadro, no un defecto."
+      : "Se le vio una franja caliente, pero al modulo de al lado le salio la misma franja en el " +
+        "mismo extremo. Un diodo de bypass no se quema de a dos en el mismo tercio de la placa: " +
+        "eso es el borde del panel, no un defecto.";
+    if (enFila.has(clave) || enElVecino.has(clave)) {
       const sinFranja: Hallazgo = {
         ...h,
         patron: {
           ...h.patron!,
           patron: "sin-patron",
           confianza: "baja",
-          porQue:
-            "Se le vio una franja caliente, pero a demasiados modulos de esta misma fila les " +
-            "salio la misma franja en el mismo extremo. Un diodo de bypass no se quema en fila: " +
-            "eso es el borde del recuadro, no un defecto.",
+          porQue,
         },
         severidadInterna: "normal",
         peor: h.severidad,

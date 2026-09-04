@@ -463,4 +463,19 @@ describe("la franja del diodo, en los dos sentidos", () => {
     for (let f = 0; f < filas; f++) celdas[f * columnas] = 50;
     expect(clasificarPatron({ celdas, filas, columnas }, 0).patron).toBe("diodo");
   });
+
+  it("dice en que eje y en que parte del modulo cayo la franja", () => {
+    /*
+      Sin esto, `comparar` no puede separar una substring del borde del panel.
+      Las dos dibujan una franja; lo que las separa es que la del borde le sale
+      igual al modulo de al lado y en el mismo extremo, y para verlo hace falta
+      saber donde cayo cada una.
+    */
+    const filas = 12, columnas = 6;
+    const celdas = new Float32Array(filas * columnas).fill(42);
+    for (let f = 0; f < filas; f++) { celdas[f * columnas] = 50; celdas[f * columnas + 1] = 50; }
+    const c = clasificarPatron({ celdas, filas, columnas }, 0);
+    expect(c.patron).toBe("diodo");
+    expect(c.franja).toEqual({ eje: "corto", desde: 0, hasta: 1, de: 6 });
+  });
 });

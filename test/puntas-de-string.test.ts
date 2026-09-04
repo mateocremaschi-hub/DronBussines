@@ -73,6 +73,24 @@ function pasto(): Float32Array {
   return c;
 }
 
+/**
+ * Cuanto se agranda la caja de medicion para pintar el PANEL ENTERO.
+ *
+ * La caja mide el 60 % central del modulo, asi que un panel realista ocupa
+ * 1/0,6 = 1,67 veces la caja. Estaba en 1,3, o sea un panel del 78 % del paso,
+ * con un cuarto de modulo de pasto entre panel y panel — una separacion que no
+ * existe en ningun parque. Y en esta escena el modulo entra en 14 px, asi que
+ * ese pasto quedaba a un pixel y medio del borde de la caja: mas cerca que el
+ * radio con que `desvioLocal` mide la aspereza. Con eso, TODAS las sondas del
+ * borde leian el pasto y medio pixel de corrimiento cambiaba la textura de la
+ * fila de 0,0 a 1,5.
+ *
+ * Con 1,6 el panel ocupa el 96 % del paso, que es lo que ocupa de verdad, y la
+ * caja tiene panel de sobra alrededor. Lo que la prueba quiere ver —que la
+ * punta cae sobre pasto y no se mide— no cambia: ahi no se pinta nada.
+ */
+const PANEL_ENTERO = 1.6;
+
 /** Pinta una caja, lisa, con la temperatura que se pida. */
 function pintar(c: Float32Array, caja: any, grados: number, escala = 1) {
   const cos = Math.cos(caja.rotRad), sin = Math.sin(caja.rotRad);
@@ -117,7 +135,7 @@ describe("la punta de un string donde no hay panel", () => {
     */
     const c = pasto();
     for (const m of previas) {
-      if (!puntas.has(m.modulo.positionInRow)) pintar(c, m.caja, PANEL_C, 1.3);
+      if (!puntas.has(m.modulo.positionInRow)) pintar(c, m.caja, PANEL_C, PANEL_ENTERO);
     }
     const acc = volar(c);
     const medidos = new Set(acc.muestras().map((m) => m.modulo.positionInRow));
@@ -145,7 +163,7 @@ describe("la punta de un string donde no hay panel", () => {
     */
     const c = pasto();
     for (const m of previas) {
-      if (!puntas.has(m.modulo.positionInRow)) pintar(c, m.caja, PANEL_C, 1.3);
+      if (!puntas.has(m.modulo.positionInRow)) pintar(c, m.caja, PANEL_C, PANEL_ENTERO);
     }
     const acc = volar(c);
     // La misma foto dos veces: los mismos modulos caen mal dos veces.
@@ -164,7 +182,7 @@ describe("la punta de un string donde no hay panel", () => {
 
   it("si en la punta SI hay panel, se mide como cualquier otro", () => {
     const c = pasto();
-    for (const m of previas) pintar(c, m.caja, PANEL_C, 1.3);
+    for (const m of previas) pintar(c, m.caja, PANEL_C, PANEL_ENTERO);
     const acc = volar(c);
     const medidos = new Set(acc.muestras().map((m) => m.modulo.positionInRow));
     for (const p of puntasEnCuadro) {
@@ -182,7 +200,7 @@ describe("la punta de un string donde no hay panel", () => {
       corre en las puntas, que es donde el parque se equivoca.
     */
     const c = pasto();
-    for (const m of previas) pintar(c, m.caja, PANEL_C, 1.3);
+    for (const m of previas) pintar(c, m.caja, PANEL_C, PANEL_ENTERO);
     const medio = previas.find((m) => !puntas.has(m.modulo.positionInRow))!;
     // Media caja 25 grados por encima: parte el modulo al medio, como un diodo.
     pintar(c, { ...medio.caja, largo: medio.caja!.largo / 2,

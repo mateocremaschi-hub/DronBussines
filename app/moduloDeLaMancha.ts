@@ -1,26 +1,22 @@
 /**
- * A que modulo pertenece la mancha caliente, y no a cual la puso el parque.
+ * A que modulo pertenece la mancha caliente, dentro del recuadro ya puesto.
  *
- * Mateo encontro un diodo de bypass de verdad y el informe decia modulo 25
- * cuando era el 26. El defecto estaba bien encontrado; el numero, corrido uno.
- * Y un numero corrido no es un detalle menor: el cliente abre el informe,
- * cuenta 25 paneles desde la punta, encuentra uno sano, y a partir de ahi el
- * informe entero deja de valer.
+ * Este archivo nacio para arreglar un numero corrido: Mateo encontro un diodo
+ * de bypass de verdad y el informe decia modulo 25 cuando era el 26. Eso ya no
+ * se arregla aca — se arregla en `juntas.ts`, que cuenta las juntas entre
+ * modulos de la propia foto y acomoda la rejilla ANTES de medir, asi que la
+ * franja del diodo se mide adentro de la caja del 26 y sale con su numero.
+ * Corregir el numero al final era tapar el agujero del lado equivocado: la
+ * MEDICION seguia saliendo de la caja mal puesta.
  *
- * Son dos corrimientos que se suman y ninguno de los dos es un error de
- * medicion:
+ * Lo que queda aca es la comprobacion, y sigue haciendo falta. Con la rejilla
+ * ya alineada, una mancha pegada al borde del panel —una substring de la
+ * punta— puede quedar a milimetros del vecino. Ahi el numero no se cambia,
+ * porque la substring es real y esta en SU modulo; lo que se hace es decirlo,
+ * para que el que entrega el informe mire la foto antes de anotar el numero.
  *
- *   - La FILA esta corrida a lo largo respecto de donde la pone el parque.
- *     Eso se mide con el hueco entre los dos strings —555 mm sin panel, entre
- *     el modulo 28 de uno y el 1 del otro— y sobre el vuelo de Wellington da
- *     medio modulo en muchas filas.
- *   - La MANCHA no esta en el centro del modulo. Un diodo de bypass puentea un
- *     tercio del panel, asi que su franja cae de un lado. Si ademas la fila
- *     esta corrida, esa franja termina adentro de la caja del vecino.
- *
- * Los dos juntos se resuelven de una: se pregunta en que modulo cae la mancha
- * con la fila ya puesta en su lugar. El modulo que sale es el que hay que
- * escribir en el informe.
+ * El calculo es el mismo de siempre: se pregunta en que modulo cae el centro
+ * de masa de lo que se despega, contado en modulos desde el centro de la caja.
  */
 
 import type { Caja } from "./detect";

@@ -71,6 +71,15 @@ export interface Clasificacion {
   fraccionCaliente: number;
   /** Cuantas manchas separadas hay. */
   grumos: number;
+  /**
+   * Donde cayo la franja, cuando la hay.
+   *
+   * Viaja con la clasificacion porque el que decide si es una substring o el
+   * borde del panel no es este archivo: es `comparar`, que puede mirar el
+   * modulo de al lado. Y para compararlas hace falta saber en que eje y en que
+   * parte del modulo cayo cada una.
+   */
+  franja?: { eje: "largo" | "corto"; desde: number; hasta: number; de: number };
 }
 
 export interface Retrato {
@@ -166,7 +175,7 @@ function franja(
   calientes: boolean[],
   filas: number,
   columnas: number,
-): { hay: boolean; desde: number; hasta: number; de: number } {
+): { hay: boolean; desde: number; hasta: number; de: number; eje: "largo" | "corto" } {
   /*
     Se prueban los DOS sentidos.
 
@@ -182,8 +191,8 @@ function franja(
     confianza en baja.
   */
   const derecho = franjaEnUnEje(calientes, filas, columnas, false);
-  if (derecho.hay) return derecho;
-  return franjaEnUnEje(calientes, filas, columnas, true);
+  if (derecho.hay) return { ...derecho, eje: "largo" };
+  return { ...franjaEnUnEje(calientes, filas, columnas, true), eje: "corto" };
 }
 
 function franjaEnUnEje(
@@ -234,8 +243,24 @@ function franjaEnUnEje(
  * angosta que cruza de lado a lado y se parece a una substring.
  *
  * O sea que a esta resolucion no se puede distinguir una substring de media
- * celda del borde de la propia caja. Con un quinto la franja tiene que ocupar
- * al menos dos celdas del retrato, y eso el borde no lo hace.
+ * celda del borde de la propia caja.
+ *
+ * Y con un quinto tampoco alcanzaba. Sobre el vuelo de Wellington quedaba un
+ * "diodo de bypass" en el modulo 27 de la fila 2-37 cuyo retrato tiene
+ * calientes las DOS primeras de sus doce filas —el 17 %, dos celdas— cruzando
+ * el modulo de lado a lado en la punta. Su vecino, el 26, tiene exactamente lo
+ * mismo en el mismo extremo. Dos diodos consecutivos con la franja en el mismo
+ * lugar no son dos diodos: es el borde del panel.
+ *
+ * Se probo subirlo a un cuarto y se llevo puesto el unico defecto de verdad
+ * del vuelo: el diodo del modulo 26 de la fila 1-24-esclava, cuya franja mide
+ * una columna de seis porque la segunda columna solo se despega tres grados en
+ * la mitad de su largo. O sea que el ancho no alcanza para separar una
+ * substring del borde del panel.
+ *
+ * Lo que si las separa es el VECINO: `comparar` baja de categoria la franja
+ * que aparece igual en el modulo de al lado y en el mismo extremo. Un diodo de
+ * bypass no se quema de a dos en el mismo lugar.
  */
 const FRACCION_MINIMA_DE_FRANJA = 0.15;
 
@@ -306,6 +331,7 @@ export function clasificarPatron(
       // confirmados en campo.
       confianza: "alta",
       anomalia: "Diodo de bypass",
+      franja: { eje: banda.eje, desde: banda.desde, hasta: banda.hasta, de: banda.de },
       porQue:
         `Hay una franja caliente que cruza el módulo de lado a lado y ocupa ` +
         `${Math.round(parte * 100)} % de su largo. Eso es una substring entera, que es lo que ` +

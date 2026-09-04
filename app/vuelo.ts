@@ -29,7 +29,9 @@ import {
   comparar,
   eventosDeString,
   type EventoDeString,
+  PUNTA_QUE_SE_NOTA_C,
   resumir,
+  sesgoDePunta,
   stringsEnVariasTandas,
   UMBRALES,
   UMBRALES_INTERNOS,
@@ -103,7 +105,10 @@ export interface ResultadoDeVuelo {
    * reporta— pero alcanza de sobra para avisar sobre el hallazgo que salio de
    * esa foto.
    */
-  corrimientosDeFila: Map<string, number>;
+  /** Cuanto habia que correr cada fila a lo largo, ya aplicado. */
+  alineaciones: Array<{ fileName: string; rowId: string; modulos: number; contraste: number }>;
+  /** Lo mismo indexado por "archivo|fila", que es como lo pide cada hallazgo. */
+  corregidoPorFila: Map<string, number>;
   /**
    * El dato de cada foto que se pudo leer, por nombre de archivo.
    *
@@ -855,18 +860,19 @@ export async function analizarFotos(
       fila ganan siempre, y una lista corta llena de puntas es una lista que
       nadie mira.
     */
-    const puntas = acc.calorDeLasPuntas();
+    const puntas = [...sesgoDePunta(acc.muestras())]
+      .filter(([, g]) => Math.abs(g) >= PUNTA_QUE_SE_NOTA_C)
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
     if (puntas.length) {
-      const peor = puntas.reduce((a, b) => (Math.abs(b.grados) > Math.abs(a.grados) ? b : a));
-      const posiciones = new Set(puntas.map((p) => p.posicion));
+      const [posPeor, gPeor] = puntas[0]!;
       fallos.push(
         `A ${puntas.length} posiciones de fila se les saco el calor que traen por estar en la punta: ` +
-        `hasta ${Math.abs(peor.grados).toFixed(1)} °C en el modulo ${peor.posicion}. No es de esos ` +
+        `hasta ${Math.abs(gPeor).toFixed(1)} °C en el modulo ${posPeor}. No es de esos ` +
         "modulos — es que las puntas dan a la calle de servicio, que al sol lee muy por encima del " +
         "panel, y se calientan de a poco: sobre este vuelo el modulo 1 de CUATRO filas distintas de " +
-        "la misma foto marcaba entre +2,1 y +3,2 contra sus hermanos de string. Se midio contra el " +
-        `mismo numero de modulo en las otras filas del cuadro. Son ${posiciones.size} posiciones ` +
-        "distintas, casi siempre las primeras y las ultimas de la fila.",
+        "la misma foto marcaba entre +2,1 y +3,2 contra sus hermanos de string. Se mide con el vuelo " +
+        "entero, comparando cada posicion contra el mismo numero de modulo de las otras doscientas " +
+        `filas. Son ${puntas.length} posiciones distintas, casi siempre las primeras y las ultimas.`,
       );
     }
 
@@ -912,28 +918,39 @@ export async function analizarFotos(
       del parque, una vez, y despues todos los vuelos de la zona salen bien.
     */
     /*
-      Cuantas filas estan corridas A LO LARGO, y cuanto.
+      Cuantas filas hubo que correr A LO LARGO para que el recuadro cayera
+      sobre el panel, y cuanto.
 
-      Esto no se corrige: se dice. La medicion repite entre fotos en poco menos
-      de la mitad de las filas y en el resto no, y correr una fila a lo largo
-      cambia QUE NUMERO DE MODULO se reporta — un error que no se ve en la foto
-      y que manda a una persona a destornillar el panel de al lado. Mientras no
-      repita en todas, lo honesto es avisar sobre el hallazgo y dejar que la
-      persona mire.
+      Esto YA se corrige —se cuentan las juntas entre modulos de cada foto y se
+      acomoda la rejilla— asi que el aviso no es una advertencia sobre el
+      numero de modulo: es lo que hay que arreglar en los datos del parque. Y
+      hay que arreglarlo igual, porque mientras las coordenadas sigan corridas,
+      cada vuelo lo tiene que volver a medir y la fila que entre de refilon en
+      una foto puede quedar sin corregir.
     */
-    const corridas = acc.unionesMedidas();
-    if (corridas.length >= 10) {
-      const malas = corridas.filter((u) => Math.abs(u.modulos) >= FILA_CORRIDA_MODULOS).length;
-      if (malas) {
-        const filas = new Set(corridas.filter((u) => Math.abs(u.modulos) >= FILA_CORRIDA_MODULOS).map((u) => u.rowId));
+    const alineadas = acc.alineacionesDeFila();
+    if (alineadas.length >= 10) {
+      const porFila = new Map<string, number[]>();
+      for (const a of alineadas) {
+        const l = porFila.get(a.rowId);
+        if (l) l.push(a.modulos); else porFila.set(a.rowId, [a.modulos]);
+      }
+      const corridas: number[] = [];
+      for (const [, v] of porFila) {
+        const orden = v.slice().sort((x, y) => x - y);
+        const med = orden[orden.length >> 1]!;
+        if (Math.abs(med) >= FILA_CORRIDA_MODULOS) corridas.push(Math.abs(med));
+      }
+      if (corridas.length) {
+        corridas.sort((a, b) => b - a);
         fallos.push(
-          `En ${malas} de ${corridas.length} mediciones, el hueco entre los dos strings de una fila ` +
-          `no cae donde lo pone el parque: se corre mas de ${FILA_CORRIDA_MODULOS} de modulo a lo ` +
-          `largo. Son ${filas.size} filas distintas. Ese hueco son 555 mm sin panel y esta ` +
-          "exactamente entre el modulo 28 de un string y el 1 del otro, asi que si esta corrido, la " +
-          "numeracion de esa fila tambien lo esta: el recuadro queda a caballo de dos paneles y el " +
-          "modulo que se reporta puede ser el de al lado. Los hallazgos de esas filas salen con el " +
-          "aviso puesto. Se arregla en las coordenadas del parque, no volando de nuevo.",
+          `${corridas.length} de ${porFila.size} filas estan corridas a lo largo en los datos del ` +
+          `parque respecto de donde estan los paneles en el campo — hasta ${corridas[0]!.toFixed(2)} ` +
+          "de modulo. La app lo mide en cada foto contando las juntas entre modulos y acomoda el " +
+          "recuadro antes de medir, asi que los numeros de modulo de esta lista son los buenos. " +
+          "Pero conviene corregir las coordenadas de esas filas en el parque: mientras sigan " +
+          "corridas, una fila que entre de refilon en una foto —pocos modulos, o muy inclinada— " +
+          "puede quedar sin corregir, y ahi el recuadro vuelve a quedar a caballo de dos paneles.",
         );
       }
     }
@@ -1036,7 +1053,18 @@ export async function analizarFotos(
     posesSupuestas: acc ? acc.posesSupuestas() : [],
     anguloMedio: nAngulo ? sumaAngulo / nAngulo : null,
     problemas,
-    corrimientosDeFila: acc ? acc.corrimientosDeFila() : new Map(),
+    alineaciones: acc ? acc.alineacionesDeFila() : [],
+    /*
+      Lo que se le corrigio a cada fila en cada foto, listo para el hallazgo.
+
+      Es lo que hay que contar en el informe y no lo que dice `uniones`: el
+      hueco entre strings se MIDE y no se aplica, mientras que esto es lo que
+      la app efectivamente hizo con el recuadro. Decir un numero y haber
+      aplicado otro es peor que no decir nada.
+    */
+    corregidoPorFila: acc
+      ? new Map(acc.alineacionesDeFila().map((a) => [`${a.fileName}|${a.rowId}`, a.modulos]))
+      : new Map(),
     fixes,
   };
 }
@@ -1121,52 +1149,65 @@ const PRECISION_DE_LA_GEOMETRIA = 0.01;
  * pantalla ofrece para corregir el modulo mirando la foto.
  */
 /**
- * Le agrega al hallazgo el aviso de que su fila esta corrida a lo largo.
+ * Le agrega al hallazgo lo que pasa con la posicion de su fila.
  *
- * Va en el hallazgo y no solo en el resumen del vuelo porque es lo unico que
- * la persona tiene delante cuando decide si el modulo malo es el 25 o el 26.
- * Y va con el numero medido, no con una advertencia generica: "medio modulo"
- * dice que mires el panel de al lado, "un cuarto" dice que probablemente este
- * bien.
+ * Dos cosas distintas, y las dos van en el hallazgo y no solo en el resumen,
+ * porque es lo unico que la persona tiene delante cuando decide si el modulo
+ * malo es el 25 o el 26:
+ *
+ *   - La fila estaba corrida a lo largo en los datos del parque y la app la
+ *     puso en su lugar contando las juntas de la propia foto. Eso ya no es una
+ *     advertencia sobre el numero —el numero es el bueno— pero SI es algo que
+ *     hay que arreglar en el parque, porque mientras siga corrido cada vuelo
+ *     lo tiene que volver a medir.
+ *   - La mancha caliente cae cerca del borde del modulo. Ahi el numero puede
+ *     ser el de al lado aunque la fila este bien puesta, y hay que mirarlo.
  */
-function avisarSiLaFilaEstaCorrida(
+function avisarDeLaFila(
   warnings: Warning[],
   corrimiento: number | undefined,
   h: Hallazgo,
   modulosPorString: number | undefined,
 ): Warning[] {
   const rowId = h.modulo.rowId;
-  if (corrimiento == null || Math.abs(corrimiento) < FILA_CORRIDA_MODULOS) return warnings;
+  const out = [...warnings];
 
-  /*
-    Y si con la fila puesta en su lugar la mancha cae en OTRO modulo, se dice
-    cual. Eso es lo que hay que escribir en el informe: el cliente cuenta
-    paneles desde la punta, y si el numero esta corrido uno encuentra un panel
-    sano y deja de creerle al informe entero.
-  */
-  const real = moduloDeLaMancha(
-    h.modulo.module, h.retrato, h.caja, corrimiento, modulosPorString,
-  );
-  const comun =
-    `Esta fila esta corrida ${Math.abs(corrimiento).toFixed(2)} de modulo a lo largo respecto de ` +
-    "donde la pone el parque — medido en esta misma foto con el hueco entre los dos strings, que " +
-    "son 555 mm sin panel entre el modulo 28 de uno y el 1 del otro. Se arregla en las coordenadas " +
-    "de la fila, no volando de nuevo.";
-
-  return [
-    ...warnings,
-    {
+  if (corrimiento != null && Math.abs(corrimiento) >= FILA_CORRIDA_MODULOS) {
+    out.push({
       code: "row-shifted-along",
       rowId,
       message:
-        real != null && real !== h.modulo.module
-          ? `Con la fila puesta en su lugar, la mancha caliente cae en el MODULO ${real}, no en el ` +
-            `${h.modulo.module}. ${comun} Comproba contra la foto y corregi el numero antes de ` +
-            "entregar: el recuadro estaba a caballo de dos paneles."
-          : `${comun} El recuadro queda a caballo de dos paneles: mira la foto antes de anotar el ` +
-            "numero, puede ser el de al lado.",
-    },
-  ];
+        `En los datos del parque esta fila esta corrida ${Math.abs(corrimiento).toFixed(2)} de ` +
+        "modulo a lo largo respecto de donde estan los paneles en el campo. La app lo midio con " +
+        "las juntas entre modulos de esta misma foto y puso el recuadro sobre el panel que le " +
+        "toca, asi que el numero de arriba es el bueno. Lo que queda por hacer es corregir las " +
+        "coordenadas de la fila en el parque: mientras sigan corridas, cada vuelo lo tiene que " +
+        "volver a medir y las filas que se vean de refilon pueden quedar sin corregir.",
+    });
+  }
+
+  /*
+    Y despues, donde cae la mancha DENTRO del recuadro ya puesto en su lugar.
+
+    Con la rejilla alineada esto casi siempre coincide con el numero del
+    parque. Cuando no coincide es porque la mancha esta pegada al borde del
+    panel —una substring de la punta— y ahi el que entrega el informe tiene que
+    mirar la foto antes de anotar el numero. Se avisa en vez de renumerar: una
+    substring de borde es real y esta en SU modulo, no en el vecino.
+  */
+  const real = moduloDeLaMancha(h.modulo.module, h.retrato, h.caja, 0, modulosPorString);
+  if (real != null && real !== h.modulo.module) {
+    out.push({
+      code: "row-shifted-along",
+      rowId,
+      message:
+        `La mancha caliente esta pegada al borde del modulo, del lado del ${real}. El recuadro ` +
+        `dibujado es el del modulo ${h.modulo.module} y ahi es donde se midio; mira la foto antes ` +
+        "de anotar el numero.",
+    });
+  }
+
+  return out;
 }
 
 export function hallazgosAFindings(
@@ -1183,7 +1224,7 @@ export function hallazgosAFindings(
    */
   stringsEnteros?: { eventos: EventoDeString[]; todos: Hallazgo[] },
   /** Cuanto esta corrida cada fila a lo largo, por "archivo|fila". */
-  corrimientosDeFila?: Map<string, number>,
+  corregidoPorFila?: Map<string, number>,
 ): Finding[] {
   const deModulo = hallazgos.map((h) => {
     const centro = toGeo(frame, h.modulo.x, h.modulo.y);
@@ -1195,9 +1236,9 @@ export function hallazgosAFindings(
       ...(fix ? { fix } : {}),
       address: res.best,
       candidates: res.candidates.slice(0, 8),
-      warnings: avisarSiLaFilaEstaCorrida(
+      warnings: avisarDeLaFila(
         res.warnings,
-        corrimientosDeFila?.get(`${h.fileName}|${h.modulo.rowId}`),
+        corregidoPorFila?.get(`${h.fileName}|${h.modulo.rowId}`),
         h,
         farm.rows.find((r) => r.source.id === h.modulo.rowId)?.modulesPerString,
       ),
