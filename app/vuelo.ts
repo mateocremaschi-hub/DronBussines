@@ -20,6 +20,7 @@
 import { anguloDeTracker, locate, makeFrame, toGeo } from "@locator";
 import type { CompiledFarm, LocalFrame } from "@locator";
 import type { Warning } from "../src/types.js";
+import { moduloDeLaMancha } from "./moduloDeLaMancha";
 import { escalaDelVuelo as escalaDeLaHuella } from "./encaje";
 import {
   Acumulador,
@@ -1079,20 +1080,39 @@ const PRECISION_DE_LA_GEOMETRIA = 0.01;
 function avisarSiLaFilaEstaCorrida(
   warnings: Warning[],
   corrimiento: number | undefined,
-  rowId: string,
+  h: Hallazgo,
+  modulosPorString: number | undefined,
 ): Warning[] {
+  const rowId = h.modulo.rowId;
   if (corrimiento == null || Math.abs(corrimiento) < FILA_CORRIDA_MODULOS) return warnings;
+
+  /*
+    Y si con la fila puesta en su lugar la mancha cae en OTRO modulo, se dice
+    cual. Eso es lo que hay que escribir en el informe: el cliente cuenta
+    paneles desde la punta, y si el numero esta corrido uno encuentra un panel
+    sano y deja de creerle al informe entero.
+  */
+  const real = moduloDeLaMancha(
+    h.modulo.module, h.retrato, h.caja, corrimiento, modulosPorString,
+  );
+  const comun =
+    `Esta fila esta corrida ${Math.abs(corrimiento).toFixed(2)} de modulo a lo largo respecto de ` +
+    "donde la pone el parque — medido en esta misma foto con el hueco entre los dos strings, que " +
+    "son 555 mm sin panel entre el modulo 28 de uno y el 1 del otro. Se arregla en las coordenadas " +
+    "de la fila, no volando de nuevo.";
+
   return [
     ...warnings,
     {
       code: "row-shifted-along",
       rowId,
       message:
-        `Esta fila esta corrida ${Math.abs(corrimiento).toFixed(2)} de modulo a lo largo respecto ` +
-        "de donde la pone el parque — medido en esta misma foto con el hueco entre los dos strings, " +
-        "que son 555 mm sin panel entre el modulo 28 de uno y el 1 del otro. El recuadro queda a " +
-        "caballo de dos paneles: mira la foto antes de anotar el numero, puede ser el de al lado. " +
-        "Se arregla en las coordenadas de la fila, no volando de nuevo.",
+        real != null && real !== h.modulo.module
+          ? `Con la fila puesta en su lugar, la mancha caliente cae en el MODULO ${real}, no en el ` +
+            `${h.modulo.module}. ${comun} Comproba contra la foto y corregi el numero antes de ` +
+            "entregar: el recuadro estaba a caballo de dos paneles."
+          : `${comun} El recuadro queda a caballo de dos paneles: mira la foto antes de anotar el ` +
+            "numero, puede ser el de al lado.",
     },
   ];
 }
@@ -1124,7 +1144,10 @@ export function hallazgosAFindings(
       address: res.best,
       candidates: res.candidates.slice(0, 8),
       warnings: avisarSiLaFilaEstaCorrida(
-        res.warnings, corrimientosDeFila?.get(`${h.fileName}|${h.modulo.rowId}`), h.modulo.rowId,
+        res.warnings,
+        corrimientosDeFila?.get(`${h.fileName}|${h.modulo.rowId}`),
+        h,
+        farm.rows.find((r) => r.source.id === h.modulo.rowId)?.modulesPerString,
       ),
       medicion: medicionDe(h),
       /*

@@ -150,6 +150,17 @@ export interface Caja {
    */
   ancho?: number;
   alto?: number;
+  /**
+   * Cada cuantos pixeles se repite un modulo en esta fila, y para que lado
+   * crece el numero de modulo sobre el eje `rotRad`.
+   *
+   * Hace falta para decidir a que modulo pertenece una mancha que cae cerca
+   * del borde de la caja. Sin el paso no se sabe cuanto es "un modulo" en esta
+   * foto, y sin el sentido la correccion corre el numero justo para el lado
+   * contrario.
+   */
+  pasoPx?: number;
+  sentido?: number;
 }
 
 /**
@@ -541,6 +552,7 @@ export class Acumulador {
       return !!e && (m.module === e.min || m.module === e.max);
     };
 
+    const pasoDeLaFila = this.pasoPorFila(candidatos);
     this.medirLasUniones(candidatos, foto, sd, dx, dy);
 
     /*
@@ -750,6 +762,19 @@ export class Acumulador {
           cx: x.caja.cx, cy: x.caja.cy,
           largo: x.caja.largo, cruzado: x.caja.cruzado, rotRad: x.caja.rotRad,
           ancho: foto.radio.width, alto: foto.radio.height,
+          /*
+            El paso entre modulos, y hacia que lado crece el numero.
+
+            Sin esto no se puede decir a que modulo pertenece una mancha que
+            cae cerca del borde de la caja: hace falta saber cuanto mide un
+            modulo en pixeles y para que lado se cuenta.
+          */
+          ...(pasoDeLaFila.get(x.m.rowId)
+            ? {
+                pasoPx: pasoDeLaFila.get(x.m.rowId)!.pasoPx,
+                sentido: pasoDeLaFila.get(x.m.rowId)!.sentido,
+              }
+            : {}),
         },
       });
     }
@@ -877,6 +902,46 @@ export class Acumulador {
    * modulos en unas cuantas filas.
    */
   /**
+   * Cuanto mide un modulo en pixeles en cada fila, y para que lado se cuenta.
+   *
+   * Sale de las propias cajas ya proyectadas —la distancia entre dos modulos
+   * consecutivos— asi que compara manzanas con manzanas con todo lo demas. El
+   * SENTIDO es tan importante como el paso: el eje de la imagen a lo largo de
+   * la fila apunta para un lado o para el otro segun como caiga la fila en el
+   * cuadro, y sin saberlo, corregir un numero de modulo lo corre justo para el
+   * lado contrario.
+   */
+  private pasoPorFila(
+    candidatos: Array<{ m: ModuleRef; caja: CajaDeMedicion }>,
+  ): Map<string, { pasoPx: number; sentido: number }> {
+    const porFila = new Map<string, Array<{ m: ModuleRef; caja: CajaDeMedicion }>>();
+    for (const c of candidatos) push2(porFila, c.m.rowId, c);
+    const out = new Map<string, { pasoPx: number; sentido: number }>();
+    for (const [rowId, lista] of porFila) {
+      if (lista.length < 4) continue;
+      lista.sort((a, b) => a.m.positionInRow - b.m.positionInRow);
+      const rot = lista[0]!.caja.rotRad;
+      const cos = Math.cos(rot), sin = Math.sin(rot);
+      const u = (c: CajaDeMedicion) => c.cx * cos + c.cy * sin;
+      const saltos: number[] = [];
+      for (let i = 1; i < lista.length; i++) {
+        if (lista[i]!.m.positionInRow - lista[i - 1]!.m.positionInRow !== 1) continue;
+        saltos.push(Math.hypot(
+          lista[i]!.caja.cx - lista[i - 1]!.caja.cx,
+          lista[i]!.caja.cy - lista[i - 1]!.caja.cy,
+        ));
+      }
+      if (saltos.length < 3) continue;
+      saltos.sort((a, b) => a - b);
+      const pasoPx = saltos[saltos.length >> 1]!;
+      if (!(pasoPx > 6)) continue;
+      const sentido = Math.sign(u(lista[lista.length - 1]!.caja) - u(lista[0]!.caja)) || 1;
+      out.set(rowId, { pasoPx, sentido });
+    }
+    return out;
+  }
+
+  /**
    * Donde dice el hueco entre strings que esta la fila, a lo largo.
    *
    * Se MIDE y todavia no se aplica: correr una fila a lo largo cambia que
@@ -949,9 +1014,19 @@ export class Acumulador {
 
       const hueco = centroDelHueco(perfil, union - desde, paso * 0.9);
       if (!hueco) continue;
+      /*
+        El corrimiento se devuelve en el sentido en que CRECE positionInRow.
+
+        El eje de la imagen a lo largo de la fila apunta para un lado o para el
+        otro segun como caiga la fila en el cuadro, y esa fila proyectada al
+        reves da el corrimiento con el signo cambiado. Con el signo cambiado,
+        corregir el numero de modulo lo corre para el lado contrario — que es
+        peor que no corregirlo.
+      */
+      const sentido = Math.sign(u(lista[lista.length - 1]!.caja) - u(lista[0]!.caja)) || 1;
       this.uniones.push({
         fileName: foto.fileName, rowId,
-        modulos: (hueco.centro - (union - desde)) / paso,
+        modulos: ((hueco.centro - (union - desde)) / paso) * sentido,
         realce: hueco.realce,
       });
     }
