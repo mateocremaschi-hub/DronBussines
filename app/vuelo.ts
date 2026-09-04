@@ -39,6 +39,13 @@ import type { Cobertura, Finding, Inspection, Medicion } from "./inspection";
 import { camaraDesdeEquivalente35, type Camera } from "./mission";
 import { readPhoto, type PhotoFix } from "./photos";
 import type { Ajuste } from "./projection";
+import {
+  decidirElGiro,
+  type GiroDeLaCamara,
+  rumboDeLaFoto,
+  votoDeUnPar,
+  type VotoDeUnPar,
+} from "./rumbo";
 import { readRadiometric } from "./thermal";
 import type { StoredAnalysis, StoredFarm } from "./storage";
 
@@ -143,24 +150,53 @@ export interface OpcionesDeVuelo {
 const FOTOS_PARA_LA_ESCALA = 40;
 
 /**
- * Mide, sobre las propias imagenes, cuanto se despega la escala del EXIF.
+ * Cuantos pares se miran para decidir de que lado esta puesta la camara.
  *
- * Devuelve null cuando no hay con que decidirlo: pocas fotos pudieron contar
- * el paso, o las que lo contaron no coinciden entre si. En ese caso se usa la
- * escala del EXIF, que es lo unico que hay, y el aviso lo dice.
+ * Un par cuesta leer una foto de mas. Sobre el bloque 1, catorce pares tardan
+ * un segundo y cuatro deciden con margen — de sobra, porque lo que se elige es
+ * entre cuatro giros rectos, no un angulo.
  */
-async function medirLaEscala(
+const PARES_PARA_EL_GIRO = 16;
+
+export interface MedidasDelVuelo {
+  escala: { factor: number; fotos: number; dispersion: number; deLaser?: boolean } | null;
+  giro: GiroDeLaCamara | null;
+  /** Cuantos pares se pudieron mirar, decidan o no. */
+  paresMirados: number;
+}
+
+/**
+ * Mide, sobre las propias imagenes, las dos cosas que el EXIF dice mal.
+ *
+ * La escala —cuanto mide un pixel— y el giro —de que lado esta puesta la
+ * imagen—. Las dos salen de la misma pasada corta de lectura, y las dos
+ * devuelven null cuando las fotos no alcanzan para decidir: ahi se usa el EXIF
+ * crudo, que es lo unico que hay, y el aviso lo dice.
+ */
+async function medirElVuelo(
   farm: CompiledFarm,
   frame: LocalFrame,
   files: File[],
   opts: OpcionesDeVuelo,
-): Promise<{ factor: number; fotos: number; dispersion: number; deLaser?: boolean } | null> {
+): Promise<MedidasDelVuelo> {
   const paso = Math.max(1, Math.floor(files.length / FOTOS_PARA_LA_ESCALA));
   let cam: Camera | null = null;
   let acc: Acumulador | null = null;
   let escala: string | null = null;
   /** Lo que midio el laser, y la altura que decia el EXIF en esa misma foto. */
   const laser: Array<{ laserM: number; relM: number }> = [];
+  const votos: VotoDeUnPar[] = [];
+  /*
+    Los pares se reparten a lo largo del vuelo, no se toman los primeros.
+
+    Con las primeras dieciseis fotos del bloque 1 no decide ninguna: son el
+    medio de unas filas larguisimas, todas iguales a lo largo, y ahi la
+    correlacion no distingue para que lado se movio. Las que deciden son las
+    que pillan una punta de fila o el camino. Repartiendo, siempre caen
+    algunas.
+  */
+  const pasoDelGiro = Math.max(paso, Math.ceil(files.length / PARES_PARA_EL_GIRO));
+  let proximoGiro = 0;
 
   for (let i = 0; i < files.length; i += paso) {
     const file = files[i]!;
@@ -173,7 +209,7 @@ async function medirLaEscala(
       if (!fix || fix.relativeAltitudeM == null) continue;
       if (!cam) {
         cam = camaraFrom(fix, radio.width, radio.height);
-        if (!cam) return null;
+        if (!cam) return { escala: null, giro: null, paresMirados: 0 };
         acc = new Acumulador(farm, frame, {
           camera: cam,
           moduloAnchoM: opts.moduloAnchoM,
@@ -184,6 +220,20 @@ async function medirLaEscala(
       }
       if (fix.laserM != null && fix.relativeAltitudeM > 0) {
         laser.push({ laserM: fix.laserM, relM: fix.relativeAltitudeM });
+      }
+
+      /*
+        De que lado esta puesta la imagen, preguntado a la foto de al lado.
+
+        Se compara esta foto con la siguiente que sirva. Entre las dos el dron
+        se movio algo que el GPS sabe; el contenido de la imagen se corrio otro
+        tanto, y de que lado se corrio decide el giro. La foto extra se lee y se
+        tira en el acto: no se guarda ninguna matriz de temperaturas de mas.
+      */
+      if (i >= proximoGiro && fix.gimbalYawDeg != null) {
+        proximoGiro = i + pasoDelGiro;
+        const voto = await votarElGiro(files, i, radio, fix, cam!, escala);
+        if (voto) votos.push(voto);
       }
       const cuando = fix.takenAt ? new Date(fix.takenAt) : null;
       const angulo =
@@ -217,9 +267,61 @@ async function medirLaEscala(
     48.7. La mediana es 46.9 contra 52.0 del EXIF.
   */
   const porLaser = escalaPorLaser(laser);
-  if (porLaser) return porLaser;
+  return {
+    escala:
+      porLaser ??
+      (acc ? escalaDeLaHuella(acc.desviosDeEscala().map((e) => e.factor)) : null),
+    giro: decidirElGiro(votos),
+    paresMirados: votos.length,
+  };
+}
 
-  return acc ? escalaDeLaHuella(acc.desviosDeEscala().map((e) => e.factor)) : null;
+/**
+ * El voto de una foto y la que le sigue.
+ *
+ * "La que le sigue" no es siempre la de al lado en la carpeta: puede venir la
+ * visible del par, o una que no se pueda leer. Se prueban unas pocas hasta dar
+ * con una termica con coordenada, y si no aparece, este par no vota.
+ */
+async function votarElGiro(
+  files: File[],
+  i: number,
+  radio: ReturnType<typeof readRadiometric>,
+  fix: PhotoFix,
+  cam: Camera,
+  escala: string | null,
+): Promise<VotoDeUnPar | null> {
+  if (!radio || fix.gimbalYawDeg == null || fix.relativeAltitudeM == null) return null;
+  for (let j = i + 1; j < Math.min(files.length, i + 4); j++) {
+    try {
+      const otro = readRadiometric(await files[j]!.arrayBuffer(), escala ?? undefined);
+      if (!otro) continue;
+      const leida = await readPhoto(files[j]!, false);
+      const fix2 = leida.fix;
+      if (!fix2) continue;
+      /*
+        La distancia a los paneles decide cuanto mide un pixel. El laser la
+        mide; sin laser queda la altura del EXIF, que puede estar corrida — por
+        eso la busqueda mira veinticuatro pixeles alrededor de lo que predice.
+      */
+      const distancia = fix.laserM ?? fix.relativeAltitudeM;
+      const mPorPx =
+        (2 * distancia * Math.tan((cam.hfovDeg * Math.PI) / 360)) / cam.imageW;
+      const mediaLat = ((fix.lat + fix2.lat) / 2) * (Math.PI / 180);
+      return votoDeUnPar({
+        a: radio,
+        b: otro,
+        dEsteM: (fix2.lon - fix.lon) * 111320 * Math.cos(mediaLat),
+        dNorteM: (fix2.lat - fix.lat) * 111320,
+        mPorPx,
+        gimbalYawDeg: fix.gimbalYawDeg,
+      });
+    } catch {
+      // Una foto que no se puede leer no vota; el bucle de verdad la va a
+      // contar como fallo con su motivo.
+    }
+  }
+  return null;
 }
 
 /**
@@ -327,7 +429,9 @@ export async function analizarFotos(
     Se cuenta sobre un puñado de fotos repartidas por el vuelo y se decide una
     sola escala para todas: la causa es del equipo o del vuelo, no de la foto.
   */
-  const escalaMedida = await medirLaEscala(farm, frame, files, opts);
+  const medidas = await medirElVuelo(farm, frame, files, opts);
+  const escalaMedida = medidas.escala;
+  const giroDeLaCamara = medidas.giro;
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i]!;
@@ -420,6 +524,13 @@ export async function analizarFotos(
         nAngulo++;
       }
 
+      /*
+        El rumbo con el que se orienta la huella: el del EXIF mas el giro que
+        midieron las fotos. Sin medicion queda el del EXIF crudo, que es lo que
+        se hacia antes, y el aviso lo dice.
+      */
+      const rumbo = rumboDeLaFoto(giroDeLaCamara, fix.gimbalYawDeg ?? null);
+
       termicas++;
       acc!.agregar({
         fileName: file.name,
@@ -427,7 +538,7 @@ export async function analizarFotos(
         radio,
         pose: {
           lat: fix.lat, lon: fix.lon, altitudeAglM: agl * (escalaMedida?.factor ?? 1),
-          ...(fix.gimbalYawDeg != null ? { gimbalYawDeg: fix.gimbalYawDeg } : {}),
+          ...(rumbo != null ? { gimbalYawDeg: rumbo } : {}),
           ...(fix.gimbalPitchDeg != null ? { gimbalPitchDeg: fix.gimbalPitchDeg } : {}),
         },
       }, angulo?.factorDeAcortamiento ?? 1);
@@ -581,6 +692,35 @@ export async function analizarFotos(
         "esta correccion las cajas de medicion quedan estiradas desde el centro del cuadro hacia " +
         "afuera —mas de un metro en el borde, casi un modulo entero— y el informe se llena de " +
         "hallazgos que son del recuadro y no del panel.",
+      );
+    }
+
+    /*
+      De que lado estaba puesta la camara.
+
+      Esto se dice SIEMPRE, salga como salga, porque es el error que no deja
+      rastro: una huella rectangular girada 180 grados sobre su centro es la
+      misma huella, asi que los modulos que entran en el cuadro siguen siendo
+      los correctos y ninguna cuenta se rompe. Lo unico que cambia es donde se
+      dibuja cada uno adentro de la foto — y con eso alcanza para que todos los
+      hallazgos sean del pasto de al lado.
+    */
+    if (giroDeLaCamara && giroDeLaCamara.giroDeg !== 0) {
+      fallos.push(
+        `El rumbo que declara el EXIF esta ${giroDeLaCamara.giroDeg} grados corrido del lado para ` +
+        `el que mira la imagen, y SE CORRIGIO. Se comparo cada foto con la siguiente en ` +
+        `${giroDeLaCamara.mirados} pares: ${giroDeLaCamara.votos} deciden con margen y ` +
+        `${giroDeLaCamara.aFavor} dicen lo mismo. Sin esta correccion el parque entero se proyecta ` +
+        "espejado sobre la foto: las cajas caen en el suelo de al lado, los hallazgos son del pasto " +
+        "y nada lo delata, porque el recuadro que se lee sigue siendo el correcto.",
+      );
+    } else if (!giroDeLaCamara) {
+      fallos.push(
+        `No se pudo comprobar de que lado esta puesta la camara: de ${medidas.paresMirados} pares ` +
+        "de fotos seguidas, ninguno decidio con margen. Se uso el rumbo del EXIF tal cual. En el " +
+        "Matrice 4T ese rumbo viene 180 grados corrido, y con el corrido las cajas caen en el " +
+        "suelo de al lado. Antes de creerle a la lista, abri un hallazgo y fijate que el recuadro " +
+        "este sobre el panel y no al costado.",
       );
     }
 
