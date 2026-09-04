@@ -26,6 +26,7 @@ import {
   hallazgosAFindings,
   idDeModulo,
   reclasificarFindings,
+  escalaPorLaser,
   REPETIBLE_C,
   vueloDesdeAnalisis,
   type ResultadoDeVuelo,
@@ -560,5 +561,60 @@ describe("el mismo panel medido dos veces", () => {
     // La escena es la misma en las dos fotos: si el motor es consistente, la
     // diferencia tiene que ser practicamente cero.
     expect(rep!.p90).toBeLessThan(REPETIBLE_C);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * La regla con la que se mide el vuelo entero.
+ *
+ * El Matrice 4T trae telemetro laser y escribe en cada foto la distancia a lo
+ * que tiene debajo. Eso es EXACTAMENTE lo que necesita la huella. La altura
+ * relativa del EXIF no lo es: es la altura sobre el punto de despegue, y si el
+ * despegue quedo mas abajo que los paneles, sobra.
+ *
+ * Paso de verdad, y salio caro. En el vuelo del bloque 1 de Wellington del 4
+ * de septiembre las 371 fotos traian 52 m de altura relativa y el laser media
+ * 46,9: cinco metros, el 11 % de la escala. Con la escala del EXIF ese vuelo
+ * dio 593 hallazgos, todos falsos, y el propio programa declaro la medicion no
+ * repetible. Con la del laser, la misma zona pasa de 156 hallazgos a 5.
+ */
+describe("la escala que sale del telemetro laser", () => {
+  const lecturas = (n: number, laserM: number, relM = 52) =>
+    Array.from({ length: n }, () => ({ laserM, relM }));
+
+  it("con pocas lecturas no se toca la escala del vuelo", () => {
+    expect(escalaPorLaser(lecturas(4, 46.9))).toBeNull();
+  });
+
+  it("con lecturas de sobra devuelve la razon entre el laser y el EXIF", () => {
+    // Los numeros del vuelo real: 46,9 m de laser contra 52 de EXIF.
+    const e = escalaPorLaser(lecturas(20, 46.9))!;
+    expect(e, "tenia que decidir con el laser").not.toBeNull();
+    expect(e.factor).toBeCloseTo(46.9 / 52, 3);
+    expect(e.deLaser).toBe(true);
+  });
+
+  /*
+    El laser apunta a lo que hay debajo, que a veces es el panel y a veces el
+    suelo entre filas. Si esas dos cosas discrepan mucho —o si le pego a un
+    poste— no hay una sola altura y es mejor contarlo en la imagen.
+  */
+  it("si las lecturas no coinciden entre si, no decide", () => {
+    const dispares = [46.9, 52.0, 41.0, 49.5, 44.2, 51.1].map((laserM) => ({ laserM, relM: 52 }));
+    expect(escalaPorLaser(dispares)).toBeNull();
+  });
+
+  it("una lectura imposible no arrastra la mediana", () => {
+    const con = [...lecturas(10, 46.9), { laserM: 200, relM: 52 }, { laserM: 0.2, relM: 52 }];
+    const e = escalaPorLaser(con)!;
+    expect(e.factor).toBeCloseTo(46.9 / 52, 3);
+    expect(e.fotos, "las imposibles no se cuentan").toBe(10);
+  });
+
+  it("si la altura del EXIF ya coincide con el laser, el factor es uno", () => {
+    const e = escalaPorLaser(lecturas(20, 52))!;
+    expect(e.factor).toBeCloseTo(1, 3);
   });
 });

@@ -41,6 +41,27 @@ export interface PhotoFix {
   /** Altura sobre el punto de despegue, que es lo que escriben los DJI. */
   relativeAltitudeM?: number;
   /**
+   * Lo que midio el telemetro laser hasta lo que hay debajo, en metros.
+   *
+   * El Matrice 4T lo trae y lo escribe en cada foto, y es exactamente el numero
+   * que necesita la huella: la distancia de la camara a los paneles. La altura
+   * relativa del EXIF no es eso — es la altura sobre el PUNTO DE DESPEGUE, que
+   * puede estar varios metros mas abajo. En el vuelo del bloque 1 de Wellington
+   * el EXIF decia 52 m y el laser 46.9: cinco metros de diferencia, el 11 % de
+   * la escala, y 593 hallazgos falsos.
+   */
+  laserM?: number;
+  /**
+   * Si esta foto se posiciono con RTK fijo.
+   *
+   * Cambia por completo la lectura de lo que sigue. Sin RTK, un corrimiento de
+   * uno o dos metros es el GPS del dron y no hay nada que hacer. Con RTK fijo
+   * la posicion tiene milimetros —en el vuelo del bloque 1, sigma de 2 mm— asi
+   * que un corrimiento de un metro NO es el dron: es la geometria del parque
+   * que no coincide con lo que hay en el campo, y eso se arregla una vez.
+   */
+  rtkFijo?: boolean;
+  /**
    * Cuanto se corre el punto fotografiado por no estar la camara a plomo.
    *
    * La coordenada de la foto es la del DRON. Solo coincide con lo que se ve
@@ -184,6 +205,28 @@ export async function readPhoto(
   ]);
   if (pitch != null) fix.gimbalPitchDeg = pitch;
   if (relAlt != null) fix.relativeAltitudeM = Math.abs(relAlt);
+
+  /*
+    RTK fijo. DJI lo dice de dos maneras y se aceptan las dos: `GpsStatus` en
+    "RTK" y `RtkFlag` en 50, que es el codigo de solucion fija (16 es GPS
+    suelto y 34 es flotante, y ninguno de los dos da centimetros).
+  */
+  const rtkFlag = firstNumber(meta, ["RtkFlag", "drone-dji:RtkFlag"]);
+  const gpsStatus = meta["GpsStatus"] ?? meta["drone-dji:GpsStatus"];
+  if (rtkFlag === 50 || gpsStatus === "RTK") fix.rtkFijo = true;
+
+  /*
+    El telemetro laser, cuando la camara lo tiene y dio una lectura buena.
+
+    `LRFStatus` dice si la lectura sirve: fuera de rango escribe "TooFar" y deja
+    la distancia en cero. Un cero pasando por altura pondria la huella en cero
+    metros, asi que se descarta explicitamente en vez de confiar en el estado.
+  */
+  const laser = firstNumber(meta, ["LRFTargetDistance", "drone-dji:LRFTargetDistance"]);
+  const estado = meta["LRFStatus"] ?? meta["drone-dji:LRFStatus"];
+  if (laser != null && laser > 1 && (estado == null || estado === "Normal")) {
+    fix.laserM = laser;
+  }
 
   const off = offNadirDeg(pitch);
   if (off != null && fix.relativeAltitudeM != null) {

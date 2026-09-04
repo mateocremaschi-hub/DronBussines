@@ -154,11 +154,13 @@ async function medirLaEscala(
   frame: LocalFrame,
   files: File[],
   opts: OpcionesDeVuelo,
-): Promise<{ factor: number; fotos: number; dispersion: number } | null> {
+): Promise<{ factor: number; fotos: number; dispersion: number; deLaser?: boolean } | null> {
   const paso = Math.max(1, Math.floor(files.length / FOTOS_PARA_LA_ESCALA));
   let cam: Camera | null = null;
   let acc: Acumulador | null = null;
   let escala: string | null = null;
+  /** Lo que midio el laser, y la altura que decia el EXIF en esa misma foto. */
+  const laser: Array<{ laserM: number; relM: number }> = [];
 
   for (let i = 0; i < files.length; i += paso) {
     const file = files[i]!;
@@ -180,6 +182,9 @@ async function medirLaEscala(
           celdaM: opts.celdaM,
         });
       }
+      if (fix.laserM != null && fix.relativeAltitudeM > 0) {
+        laser.push({ laserM: fix.laserM, relM: fix.relativeAltitudeM });
+      }
       const cuando = fix.takenAt ? new Date(fix.takenAt) : null;
       const angulo =
         cuando && !Number.isNaN(cuando.getTime())
@@ -200,7 +205,47 @@ async function medirLaEscala(
     }
   }
 
+  /*
+    Si la camara trae telemetro laser, gana. Y no por poco: la distancia a los
+    paneles es EXACTAMENTE lo que necesita la huella, medida en cada foto, en
+    vez de deducida contando juntas entre modulos. El Matrice 4T lo trae.
+
+    Se usa la mediana del vuelo y no la de cada foto porque el laser apunta a
+    lo que hay debajo, que a veces es el panel y a veces el suelo entre filas
+    —dos metros de diferencia—, y porque una lectura suelta puede pegarle a un
+    poste. Sobre el bloque 1: 40 lecturas entre 46.8 y 47.1, y una que dio
+    48.7. La mediana es 46.9 contra 52.0 del EXIF.
+  */
+  const porLaser = escalaPorLaser(laser);
+  if (porLaser) return porLaser;
+
   return acc ? escalaDeLaHuella(acc.desviosDeEscala().map((e) => e.factor)) : null;
+}
+
+/**
+ * El factor de escala que sale del telemetro laser, si hay lecturas de sobra.
+ *
+ * Exportada para poder fijarla con pruebas: es la que decide con que regla se
+ * mide el vuelo entero, y equivocarse aca fue lo que llenó de hallazgos falsos
+ * el primer bloque real.
+ */
+export function escalaPorLaser(
+  laser: Array<{ laserM: number; relM: number }>,
+): { factor: number; fotos: number; dispersion: number; deLaser: true } | null {
+  if (laser.length < 5) return null;
+  const factores = laser
+    .map((l) => l.laserM / l.relM)
+    .filter((f) => Number.isFinite(f) && f > 0.5 && f < 1.5)
+    .sort((a, b) => a - b);
+  if (factores.length < 5) return null;
+  const medio = (v: number[]) => v[v.length >> 1]!;
+  const factor = medio(factores);
+  const dispersion =
+    factores[Math.floor(factores.length * 0.75)]! - factores[Math.floor(factores.length * 0.25)]!;
+  // Si las lecturas del laser no coinciden entre si, el terreno cambia mucho o
+  // el laser esta pegandole a cualquier cosa: mejor contarlo en la imagen.
+  if (dispersion > 0.05) return null;
+  return { factor, fotos: factores.length, dispersion, deLaser: true };
 }
 
 export async function analizarFotos(
@@ -259,6 +304,8 @@ export async function analizarFotos(
    * veces mas de lo necesario y tarda cuatro veces mas en subirse.
    */
   let superRes = 0;
+  /** Fotos posicionadas con RTK fijo: cambia que significa un corrimiento. */
+  let conRtk = 0;
 
   /*
     Antes de medir nada: cuanto mide de verdad un modulo en estas fotos.
@@ -315,6 +362,7 @@ export async function analizarFotos(
       const fix = leida.fix;
       if (!fix) { fallos.push(`${file.name}: ${leida.error ?? "sin coordenada"}`); continue; }
       fixes.set(file.name, fix);
+      if (fix.rtkFijo) conRtk++;
 
       /*
         La camara se deduce de la PRIMERA foto y despues no se vuelve a
@@ -465,11 +513,32 @@ export async function analizarFotos(
         Math.floor(corrimientos.length / 2)
       ]!.metros;
       const peor = Math.max(...corrimientos.map((c) => c.metros));
+      /*
+        Que significa este corrimiento depende de una sola cosa: si habia RTK.
+
+        Sin RTK, uno o dos metros es el GPS del dron y no hay nada que hacer.
+        Con RTK FIJO la posicion de la foto tiene milimetros —en el vuelo del
+        bloque 1 de Wellington, sigma de 2 mm en las 371 fotos— asi que un
+        corrimiento de un metro no lo puso el dron: lo pone el parque. Las
+        coordenadas de esas filas no son las que hay en el campo, y eso se
+        arregla una vez y sirve para todos los vuelos que vengan.
+
+        Decirlo mal no es un detalle de redaccion: "es el GPS, no hay nada que
+        hacer" hace que nadie mire el parque nunca.
+      */
+      const casiTodasConRtk = conRtk >= termicas * 0.9;
       fallos.push(
         `A ${corrimientos.length} de ${termicas} fotos hubo que correrles la posicion para que ` +
         `los recuadros cayeran sobre los paneles: ${tipico.toFixed(1)} m tipico, ${peor.toFixed(1)} m ` +
-        "la peor. Es el error del GPS del dron, y esta corregido — se dice para que lo sepas, no " +
-        "porque haya que hacer algo. Con RTK esto se va casi a cero.",
+        "la peor. " +
+        (casiTodasConRtk
+          ? "Y este vuelo fue con RTK FIJO, o sea que la posicion de cada foto tiene centimetros: " +
+            "ese corrimiento NO es del dron, es que la geometria del parque no coincide con lo que " +
+            "hay en el campo. Esta corregido foto por foto, pero conviene arreglarlo en el parque " +
+            "de una vez: son las coordenadas de las filas, y mientras no se toquen todos los vuelos " +
+            "de esta zona van a arrastrar el mismo metro."
+          : "Es el error del GPS del dron, y esta corregido — se dice para que lo sepas, no porque " +
+            "haya que hacer algo. Con RTK esto se va casi a cero."),
       );
     }
 
@@ -497,15 +566,21 @@ export async function analizarFotos(
     */
     if (escalaMedida) {
       const pct = (1 - escalaMedida.factor) * 100;
+      const comoSeMidio = escalaMedida.deLaser
+        ? `El telemetro laser del dron midio la distancia a los paneles en ${escalaMedida.fotos} fotos y ` +
+          "no coincide con la altura del EXIF: SE USO LA DEL LASER. La altura del EXIF es sobre el " +
+          "PUNTO DE DESPEGUE, no sobre los paneles, y ahi estuvo la diferencia. Las distancias reales " +
+          `son un `
+        : `La altura del EXIF no coincide con lo que se ve en la imagen y SE CORRIGIO. Contando el ` +
+          `paso entre modulos sobre ${escalaMedida.fotos} fotos, las distancias reales son un `;
       fallos.push(
-        `La altura del EXIF no coincide con lo que se ve en la imagen y SE CORRIGIO. Contando el ` +
-        `paso entre modulos sobre ${escalaMedida.fotos} fotos, las distancias reales son un ` +
-        `${Math.abs(pct).toFixed(0)} % ${pct > 0 ? "menores" : "mayores"} que las que predice la ` +
-        `altura del EXIF, y las ${escalaMedida.fotos} fotos coinciden entre si dentro del ` +
-        `${(escalaMedida.dispersion * 100).toFixed(1)} %. Todo el vuelo se midio con la escala de ` +
-        "la imagen. Suele pasar por dos motivos: el dron escribe la altura que se le ORDENO en vez " +
-        "de la que volo, o el despegue fue mas abajo que los paneles. Si te importa el numero " +
-        "exacto, volá con RTK o despegá al lado del bloque.",
+        comoSeMidio +
+        `${Math.abs(pct).toFixed(0)} % ${pct > 0 ? "menores" : "mayores"} que las que predice esa ` +
+        `altura, y las ${escalaMedida.fotos} fotos coinciden entre si dentro del ` +
+        `${(escalaMedida.dispersion * 100).toFixed(1)} %. Todo el vuelo se midio con esa escala. Sin ` +
+        "esta correccion las cajas de medicion quedan estiradas desde el centro del cuadro hacia " +
+        "afuera —mas de un metro en el borde, casi un modulo entero— y el informe se llena de " +
+        "hallazgos que son del recuadro y no del panel.",
       );
     }
 
