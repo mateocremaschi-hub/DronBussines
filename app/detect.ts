@@ -24,6 +24,7 @@ import { medirCaja, percentil, retratoDeCaja, type Radiometric } from "./thermal
 import {
   confianzaDeFoto,
   desvioLocal,
+  LISO_C,
   engancharFoto,
   escalaDeLaImagen,
   girar,
@@ -221,6 +222,14 @@ const FRACCION_MINIMA_MEDIDA = 0.9;
  * borde la camara lo ve de costado, y una superficie de vidrio vista de
  * costado refleja el cielo y lee mas frio de lo que esta.
  */
+/**
+ * Cuantas cajas necesita una fila para juzgar si hay un tracker abajo.
+ *
+ * Con menos que esto no se la toca: la fila asoma por el borde del cuadro, y
+ * el solape la va a agarrar entera en otra foto.
+ */
+const CAJAS_PARA_JUZGAR_LA_FILA = 6;
+
 export class Acumulador {
   private mejor = new Map<string, Muestra>();
   /** Fotos que llegaron sin rumbo o sin angulo de gimbal, por motivo. */
@@ -472,6 +481,48 @@ export class Acumulador {
       del centro. Sin esto, un modulo fotografiado en una esquina sale con tres
       grados que no existen contra hermanos fotografiados en el medio.
     */
+    /*
+      Que FILAS de esta foto tienen un tracker de verdad abajo.
+
+      El parque miente. En el bloque 1 de Wellington hay fotos donde las cajas
+      de una fila caen enteras sobre pasto —el parque dice que ahi hay una fila
+      y en la imagen no hay nada— y esa misma fila, en la foto siguiente, cae
+      perfecta sobre los paneles. Medidas asi, esas cajas dan los hallazgos que
+      llenaron el informe.
+
+      Lo que decide es la TEXTURA, no la temperatura. Probado y descartado:
+      separar por temperatura mata los hallazgos que mas importan. En las fotos
+      del 3 de septiembre el string desconectado corre a 44,5 °C —mas caliente
+      que el pasto de su propia foto— y cualquier corte por temperatura lo tira
+      junto con el pasto. La textura no se deja engañar: ese string tiene 0,21
+      de desvio local, igual que un panel sano, porque un panel caliente sigue
+      siendo una superficie lisa. El pasto de las dos filas fantasma da 1,02 y
+      1,09, el doble que cualquier fila de paneles de las dos salidas.
+
+      Se juzga por fila y con la MEDIANA. Una caja sola puede caer en un parche
+      raro; veinte cajas seguidas sobre pasto no pasan por casualidad. Y la
+      mediana no la mueve un modulo roto: un diodo de bypass calienta uno de
+      veintiocho.
+    */
+    const porFila = new Map<string, number[]>();
+    for (const x of medidas) {
+      if (x.textura != null) push2(porFila, x.m.rowId, x.textura);
+    }
+    const fantasmas = new Set<string>();
+    for (const [id, texturas] of porFila) {
+      // Una fila que asoma con pocas cajas no se juzga: no hay con que, y el
+      // solape la va a agarrar entera en otra foto.
+      if (texturas.length < CAJAS_PARA_JUZGAR_LA_FILA) continue;
+      if (percentil(texturas, 50) >= LISO_C) fantasmas.add(id);
+    }
+    if (fantasmas.size) {
+      for (let i = medidas.length - 1; i >= 0; i--) {
+        if (!fantasmas.has(medidas[i]!.m.rowId)) continue;
+        this.sinPanel.add(medidas[i]!.clave);
+        medidas.splice(i, 1);
+      }
+    }
+
     const vinieta = medirVinieta(medidas.map((x) => ({ r: x.r, celsius: x.hit.celsius })));
     if (vinieta) this.vinietas.push({ fileName: foto.fileName, maximoC: vinieta.maximoC });
 

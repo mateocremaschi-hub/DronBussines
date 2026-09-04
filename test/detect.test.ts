@@ -650,3 +650,169 @@ describe("la vara depende de la forma", () => {
     expect(clasificar(medido(undefined)).severidadInterna).toBe("normal");
   });
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Las filas que el parque dice que existen y en el campo no estan.
+ *
+ * Salio del bloque 1 de Wellington, volado entero el 4 de septiembre. Hay
+ * fotos donde las cajas de una fila caen ENTERAS sobre pasto —el parque dice
+ * que ahi hay una fila y en la imagen no hay nada— y esa misma fila, en la
+ * foto siguiente, cae perfecta sobre los paneles. Una de cada cuatro cajas
+ * medidas de esas dos fotos no tenia un solo pixel de panel adentro, y de ahi
+ * salieron casi todos los hallazgos que quedaban.
+ *
+ * Lo que decide es la TEXTURA, y esa eleccion no es de estilo.
+ *
+ * Por temperatura no se puede: en las fotos del 3 de septiembre el string
+ * desconectado corre a 44,5 °C, mas caliente que el pasto de su propia foto.
+ * Cualquier corte por temperatura lo tira junto con el pasto — y es el
+ * hallazgo mas caro de la lista. Probado y descartado, dos veces.
+ *
+ * Un panel es una superficie lisa, este frio o caliente. Medido sobre las dos
+ * salidas: las filas de paneles dan entre 0,21 y 0,84 de desvio local tipico
+ * —incluido el string desconectado, que da 0,21— y las dos filas fantasma dan
+ * 1,02 y 1,09.
+ */
+describe("una fila que el parque dice y en el campo no esta", () => {
+  const camara = camaraDesdeEquivalente35("prueba", 40, 640, 512);
+
+  /*
+    Dos filas pegadas, para que la foto tenga una fila buena y una fantasma a
+    la vez. Con una sola fila el caso no existe: la foto entera se cae por el
+    freno de arriba y no se llega a probar este.
+  */
+  const dos = [
+    makeRow({ id: "A", block: "05", tracker: "05-A", row: "R1",
+      anchor: { lat: -26.92, lon: 150.58 }, azimuthDeg: 180, side: "north" }, profile),
+    makeRow({ id: "B", block: "05", tracker: "05-B", row: "R1",
+      anchor: { lat: -26.92, lon: 150.58 + 0.000055 }, azimuthDeg: 180, side: "north" }, profile),
+  ];
+  const parque = compileFarm(profile, dos);
+  const marco = makeFrame(parque.origin.lat, parque.origin.lon);
+  const centro = (() => {
+    const ms = [...modulesOfRow(parque.rows[0]!, parque), ...modulesOfRow(parque.rows[1]!, parque)];
+    const x = ms.reduce((a, m) => a + m.x, 0) / ms.length;
+    const y = ms.reduce((a, m) => a + m.y, 0) / ms.length;
+    return toGeo(marco, x, y);
+  })();
+
+  /**
+   * Un cuadro liso de un lado y con textura de pasto del otro.
+   *
+   * `corte` es la columna donde cambia: a la izquierda panel, a la derecha
+   * pasto. Con las filas norte-sur y la camara mirando al norte, cada mitad
+   * del cuadro cae sobre una fila distinta.
+   */
+  function mitadYMitad(corte: number, celsiusPanel: number, celsiusPasto: number) {
+    const celsius = new Float32Array(640 * 512);
+    let semilla = 20260904;
+    const ruido = () => {
+      semilla = (semilla * 1664525 + 1013904223) >>> 0;
+      return semilla / 0xffffffff - 0.5;
+    };
+    for (let y = 0; y < 512; y++) {
+      for (let x = 0; x < 640; x++) {
+        celsius[y * 640 + x] = x < corte
+          ? celsiusPanel + ruido() * 0.4
+          : celsiusPasto + ruido() * 8;
+      }
+    }
+    return {
+      width: 640, height: 512, celsius,
+      escala: "de prueba", escalaAuto: "de prueba", topeC: 999, fraccionEnElTope: 0,
+    };
+  }
+
+  function volarDos(radio: ReturnType<typeof mitadYMitad>) {
+    const acc = new Acumulador(parque, marco, {
+      camera: camara, moduloAnchoM: profile.module.widthMm / 1000, moduloLargoM: 2.28,
+    });
+    acc.agregar({
+      fileName: "T.JPG",
+      radio,
+      pose: { lat: centro.lat, lon: centro.lon, altitudeAglM: 45, gimbalYawDeg: 0, gimbalPitchDeg: -90 },
+    });
+    return acc;
+  }
+
+  /*
+    La prueba que importa: la foto sirve —media foto es panel de verdad— y aun
+    asi la fila que cae sobre pasto no se mide. Antes se median las dos y la
+    del pasto daba los hallazgos.
+  */
+  it("la fila que cae sobre pasto no se mide, y la de al lado si", () => {
+    // Las dos filas caen en x = 210 y x = 302 del cuadro; el corte va en medio.
+    const acc = volarDos(mitadYMitad(260, 45, 45));
+    const filas = new Map<string, number>();
+    for (const m of acc.muestras()) filas.set(m.modulo.rowId, (filas.get(m.modulo.rowId) ?? 0) + 1);
+    expect([...filas.keys()], "la que se midio tiene que ser la del panel").toEqual(["A"]);
+    expect(acc.muestras().length, "la fila buena tenia que medirse").toBeGreaterThan(5);
+    expect(filas.size, "solo una de las dos filas es panel").toBe(1);
+  });
+
+  const marco2 = makeFrame(farm.origin.lat, farm.origin.lon);
+  const fila = farm.rows[0]!;
+  const centroUna = (() => {
+    const ms = modulesOfRow(fila, farm);
+    const x = ms.reduce((a, m) => a + m.x, 0) / ms.length;
+    const y = ms.reduce((a, m) => a + m.y, 0) / ms.length;
+    return toGeo(marco2, x, y);
+  })();
+
+  /** Un cuadro entero, con la textura que se le pida y a la temperatura que se le pida. */
+  function cuadro(celsiusBase: number, ruidoC: number) {
+    const celsius = new Float32Array(640 * 512);
+    let semilla = 20260904;
+    const ruido = () => {
+      semilla = (semilla * 1664525 + 1013904223) >>> 0;
+      return semilla / 0xffffffff - 0.5;
+    };
+    for (let i = 0; i < celsius.length; i++) celsius[i] = celsiusBase + ruido() * ruidoC;
+    return {
+      width: 640, height: 512, celsius,
+      escala: "de prueba", escalaAuto: "de prueba", topeC: 999, fraccionEnElTope: 0,
+    };
+  }
+
+  const volar = (radio: ReturnType<typeof cuadro>) => {
+    const acc = new Acumulador(farm, marco2, {
+      camera: camara, moduloAnchoM: profile.module.widthMm / 1000, moduloLargoM: 2.28,
+    });
+    acc.agregar({
+      fileName: "T.JPG",
+      radio,
+      pose: { lat: centroUna.lat, lon: centroUna.lon, altitudeAglM: 60, gimbalYawDeg: 0, gimbalPitchDeg: -90 },
+    });
+    return acc;
+  };
+
+  it("sobre una superficie lisa se mide", () => {
+    // Un panel: liso. El ruido queda muy por debajo del limite.
+    expect(volar(cuadro(45, 0.4)).muestras().length).toBeGreaterThan(10);
+  });
+
+  /*
+    El caso que hizo el desastre: el parque pone una fila donde hay pasto. El
+    pasto no es liso, y esa es toda la diferencia.
+  */
+  it("una foto que es toda pasto no mide nada, y lo dice", () => {
+    const acc = volar(cuadro(45, 8));
+    expect(acc.muestras().length).toBe(0);
+    // No se pierde en silencio: la foto sale nombrada en el informe.
+    expect(acc.fotosQueNoEngancharon().length).toBe(1);
+  });
+
+  /*
+    Y el freno que se le puso al freno. Un string desconectado esta MAS
+    CALIENTE que el pasto de su propia foto —44,5 contra 42,4 en la foto real—
+    y sigue siendo un panel: liso. Si esto se filtrara por temperatura, el
+    hallazgo mas caro de la lista se perderia sin que nadie se entere.
+  */
+  it("un panel muy caliente se sigue midiendo: lo que se mira es la textura", () => {
+    const caliente = volar(cuadro(60, 0.4));
+    expect(caliente.muestras().length).toBeGreaterThan(10);
+    expect(caliente.muestras()[0]!.celsius).toBeGreaterThan(55);
+  });
+});
