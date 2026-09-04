@@ -35,6 +35,7 @@ import {
   stringsEnVariasTandas,
   UMBRALES,
   UMBRALES_INTERNOS,
+  type AlineacionDeFila,
   type Hallazgo,
   type Muestra,
   type Umbrales,
@@ -106,9 +107,15 @@ export interface ResultadoDeVuelo {
    * esa foto.
    */
   /** Cuanto habia que correr cada fila a lo largo, ya aplicado. */
-  alineaciones: Array<{ fileName: string; rowId: string; modulos: number; contraste: number }>;
-  /** Lo mismo indexado por "archivo|fila", que es como lo pide cada hallazgo. */
-  corregidoPorFila: Map<string, number>;
+  alineaciones: AlineacionDeFila[];
+  /**
+   * Lo mismo indexado por "archivo|fila", que es como lo pide cada hallazgo.
+   *
+   * `conFinal` dice si a esa fila se le vio el final en alguna foto: ahi el
+   * numero de modulo esta contado desde la punta y es seguro. Sin el final,
+   * el recuadro esta sobre un panel pero puede ser el de al lado.
+   */
+  corregidoPorFila: Map<string, { modulos: number; conFinal: boolean }>;
   /**
    * El dato de cada foto que se pudo leer, por nombre de archivo.
    *
@@ -918,41 +925,35 @@ export async function analizarFotos(
       del parque, una vez, y despues todos los vuelos de la zona salen bien.
     */
     /*
-      Cuantas filas hubo que correr A LO LARGO para que el recuadro cayera
-      sobre el panel, y cuanto.
+      Cuantas filas estan corridas A LO LARGO en los datos del parque, y cuanto.
 
-      Esto YA se corrige —se cuentan las juntas entre modulos de cada foto y se
-      acomoda la rejilla— asi que el aviso no es una advertencia sobre el
-      numero de modulo: es lo que hay que arreglar en los datos del parque. Y
-      hay que arreglarlo igual, porque mientras las coordenadas sigan corridas,
-      cada vuelo lo tiene que volver a medir y la fila que entre de refilon en
-      una foto puede quedar sin corregir.
+      Esto YA se corrige: en cada foto se cuentan las juntas entre modulos para
+      apoyar la caja sobre el panel, y donde se ve el final de la fila se cuenta
+      desde la punta para saber cual panel es cual. El aviso no es una
+      advertencia sobre el numero de modulo, es lo que hay que arreglar en el
+      parque — y hay que arreglarlo igual, porque una fila cuyo final no entro
+      en ninguna foto se queda sin numero seguro.
     */
-    const alineadas = acc.alineacionesDeFila();
-    if (alineadas.length >= 10) {
-      const porFila = new Map<string, number[]>();
-      for (const a of alineadas) {
-        const l = porFila.get(a.rowId);
-        if (l) l.push(a.modulos); else porFila.set(a.rowId, [a.modulos]);
-      }
-      const corridas: number[] = [];
-      for (const [, v] of porFila) {
-        const orden = v.slice().sort((x, y) => x - y);
-        const med = orden[orden.length >> 1]!;
-        if (Math.abs(med) >= FILA_CORRIDA_MODULOS) corridas.push(Math.abs(med));
-      }
-      if (corridas.length) {
-        corridas.sort((a, b) => b - a);
-        fallos.push(
-          `${corridas.length} de ${porFila.size} filas estan corridas a lo largo en los datos del ` +
-          `parque respecto de donde estan los paneles en el campo — hasta ${corridas[0]!.toFixed(2)} ` +
-          "de modulo. La app lo mide en cada foto contando las juntas entre modulos y acomoda el " +
-          "recuadro antes de medir, asi que los numeros de modulo de esta lista son los buenos. " +
-          "Pero conviene corregir las coordenadas de esas filas en el parque: mientras sigan " +
-          "corridas, una fila que entre de refilon en una foto —pocos modulos, o muy inclinada— " +
-          "puede quedar sin corregir, y ahi el recuadro vuelve a quedar a caballo de dos paneles.",
-        );
-      }
+    const verdadero = acc.corrimientoVerdaderoPorFila();
+    const filasVistas = new Set(acc.alineacionesDeFila().map((a) => a.rowId));
+    if (filasVistas.size >= 10) {
+      const corridas = [...verdadero.values()].map(Math.abs).filter((v) => v >= FILA_CORRIDA_MODULOS);
+      corridas.sort((a, b) => b - a);
+      const sinFinal = [...filasVistas].filter((r) => !verdadero.has(r)).length;
+      fallos.push(
+        `De ${filasVistas.size} filas medidas, a ${verdadero.size} se les vio el final en alguna foto ` +
+        `y se contaron desde la punta. ${corridas.length} de esas estan corridas a lo largo en los ` +
+        `datos del parque respecto de donde estan los paneles en el campo — hasta ` +
+        `${(corridas[0] ?? 0).toFixed(2)} de modulo. La app lo mide en cada foto contando las ` +
+        "juntas entre modulos, apoya el recuadro sobre el panel que le toca, y con el final de la " +
+        "fila decide cual panel es el 1 y cual el 28: los numeros de esta lista son los buenos." +
+        (sinFinal
+          ? ` A ${sinFinal} filas NO se les vio el final en ninguna foto: ahi el recuadro esta sobre ` +
+            "un panel pero el numero puede ser el de al lado, y los hallazgos salen con el aviso. "
+          : " ") +
+        "Conviene corregir las coordenadas de las filas corridas en el parque, de una vez y para " +
+        "todos los vuelos.",
+      );
     }
 
     const donde = acc.modulosFueraDelPanel();
@@ -1063,7 +1064,13 @@ export async function analizarFotos(
       aplicado otro es peor que no decir nada.
     */
     corregidoPorFila: acc
-      ? new Map(acc.alineacionesDeFila().map((a) => [`${a.fileName}|${a.rowId}`, a.modulos]))
+      ? (() => {
+          const conFinal = acc.corrimientoVerdaderoPorFila();
+          return new Map(acc.alineacionesDeFila().map((a) => [
+            `${a.fileName}|${a.rowId}`,
+            { modulos: conFinal.get(a.rowId) ?? a.modulos, conFinal: conFinal.has(a.rowId) },
+          ]));
+        })()
       : new Map(),
     fixes,
   };
@@ -1165,24 +1172,28 @@ const PRECISION_DE_LA_GEOMETRIA = 0.01;
  */
 function avisarDeLaFila(
   warnings: Warning[],
-  corrimiento: number | undefined,
+  corrimiento: { modulos: number; conFinal: boolean } | undefined,
   h: Hallazgo,
   modulosPorString: number | undefined,
 ): Warning[] {
   const rowId = h.modulo.rowId;
   const out = [...warnings];
 
-  if (corrimiento != null && Math.abs(corrimiento) >= FILA_CORRIDA_MODULOS) {
+  if (corrimiento && Math.abs(corrimiento.modulos) >= FILA_CORRIDA_MODULOS) {
+    const cuanto = Math.abs(corrimiento.modulos).toFixed(2);
     out.push({
       code: "row-shifted-along",
       rowId,
-      message:
-        `En los datos del parque esta fila esta corrida ${Math.abs(corrimiento).toFixed(2)} de ` +
-        "modulo a lo largo respecto de donde estan los paneles en el campo. La app lo midio con " +
-        "las juntas entre modulos de esta misma foto y puso el recuadro sobre el panel que le " +
-        "toca, asi que el numero de arriba es el bueno. Lo que queda por hacer es corregir las " +
-        "coordenadas de la fila en el parque: mientras sigan corridas, cada vuelo lo tiene que " +
-        "volver a medir y las filas que se vean de refilon pueden quedar sin corregir.",
+      message: corrimiento.conFinal
+        ? `En los datos del parque esta fila esta corrida ${cuanto} de modulo a lo largo respecto ` +
+          "de donde estan los paneles en el campo. La app apoyo el recuadro sobre el panel " +
+          "contando las juntas entre modulos, y conto el numero desde la punta de la fila, que " +
+          "se ve en alguna foto: el numero de arriba es el bueno. Lo que queda por hacer es " +
+          "corregir las coordenadas de la fila en el parque, de una vez y para todos los vuelos."
+        : `En los datos del parque esta fila esta corrida ${cuanto} de modulo a lo largo, y en ` +
+          "ninguna foto entro la punta de la fila para contar desde ahi. El recuadro esta sobre " +
+          "un panel, pero el numero puede ser el de al lado: mira la foto y conta desde la punta " +
+          "antes de anotarlo. Se arregla corrigiendo las coordenadas de la fila en el parque.",
     });
   }
 
@@ -1224,7 +1235,7 @@ export function hallazgosAFindings(
    */
   stringsEnteros?: { eventos: EventoDeString[]; todos: Hallazgo[] },
   /** Cuanto esta corrida cada fila a lo largo, por "archivo|fila". */
-  corregidoPorFila?: Map<string, number>,
+  corregidoPorFila?: Map<string, { modulos: number; conFinal: boolean }>,
 ): Finding[] {
   const deModulo = hallazgos.map((h) => {
     const centro = toGeo(frame, h.modulo.x, h.modulo.y);

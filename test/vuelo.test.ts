@@ -379,9 +379,9 @@ describe("la fila corrida a lo largo viaja con el hallazgo", () => {
   const unHallazgo = () => comparar(vueloConUnModuloCaliente.muestras, UMBRALES)
     .filter((h) => h.peor !== "normal");
 
-  const conCorrimiento = (modulos: number) => {
+  const conCorrimiento = (modulos: number, conFinal = true) => {
     const hs = unHallazgo();
-    const mapa = new Map(hs.map((h) => [`${h.fileName}|${h.modulo.rowId}`, modulos]));
+    const mapa = new Map(hs.map((h) => [`${h.fileName}|${h.modulo.rowId}`, { modulos, conFinal }]));
     return hallazgosAFindings(hs, farm, frame, new Map([["DJI_0001_T.JPG", fixDeLaFoto]]), undefined, mapa);
   };
 
@@ -391,6 +391,15 @@ describe("la fila corrida a lo largo viaja con el hallazgo", () => {
     expect(aviso, "no aviso que la fila estaba corrida").toBeDefined();
     expect(aviso!.message).toContain("0.48");
     expect(aviso!.rowId).toBe(f.address?.rowId ?? aviso!.rowId);
+    // Con el final de la fila visto, el numero es seguro y lo dice.
+    expect(aviso!.message).toContain("el numero de arriba es el bueno");
+  });
+
+  it("y si no se vio la punta de la fila, dice que el numero puede ser el de al lado", () => {
+    const f = conCorrimiento(-0.48, false)[0]!;
+    const aviso = f.warnings.find((w) => w.code === "row-shifted-along");
+    expect(aviso).toBeDefined();
+    expect(aviso!.message).toContain("puede ser el de al lado");
   });
 
   it("no avisa por un corrimiento chico, que es el de siempre", () => {

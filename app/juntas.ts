@@ -116,12 +116,31 @@ const VENTANA_DE_CENTRO = 0.4;
  */
 const VENTAJA_MINIMA_C = 0.25;
 
+/**
+ * Cuanto se deja mover la escala a lo largo de la fila, y de a cuanto.
+ *
+ * Siete por ciento cubre el peor desvio visto entre el paso proyectado y el
+ * contado en la imagen; medio por ciento son tres pixeles en la punta de una
+ * fila de veinticinco modulos, que es la precision que hace falta.
+ */
+const ESCALA_MAXIMA = 0.07;
+const PASO_DE_ESCALA = 0.005;
+/** Con menos modulos que esto la escala no se puede estimar y se deja en uno. */
+const MODULOS_PARA_LA_ESCALA = 8;
+
 /** Con menos modulos que esto en la foto no hay rejilla que buscar. */
 const MODULOS_MINIMOS = 4;
 
 export interface Juntas {
-  /** Cuanto hay que correr la rejilla a lo largo de la fila, en pixeles. */
+  /**
+   * Cuanto hay que correr la rejilla a lo largo de la fila, en pixeles,
+   * DESPUES de aplicarle el factor de escala alrededor del centro de la fila.
+   */
   corrimientoPx: number;
+  /** Por cuanto hay que multiplicar las distancias al centro de la fila. */
+  factor: number;
+  /** El paso entre modulos que hay en la imagen: el de entrada por el factor. */
+  pasoPx: number;
   /** Lo mismo en modulos, que es como se lee. */
   corrimientoModulos: number;
   /** Cuanto se despega el centro del modulo de su junta, en grados. */
@@ -202,27 +221,16 @@ export function corrimientoDeLaRejilla(
   /** Desvio local a lo largo de la fila. Dice de que lado esta el panel. */
   perfilAspero: Float64Array,
   t0: number,
+  /**
+   * Los centros de modulo que predice el parque, sobre el eje t, MEDIDOS
+   * DESDE EL CENTRO DE LA FILA EN EL CUADRO. El factor de escala se aplica
+   * alrededor de t = 0, asi que de donde se mida importa.
+   */
   centros: number[],
   pasoPx: number,
 ): Juntas | null {
   if (centros.length < MODULOS_MINIMOS || !(pasoPx > 2)) return null;
-
   const orden = centros.slice().sort((a, b) => a - b);
-  const hCentro = pasoPx * VENTANA_DE_CENTRO / 2;
-  const hJunta = pasoPx * VENTANA_DE_JUNTA / 2;
-
-  /*
-    Las juntas se ponen entre centros CONSECUTIVOS y solo cuando estan a un
-    paso. Entre string y string la separacion es de 1,5 pasos y ahi no hay
-    junta de modulo: hay 555 mm de nada, que lee distinto de punta a punta y
-    arrastraria el puntaje sin decir nada sobre la fase.
-  */
-  const juntas: number[] = [];
-  for (let i = 0; i + 1 < orden.length; i++) {
-    const d = orden[i + 1]! - orden[i]!;
-    if (Math.abs(d - pasoPx) < pasoPx * 0.15) juntas.push((orden[i]! + orden[i + 1]!) / 2);
-  }
-  if (juntas.length < MODULOS_MINIMOS - 1) return null;
 
   /*
     La ventana se recorre SIMETRICA alrededor del centro.
@@ -245,22 +253,75 @@ export function corrimientoDeLaRejilla(
     return n ? s / n : NaN;
   };
 
-  /** Cuanto mas caliente esta el centro del modulo que su junta, con este corrimiento. */
-  const contraste = (d: number): number =>
-    media(perfilC, orden, d, hCentro) - media(perfilC, juntas, d, hJunta);
-  /** Cuanto mas lisa queda la parte que se llama panel que la que se llama junta. */
-  const lisura = (d: number): number =>
-    media(perfilAspero, juntas, d, hJunta) - media(perfilAspero, orden, d, hCentro);
+  /*
+    Se busca tambien la ESCALA, no solo la fase.
 
-  let mejorV = -Infinity;
-  const puntajes: Array<[number, number]> = [];
-  for (let d = -pasoPx / 2; d < pasoPx / 2; d += 0.25) {
-    const v = contraste(d);
-    if (!Number.isFinite(v)) continue;
-    puntajes.push([d, v]);
-    if (v > mejorV) mejorV = v;
+    El paso que trae la proyeccion sale de la altura y de la escala del vuelo,
+    y en el borde del cuadro se despega del que hay en la imagen —la lente
+    deforma, y un 1,3 % sobre doce modulos son cuatro pixeles. Con la escala
+    fija, la fase que mejor ajusta es un promedio: bien en el medio de la fila
+    y corrida en las puntas, que es justamente donde estan el modulo 1 y el 28.
+    Sobre la fila 2-37 de la foto 0045 la caja del modulo 1 quedaba nueve
+    pixeles corrida con la fase sola.
+
+    El factor se aplica alrededor del centro de la fila en el cuadro. Con
+    pocos modulos no hay con que estimarlo y se deja en uno.
+  */
+  const factores: number[] = [1];
+  if (orden.length >= MODULOS_PARA_LA_ESCALA) {
+    for (let f = 1 - ESCALA_MAXIMA; f <= 1 + ESCALA_MAXIMA + 1e-9; f += PASO_DE_ESCALA) {
+      if (Math.abs(f - 1) > 1e-9) factores.push(f);
+    }
   }
-  if (puntajes.length < 8) return null;
+
+  const armar = (f: number) => {
+    const cs = orden.map((t) => t * f);
+    const paso = pasoPx * f;
+    const juntas: number[] = [];
+    for (let i = 0; i + 1 < cs.length; i++) {
+      const d = cs[i + 1]! - cs[i]!;
+      if (Math.abs(d - paso) < paso * 0.15) juntas.push((cs[i]! + cs[i + 1]!) / 2);
+    }
+    const hCentro = paso * VENTANA_DE_CENTRO / 2, hJunta = paso * VENTANA_DE_JUNTA / 2;
+    return {
+      paso,
+      juntas,
+      contraste: (d: number) => media(perfilC, cs, d, hCentro) - media(perfilC, juntas, d, hJunta),
+      lisura: (d: number) => media(perfilAspero, juntas, d, hJunta) - media(perfilAspero, cs, d, hCentro),
+    };
+  };
+
+  let mejorF = 1, mejorV = -Infinity;
+  let mejorPuntajes: Array<[number, number]> = [];
+  for (const f of factores) {
+    const a = armar(f);
+    if (a.juntas.length < MODULOS_MINIMOS - 1) continue;
+    const puntajes: Array<[number, number]> = [];
+    let v0 = -Infinity;
+    for (let d = -a.paso / 2; d < a.paso / 2; d += 0.25) {
+      const v = a.contraste(d);
+      if (!Number.isFinite(v)) continue;
+      puntajes.push([d, v]);
+      if (v > v0) v0 = v;
+    }
+    if (puntajes.length < 8) continue;
+    /*
+      Entre escalas gana el contraste mas alto, y el empate lo gana la escala
+      que menos se aparta de uno. El contraste crece de verdad cuando la
+      escala es la correcta —todas las juntas caen en su ventana a la vez— y
+      el margen de un decimo de grado esta para no correr la escala detras
+      del ruido.
+    */
+    if (v0 > mejorV + 0.1 || (v0 > mejorV - 0.1 && Math.abs(f - 1) < Math.abs(mejorF - 1))) {
+      if (v0 > mejorV) mejorV = v0;
+      mejorF = f;
+      mejorPuntajes = puntajes;
+    }
+  }
+  if (!mejorPuntajes.length) return null;
+  const a = armar(mejorF);
+  const paso = a.paso;
+  const topeLocal = Math.max(...mejorPuntajes.map(([, v]) => v));
 
   /*
     El mejor corrimiento es el CENTRO de la meseta, no el primero que la toca.
@@ -271,18 +332,18 @@ export function corrimientoDeLaRejilla(
     ese sesgo va siempre para el mismo lado — un pixel largo de error
     sistematico en la posicion de todas las cajas.
   */
-  const meseta = puntajes.filter(([, v]) => v >= mejorV - 1e-6).map(([d]) => d);
-  const ang = meseta.map((d) => (2 * Math.PI * d) / pasoPx);
+  const meseta = mejorPuntajes.filter(([, v]) => v >= topeLocal - 1e-6).map(([d]) => d);
+  const ang = meseta.map((d) => (2 * Math.PI * d) / paso);
   const crudo =
     (Math.atan2(
-      ang.reduce((a, x) => a + Math.sin(x), 0),
-      ang.reduce((a, x) => a + Math.cos(x), 0),
-    ) * pasoPx) / (2 * Math.PI);
+      ang.reduce((x, y) => x + Math.sin(y), 0),
+      ang.reduce((x, y) => x + Math.cos(y), 0),
+    ) * paso) / (2 * Math.PI);
 
   const vuelta = (d: number): number => {
     let x = d;
-    while (x > pasoPx / 2) x -= pasoPx;
-    while (x <= -pasoPx / 2) x += pasoPx;
+    while (x > paso / 2) x -= paso;
+    while (x <= -paso / 2) x += paso;
     return x;
   };
 
@@ -291,13 +352,13 @@ export function corrimientoDeLaRejilla(
     encontro la temperatura y su opuesta. Gana la que deje el panel del lado
     LISO — no la que lo deje del lado caliente, que es lo que cambia con el sol.
   */
-  const otro = vuelta(crudo + pasoPx / 2);
-  const lisoA = lisura(crudo), lisoB = lisura(otro);
+  const otro = vuelta(crudo + paso / 2);
+  const lisoA = a.lisura(crudo), lisoB = a.lisura(otro);
   if (!Number.isFinite(lisoA) || !Number.isFinite(lisoB)) return null;
   if (Math.abs(lisoA - lisoB) < VENTAJA_DE_ASPEREZA) return null;
   const mejor = lisoA >= lisoB ? crudo : otro;
 
-  const contrasteC = Math.abs(contraste(mejor));
+  const contrasteC = Math.abs(a.contraste(mejor));
   if (contrasteC < CONTRASTE_DE_JUNTAS_MINIMO_C) return null;
 
   /*
@@ -314,22 +375,106 @@ export function corrimientoDeLaRejilla(
     la alineacion buena es la del puntaje mas negativo y el criterio tiene que
     ser el mismo en los dos casos.
   */
-  const lejos = (a: number, b: number): number => {
-    const d = Math.abs(a - b) % pasoPx;
-    return Math.min(d, pasoPx - d);
+  const lejos = (x: number, y: number): number => {
+    const d = Math.abs(x - y) % paso;
+    return Math.min(d, paso - d);
   };
   let segundo = -Infinity;
-  for (const [d] of puntajes) {
-    if (lejos(d, mejor) <= pasoPx * 0.25 || lejos(d, otro) <= pasoPx * 0.25) continue;
-    const v = Math.abs(contraste(d));
+  for (const [d] of mejorPuntajes) {
+    if (lejos(d, mejor) <= paso * 0.25 || lejos(d, otro) <= paso * 0.25) continue;
+    const v = Math.abs(a.contraste(d));
     if (v > segundo) segundo = v;
   }
   if (Number.isFinite(segundo) && contrasteC - segundo < VENTAJA_MINIMA_C) return null;
 
   return {
     corrimientoPx: mejor,
-    corrimientoModulos: mejor / pasoPx,
+    corrimientoModulos: mejor / paso,
+    factor: mejorF,
+    pasoPx: paso,
     contraste: contrasteC,
     modulos: orden.length,
   };
+}
+
+/**
+ * Donde termina el panel, a lo largo de la fila. Es el ancla ABSOLUTA.
+ *
+ * Las juntas dicen donde esta la rejilla modulo a modulo, pero no cual es
+ * cual: correr un modulo entero deja las juntas igual de bien puestas. Por eso
+ * `corrimientoDeLaRejilla` busca en medio modulo para cada lado y no mas — y
+ * ahi esta el agujero. Cuando el parque tiene la fila corrida justo medio
+ * modulo, cualquiera de los dos lados vale lo mismo, y la app elige uno con
+ * el ruido. Paso en la fila 2-37 del bloque 2: el parque decia 0,50, la caja
+ * quedo sobre el ultimo panel de la fila y el informe lo llamo modulo 27. Es
+ * el 28, y Mateo lo vio a ojo en la foto: es el ultimo antes de la calle.
+ *
+ * Lo que el vio es lo que se busca aca. La fila TERMINA, y donde termina se
+ * ve: el desvio local pasa de 0,3 sobre el panel a mas de 1 sobre lo que
+ * sigue, sea el motor, la calle o el pasto. Ese borde tiene nombre —es el
+ * modulo 1 o el 28— asi que anclar la rejilla ahi fija no solo la fase sino
+ * el NUMERO. Es exactamente contar desde la punta, que es lo que hace el
+ * cliente con el informe en la mano.
+ */
+
+/** Por debajo de esto es panel; por encima, no. En desvio local. */
+const PANEL_LISO = 0.8;
+const NO_ES_PANEL = 1.1;
+/**
+ * Cuanto antes del borde fisico empieza a subir el desvio local.
+ *
+ * `desvioLocal` mira un radio de 3 px, asi que un pixel a 3 px del borde ya ve
+ * lo que hay del otro lado. El cruce del umbral cae unos 3 px antes del
+ * borde; se corrige sumandolos.
+ */
+const ADELANTO_DEL_BORDE_PX = 3;
+/**
+ * Hasta cuanto puede estar corrido el final de la fila. Mas es otro error.
+ *
+ * Dos modulos. Sobre Wellington el parque llega a tener la punta un modulo y
+ * cuarto corrida (fila 1-9-motorizada, -1,25), y con uno y medio de busqueda
+ * el borde real quedaba justo afuera del alcance en las filas peores.
+ */
+const BUSQUEDA_DEL_BORDE_MODULOS = 2;
+
+export function bordeDelPanel(
+  perfilAspero: Float64Array,
+  t0: number,
+  /** Centro del ultimo modulo que predice el parque, sobre el eje t. */
+  centroUltimo: number,
+  /** Hacia donde esta el final de la fila: +1 o -1 sobre t. */
+  hacia: 1 | -1,
+  pasoPx: number,
+): number | null {
+  const lee = (t: number) => enT(perfilAspero, t0, t);
+  const alcance = BUSQUEDA_DEL_BORDE_MODULOS * pasoPx;
+
+  /*
+    Primero adentro, despues afuera. Se camina desde bien adentro de la fila
+    hacia el final, y el borde es donde el panel se termina POR ULTIMA VEZ:
+    el ultimo tramo liso seguido de un tramo aspero que no vuelve a ser liso
+    en medio modulo. Asi una junta —aspera dos pixeles y liso otra vez— no
+    se toma por el final.
+  */
+  const desde = centroUltimo - hacia * alcance;
+  const hasta = centroUltimo + hacia * alcance;
+  let ultimoLiso: number | null = null;
+  let t = desde;
+  while ((hasta - t) * hacia >= 0) {
+    const v = lee(t);
+    if (!Number.isFinite(v)) return null;          // se salio del cuadro: no hay borde que ver
+    if (v < PANEL_LISO) ultimoLiso = t;
+    else if (v >= NO_ES_PANEL && ultimoLiso != null) {
+      // ¿Se queda aspero medio modulo? Si vuelve a ser liso, era una junta.
+      let sigueAspero = true;
+      for (let k = 1; k <= pasoPx * 0.5; k++) {
+        const w = lee(t + hacia * k);
+        if (!Number.isFinite(w)) break;
+        if (w < PANEL_LISO) { sigueAspero = false; break; }
+      }
+      if (sigueAspero) return ultimoLiso + hacia * ADELANTO_DEL_BORDE_PX;
+    }
+    t += hacia * 0.5;
+  }
+  return null;
 }

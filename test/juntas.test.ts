@@ -7,7 +7,7 @@
  * ver sin instrumentos: cuenta paneles desde la punta y encuentra uno sano.
  */
 import { describe, expect, it } from "vitest";
-import { corrimientoDeLaRejilla, perfilALoLargo } from "../app/juntas";
+import { bordeDelPanel, corrimientoDeLaRejilla, perfilALoLargo } from "../app/juntas";
 
 const PASO = 25;
 
@@ -136,5 +136,52 @@ describe("perfilALoLargo", () => {
     // t=0 es y=30: la junta. La mediana cruzada la ve pese al defecto.
     expect(p[10]!).toBeCloseTo(2, 1);
     expect(p[0]!).toBeCloseTo(0.3, 1);
+  });
+});
+
+describe("bordeDelPanel", () => {
+  /**
+   * Una fila que termina: panel liso con juntas, y despues de la ultima, el
+   * suelo. Los numeros son de desvio local. El borde fisico esta en `fin`.
+   */
+  const filaQueTermina = (n: number, fin: number, hacia: 1 | -1) => {
+    const p = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const afuera = hacia > 0 ? i > fin : i < fin;
+      if (afuera) { p[i] = 2.2; continue; }
+      const d = Math.abs(((i - fin) % PASO + PASO) % PASO);
+      // Junta cada PASO contando desde el borde, de 3 px, aspera pero corta.
+      p[i] = d < 1.5 || d > PASO - 1.5 ? 1.3 : 0.3;
+    }
+    // La celda pegada al borde no tiene junta EN el borde: es el marco.
+    return p;
+  };
+
+  it("encuentra el final de la fila, para los dos lados", () => {
+    const fin = 200;
+    const p = filaQueTermina(300, fin, 1);
+    // El ultimo modulo predicho por el parque esta centrado medio paso adentro.
+    const b = bordeDelPanel(p, 0, fin - PASO / 2, 1, PASO)!;
+    expect(b).not.toBeNull();
+    expect(Math.abs(b - fin)).toBeLessThan(3);
+
+    const q = filaQueTermina(300, 100, -1);
+    const c = bordeDelPanel(q, 0, 100 + PASO / 2, -1, PASO)!;
+    expect(c).not.toBeNull();
+    expect(Math.abs(c - 100)).toBeLessThan(3);
+  });
+
+  it("no confunde una junta con el final", () => {
+    // El parque cree que la fila termina dos modulos antes de donde termina.
+    const fin = 200;
+    const p = filaQueTermina(300, fin, 1);
+    const b = bordeDelPanel(p, 0, fin - PASO / 2 - 1.2 * PASO, 1, PASO)!;
+    expect(b).not.toBeNull();
+    expect(Math.abs(b - fin)).toBeLessThan(3);
+  });
+
+  it("si el final no entro en el cuadro, no contesta", () => {
+    const p = new Float64Array(120).fill(0.3);
+    expect(bordeDelPanel(p, 0, 100, 1, PASO)).toBeNull();
   });
 });

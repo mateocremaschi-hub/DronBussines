@@ -34,7 +34,7 @@ import {
   FRIO_QUE_NO_ES_PANEL_C,
   type Caja as CajaDeMedicion,
 } from "./encaje";
-import { corrimientoDeLaRejilla, perfilALoLargo, type Juntas } from "./juntas";
+import { bordeDelPanel, corrimientoDeLaRejilla, perfilALoLargo, type Juntas } from "./juntas";
 import { correccion, medirVinieta, radioNormalizado, type Vinieta } from "./vinieta";
 import { calorDeLaPunta } from "./puntaDeFila";
 import { claseSugerida, clasificarPatron } from "./patron";
@@ -301,6 +301,42 @@ const PARTE_DE_UN_MODULO_NORMAL = 0.75;
 const MODULOS_PARA_JUZGAR_LA_PUNTA = 10;
 
 
+/** Lo que se le corrigio a una fila en una foto, a lo largo. */
+interface Alineacion {
+  /** El corrimiento aplicado en el centro de la fila, en modulos, en el sentido en que crece la posicion. */
+  modulos: number;
+  /** Por cuanto hubo que estirar el paso del parque para que cayera en las juntas. */
+  factor?: number;
+  /**
+   * El corrimiento VERDADERO de la fila, medido con su final, en modulos.
+   *
+   * Distinto de `modulos` cuando el final no se vio: ahi `modulos` es lo que
+   * dijeron las juntas, que solo vale en medio modulo para cada lado.
+   */
+  anclaModulos?: number;
+  contraste?: number;
+}
+
+export interface AlineacionDeFila {
+  fileName: string;
+  rowId: string;
+  modulos: number;
+  ancla?: number;
+  contraste?: number;
+  factor?: number;
+}
+
+/**
+ * Cuanto pueden discrepar las medidas del final de una misma fila.
+ *
+ * Un tercio de modulo. El borde se ubica con dos pixeles de error sobre un
+ * modulo de veinticinco, asi que dos medidas buenas caen a menos de un decimo
+ * una de otra. Mas de un tercio quiere decir que en alguna foto se tomo por
+ * final algo que no lo era —una sombra, un tracker girado— y con eso no se
+ * renumera nada.
+ */
+const ANCLAS_QUE_NO_SE_PONEN_DE_ACUERDO = 0.33;
+
 export class Acumulador {
   private mejor = new Map<string, Muestra>();
   /** Fotos que llegaron sin rumbo o sin angulo de gimbal, por motivo. */
@@ -340,7 +376,7 @@ export class Acumulador {
    * Cuanto habia que correr cada fila a lo largo para que las cajas cayeran
    * sobre los modulos, medido con las juntas de la propia foto. Ya aplicado.
    */
-  private alineaciones: Array<{ fileName: string; rowId: string; modulos: number; contraste: number }> = [];
+  private alineaciones: AlineacionDeFila[] = [];
   /** Fotos que no se pudieron enganchar a los paneles, y no se midieron. */
   private fotosSinEnganche: Array<{ fileName: string; fraccionLisa: number }> = [];
   /**
@@ -511,17 +547,19 @@ export class Acumulador {
       que cambia es que la caja del modulo 26 se apoya sobre el modulo 26.
     */
     const pasoDeLaFila = this.pasoPorFila(candidatos);
-    const alineado = this.alinearALoLargo(candidatos, foto, sd, puesta, dx, dy, pasoDeLaFila);
-    for (const [rowId, a] of alineado) {
+    const alineado = this.alinearALoLargo(candidatos, cerca, foto, sd, puesta, dx, dy, pasoDeLaFila);
+    for (const [rowId, a] of alineado.filas) {
       this.alineaciones.push({
         fileName: foto.fileName,
         rowId,
-        modulos: a.j.corrimientoModulos * (pasoDeLaFila.get(rowId)?.sentido ?? 1),
-        contraste: a.j.contraste,
+        modulos: a.modulos,
+        ...(a.contraste != null ? { contraste: a.contraste } : {}),
+        ...(a.factor != null ? { factor: a.factor } : {}),
+        ...(a.anclaModulos != null ? { ancla: a.anclaModulos } : {}),
       });
     }
-    const corrX = (m: ModuleRef) => dx + (alineado.get(m.rowId)?.ex ?? 0);
-    const corrY = (m: ModuleRef) => dy + (alineado.get(m.rowId)?.ey ?? 0);
+    const corrX = (m: ModuleRef) => dx + (alineado.cajas.get(m)?.ex ?? 0);
+    const corrY = (m: ModuleRef) => dy + (alineado.cajas.get(m)?.ey ?? 0);
 
     const sondeos = candidatos.map((c) =>
       sondearCaja(foto.radio, sd, puesta(c.caja), corrX(c.m), corrY(c.m)));
@@ -984,12 +1022,27 @@ export class Acumulador {
 
   /**
    * Cuanto hay que correr cada fila A LO LARGO para que las cajas caigan sobre
-   * los modulos, medido con las juntas de la propia foto.
+   * los modulos, medido en la propia foto.
    *
    * Se hace despues del enganche cruzado y sobre las cajas ya giradas y
    * corridas: son dos correcciones distintas —una es como volo el dron, la
    * otra es donde quedo el replanteo de la fila— y medir la segunda sobre las
    * cajas sin corregir la primera mezcla las dos.
+   *
+   * Dos reglas, cada una para lo que sirve:
+   *
+   *   - Las JUNTAS entre modulos dan la fase con menos de un pixel de error,
+   *     pero solo en medio modulo para cada lado: no saben cual modulo es cual.
+   *   - El FINAL de la fila da el numero. Donde el panel se termina hay un
+   *     modulo con nombre —el 1 o el ultimo— y anclar ahi es contar desde la
+   *     punta, que es lo que hace el cliente con el informe en la mano.
+   *
+   * Cuando estan las dos, el final decide el modulo entero y las juntas el
+   * resto. Cuando solo esta el final —una fila que asoma con dos o tres
+   * modulos en el borde del cuadro, que es justo donde viven el 1 y el 28—
+   * alcanza con el final. Y lo que se midio del final se guarda por fila,
+   * porque vale para las fotos donde el final NO se ve: ahi las juntas ponen
+   * la caja sobre un panel, y con el final medido en otra foto se sabe cual.
    *
    * Devuelve el corrimiento ya descompuesto en pixeles de imagen, porque es
    * como se usa: se suma a `dx`/`dy` en todos los lugares donde se toca la
@@ -998,20 +1051,51 @@ export class Acumulador {
    */
   private alinearALoLargo(
     candidatos: Array<{ m: ModuleRef; caja: CajaDeMedicion }>,
+    cerca: CompiledFarm["rows"],
     foto: FotoTermica,
     sd: Float32Array,
     puesta: (c: CajaDeMedicion) => CajaDeMedicion,
     dx: number,
     dy: number,
     pasoDeLaFila: Map<string, { pasoPx: number; sentido: number }>,
-  ): Map<string, { j: Juntas; ex: number; ey: number }> {
+  ): { cajas: Map<ModuleRef, { ex: number; ey: number }>; filas: Map<string, Alineacion> } {
     const porFila = new Map<string, Array<{ m: ModuleRef; caja: CajaDeMedicion }>>();
     for (const c of candidatos) push2(porFila, c.m.rowId, c);
+    const out = {
+      cajas: new Map<ModuleRef, { ex: number; ey: number }>(),
+      filas: new Map<string, Alineacion>(),
+    };
 
-    const out = new Map<string, { j: Juntas; ex: number; ey: number }>();
+    /*
+      El paso de la FOTO, para las filas que asoman con pocos modulos.
+
+      El paso entre modulos es el mismo en toda la foto —misma escala, mismo
+      parque— asi que una fila de la que entran dos modulos puede usar el que
+      contaron las demas. Y hace falta, porque esas filas de dos modulos son
+      exactamente las de la punta, donde estan el 1 y el 28.
+    */
+    const pasos = [...pasoDeLaFila.values()].map((p) => p.pasoPx).sort((a, b) => a - b);
+    const pasoDeLaFoto = pasos.length ? pasos[pasos.length >> 1]! : null;
+
+    const w = foto.radio.width, hh = foto.radio.height;
     for (const [rowId, lista] of porFila) {
-      const paso = pasoDeLaFila.get(rowId)?.pasoPx;
-      if (paso == null) continue;
+      const paso = pasoDeLaFila.get(rowId)?.pasoPx ?? pasoDeLaFoto;
+      if (paso == null || lista.length < 2) continue;
+      const row = cerca.find((r) => r.source.id === rowId);
+      if (!row) continue;
+
+      lista.sort((a, b) => a.m.positionInRow - b.m.positionInRow);
+      const todas = lista.map((c) => {
+        const g = puesta(c.caja);
+        return { m: c.m, caja: { ...g, cx: g.cx + dx, cy: g.cy + dy } };
+      });
+      const rot = todas[0]!.caja.rotRad;
+      const ux = Math.cos(rot), uy = Math.sin(rot);
+      const cx = todas.reduce((a, c) => a + c.caja.cx, 0) / todas.length;
+      const cy = todas.reduce((a, c) => a + c.caja.cy, 0) / todas.length;
+      const t = (c: CajaDeMedicion) => (c.cx - cx) * ux + (c.cy - cy) * uy;
+      // Para que lado de t crece el numero de posicion.
+      const sentido = Math.sign(t(todas[todas.length - 1]!.caja) - t(todas[0]!.caja)) || 1;
 
       /*
         Solo las cajas que de verdad estan en el cuadro.
@@ -1023,27 +1107,65 @@ export class Acumulador {
         de "centro" y el de "junta" hacia el mismo valor, que es exactamente lo
         que hace que la fila se descarte por falta de contraste.
       */
-      const cajas = lista
-        .map((c) => {
-          const g = puesta(c.caja);
-          return { ...g, cx: g.cx + dx, cy: g.cy + dy };
-        })
-        .filter((c) =>
-          c.cx >= 0 && c.cy >= 0 && c.cx < foto.radio.width && c.cy < foto.radio.height);
-      if (cajas.length < 4) continue;
-      const rot = cajas[0]!.rotRad;
-      const ux = Math.cos(rot), uy = Math.sin(rot);
-      const cx = cajas.reduce((a, c) => a + c.cx, 0) / cajas.length;
-      const cy = cajas.reduce((a, c) => a + c.cy, 0) / cajas.length;
-      const centros = cajas.map((c) => (c.cx - cx) * ux + (c.cy - cy) * uy);
-      const t0 = Math.min(...centros) - paso, t1 = Math.max(...centros) + paso;
+      const enCuadro = todas.filter((c) =>
+        c.caja.cx >= 0 && c.caja.cy >= 0 && c.caja.cx < w && c.caja.cy < hh);
+      if (!enCuadro.length) continue;
+      const centros = enCuadro.map((c) => t(c.caja));
+      const cruz = todas[0]!.caja.cruzado;
 
-      const w = foto.radio.width, hh = foto.radio.height, cruz = cajas[0]!.cruzado;
-      const perfilC = perfilALoLargo(foto.radio.celsius, w, hh, cx, cy, rot, cruz, t0, t1);
-      const perfilAspero = perfilALoLargo(sd, w, hh, cx, cy, rot, cruz, t0, t1);
-      const j = corrimientoDeLaRejilla(perfilC, perfilAspero, t0, centros, paso);
-      if (!j) continue;
-      out.set(rowId, { j, ex: j.corrimientoPx * ux, ey: j.corrimientoPx * uy });
+      // 1) Las juntas: la fase y la escala, en medio modulo para cada lado.
+      let juntas: Juntas | null = null;
+      if (enCuadro.length >= 4) {
+        const t0 = Math.min(...centros) - paso, t1 = Math.max(...centros) + paso;
+        const perfilC = perfilALoLargo(foto.radio.celsius, w, hh, cx, cy, rot, cruz, t0, t1);
+        const perfilA = perfilALoLargo(sd, w, hh, cx, cy, rot, cruz, t0, t1);
+        juntas = corrimientoDeLaRejilla(perfilC, perfilA, t0, centros, paso);
+      }
+      const f = juntas?.factor ?? 1;
+      const pasoF = juntas?.pasoPx ?? paso;
+      const fase = juntas?.corrimientoPx ?? 0;
+      /** Donde queda cada caja despues de la escala y la fase. */
+      const puesto = (tt: number) => tt * f + fase;
+
+      // 2) El final de la fila: el numero.
+      let residual: number | null = null;
+      for (const punta of [enCuadro[0]!, enCuadro[enCuadro.length - 1]!]) {
+        const esPrimera = punta.m.positionInRow === 1;
+        const esUltima = punta.m.positionInRow === row.modulesPerRow;
+        if (!esPrimera && !esUltima) continue;
+        const hacia = ((esUltima ? 1 : -1) * sentido) as 1 | -1;
+        const tc = puesto(t(punta.caja));
+        const t0 = tc - 2.5 * pasoF, t1 = tc + 2.5 * pasoF;
+        const perfilA = perfilALoLargo(sd, w, hh, cx, cy, rot, cruz, t0, t1);
+        const borde = bordeDelPanel(perfilA, t0, tc, hacia, pasoF);
+        if (borde == null) continue;
+        residual = borde - (tc + hacia * pasoF / 2);
+        break;
+      }
+
+      /*
+        Y las dos juntas. El final decide cuantos modulos ENTEROS hay que
+        correr, las juntas afinan el resto. Sin juntas, el final solo: dos
+        pixeles de precision, que sobran para saber cual panel es cual.
+      */
+      let entero = 0;
+      if (juntas && residual != null) entero = Math.round(residual / pasoF) * pasoF;
+      else if (!juntas && residual == null) continue;
+      const corrido = (tt: number) => (juntas ? puesto(tt) + entero : tt + residual!);
+
+      for (const c of todas) {
+        const tt = t(c.caja);
+        const d = corrido(tt) - tt;
+        out.cajas.set(c.m, { ex: d * ux, ey: d * uy });
+      }
+      const lam = juntas ? (fase + entero) / pasoF : residual! / paso;
+      out.filas.set(rowId, {
+        modulos: lam * sentido,
+        ...(residual != null
+          ? { anclaModulos: ((juntas ? fase + residual : residual) / pasoF) * sentido }
+          : {}),
+        ...(juntas ? { contraste: juntas.contraste, factor: juntas.factor } : {}),
+      });
     }
     return out;
   }
@@ -1144,8 +1266,88 @@ export class Acumulador {
     return escalaDeLaImagen(medidas);
   }
 
+  /**
+   * Las muestras del vuelo, con cada fila contada desde su punta.
+   *
+   * Aca se cierra lo que `alinearALoLargo` deja abierto. En cada foto las
+   * juntas ponen la caja sobre un panel, pero solo saben la fase: una fila
+   * corrida medio modulo en el parque cae para un lado en una foto y para el
+   * otro en la siguiente, y el mismo panel sale como 27 en una y 28 en otra.
+   * El final de la fila, cuando se ve, dice cual es cual — y se ve en alguna
+   * foto de casi todas las filas, porque el vuelo cubre el parque entero.
+   *
+   * Asi que se junta lo que dijo el final en todas las fotos donde se vio,
+   * se saca UN corrimiento verdadero por fila, y con el se corrige el numero
+   * de las muestras de esa fila en todas las fotos, se haya visto el final o
+   * no. Si dos fotos llaman distinto al mismo panel, gana la que lo vio mas
+   * cerca del centro del cuadro, igual que siempre.
+   */
   muestras(): Muestra[] {
-    return [...this.mejor.values()];
+    const verdadero = this.corrimientoVerdaderoPorFila();
+    if (!verdadero.size) return [...this.mejor.values()];
+
+    const aplicado = new Map<string, number>();
+    for (const a of this.alineaciones) aplicado.set(`${a.fileName}|${a.rowId}`, a.modulos);
+    const refs = new Map<string, ModuleRef[]>();
+    const refsDe = (rowId: string): ModuleRef[] => {
+      let r = refs.get(rowId);
+      if (!r) {
+        const row = this.farm.rows.find((x) => x.source.id === rowId);
+        r = row ? modulesOfRow(row, this.farm) : [];
+        refs.set(rowId, r);
+      }
+      return r;
+    };
+
+    const salida = new Map<string, Muestra>();
+    for (const m of this.mejor.values()) {
+      const s = verdadero.get(m.modulo.rowId);
+      let ref = m.modulo;
+      if (s != null) {
+        /*
+          En esta foto la caja "k" quedo sobre el panel que esta a `aplicado`
+          modulos de donde el parque pone al k. El panel que de verdad esta ahi
+          es el k + (aplicado - verdadero), que es entero salvo por el ruido.
+        */
+        const lam = aplicado.get(`${m.fileName}|${m.modulo.rowId}`) ?? 0;
+        const n = Math.round(lam - s);
+        if (n !== 0) {
+          const nuevo = refsDe(m.modulo.rowId)[m.modulo.positionInRow + n - 1];
+          // Se salio de la fila: era un modulo que el parque tiene de mas.
+          if (!nuevo) continue;
+          ref = nuevo;
+        }
+      }
+      const clave = `${ref.rowId}#${ref.positionInRow}`;
+      const previo = salida.get(clave);
+      if (previo && previo.distanciaAlCentroM <= m.distanciaAlCentroM) continue;
+      salida.set(clave, ref === m.modulo ? m : { ...m, modulo: ref });
+    }
+    return [...salida.values()];
+  }
+
+  /**
+   * Cuanto esta corrida de verdad cada fila, en modulos, medido con su final.
+   *
+   * La mediana de todas las fotos donde se vio el final. Una fila cuyas
+   * medidas no se ponen de acuerdo —mas de un tercio de modulo de dispersion—
+   * no se corrige: mejor dejarla como esta, con el aviso, que renumerarla con
+   * un dato que se contradice.
+   */
+  corrimientoVerdaderoPorFila(): Map<string, number> {
+    const porFila = new Map<string, number[]>();
+    for (const a of this.alineaciones) {
+      if (a.ancla != null) push2(porFila, a.rowId, a.ancla);
+    }
+    const out = new Map<string, number>();
+    for (const [rowId, v] of porFila) {
+      v.sort((a, b) => a - b);
+      const med = v[v.length >> 1]!;
+      const mad = v.map((x) => Math.abs(x - med)).sort((a, b) => a - b)[v.length >> 1]!;
+      if (mad > ANCLAS_QUE_NO_SE_PONEN_DE_ACUERDO) continue;
+      out.set(rowId, med);
+    }
+    return out;
   }
 
   /**
@@ -1220,7 +1422,7 @@ export class Acumulador {
    * medio modulo corridas en los datos se arregla una vez en las coordenadas y
    * no una vez por vuelo, y sin este numero nadie sabe que hay que arreglarlo.
    */
-  alineacionesDeFila(): Array<{ fileName: string; rowId: string; modulos: number; contraste: number }> {
+  alineacionesDeFila(): AlineacionDeFila[] {
     return this.alineaciones;
   }
 
