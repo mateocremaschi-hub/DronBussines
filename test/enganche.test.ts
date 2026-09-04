@@ -16,6 +16,7 @@
 import { describe, expect, it } from "vitest";
 import {
   confianzaDeFoto,
+  escalaDelVuelo,
   desvioLocal,
   engancharFoto,
   sondearCaja,
@@ -211,7 +212,9 @@ describe("contar el paso entre modulos en la propia imagen", () => {
     // altura medida contra el suelo en vez de contra los paneles.
     const p = pasoEnLaImagen(r, { cx: W / 2, cy: 120 }, 0, W - 20, 36, 22)!;
     expect(p, "tenia que contar el paso").not.toBeNull();
-    expect(p.pasoPx).toBe(26);
+    // Con decimales: el paso de la escena es 26 justo, pero el pico se
+    // interpola, asi que se acepta la fraccion de pixel.
+    expect(p.pasoPx).toBeCloseTo(26, 0);
     expect(p.fuerza).toBeGreaterThan(0.3);
   });
 
@@ -237,11 +240,89 @@ describe("contar el paso entre modulos en la propia imagen", () => {
     ])).toBeNull();
   });
 
+  /*
+    El paso real no cae en un pixel entero. Anda por los veinte pixeles, asi
+    que redondear al entero mas cercano ya es un 5 % de error de escala — mas
+    grande que el error que esto tiene que medir. Sobre el vuelo del bloque 1
+    la version entera daba 0.875 en foto tras foto (21 sobre 24) y la version
+    con decimales dio 0.876 a 0.900, que es la dispersion real.
+  */
+  it("el paso sale con decimales, no redondeado al pixel", () => {
+    // Juntas cada 26.5 px: ningun entero puede dar esto bien.
+    const celsius = new Float32Array(W * H).fill(47);
+    let semilla = 4242;
+    const ruido = () => { semilla = (semilla * 1664525 + 1013904223) >>> 0; return semilla / 0xffffffff - 0.5; };
+    const paso = 26.5;
+    for (let y = 100; y < 140; y++) {
+      for (let x = 0; x < W; x++) {
+        const fase = ((x % paso) + paso) % paso;
+        const enLaJunta = fase < 2;
+        celsius[y * W + x] = (enLaJunta ? 39 : 42) + ruido() * 0.4;
+      }
+    }
+    const r: Radiometric = {
+      width: W, height: H, celsius,
+      escala: "de prueba", escalaAuto: "de prueba", topeC: 999, fraccionEnElTope: 0,
+    };
+    const p = pasoEnLaImagen(r, { cx: W / 2, cy: 120 }, 0, W - 20, 36, 25)!;
+    expect(p, "tenia que contar el paso").not.toBeNull();
+    expect(p.pasoPx).toBeGreaterThan(26.1);
+    expect(p.pasoPx).toBeLessThan(26.9);
+    expect(p.pasoPx).not.toBe(Math.round(p.pasoPx));
+  });
+
   it("con dos filas que coinciden, devuelve el factor", () => {
     const f = escalaDeLaImagen([
       { pasoPx: 26, esperadoPx: 24 },
       { pasoPx: 26, esperadoPx: 24.2 },
     ])!;
     expect(f).toBeCloseTo(24.1 / 26, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * La escala del VUELO: lo que faltaba aplicar, y lo que costo un bloque entero.
+ *
+ * El 4 de septiembre Mateo volo el bloque 1 completo y la app entrego 593
+ * hallazgos. Eran todos falsos y el programa lo dijo solo: la medicion salio
+ * no repetible. La causa fue una sola. Las 371 fotos traian 52.0 m de altura
+ * clavado —es la altura que se le ORDENO al dron, no una medida— y el paso
+ * entre modulos contado sobre la imagen decia que la camara estaba a 46. Once
+ * por ciento de mas en todas las distancias.
+ *
+ * Un once por ciento no corre las cajas: las estira desde el centro del cuadro
+ * hacia afuera, y en el borde eso es mas de un metro, casi un modulo entero.
+ * Ninguna busqueda de corrimiento lo arregla porque no es un corrimiento.
+ *
+ * Medido sobre 40 fotos de ese vuelo: con la escala del EXIF salieron 156
+ * hallazgos y el mismo panel medido dos veces difirio 2.9 °C en el 10 % peor;
+ * contando la escala en la imagen salieron 9 y la diferencia bajo a 1.9.
+ */
+describe("la escala del vuelo entero", () => {
+  it("con pocas fotos no se toca la escala de todo el vuelo", () => {
+    // Una foto sola puede engancharse en un armonico y corregir al doble.
+    expect(escalaDelVuelo([0.89, 0.89, 0.89, 0.89])).toBeNull();
+  });
+
+  it("si las fotos no coinciden entre si, no se corrige nada", () => {
+    // Que coincidan es lo unico que permite creerle a la correccion.
+    expect(escalaDelVuelo([0.89, 0.95, 1.02, 0.87, 1.10, 0.92])).toBeNull();
+  });
+
+  it("con varias fotos que coinciden, devuelve el factor y cuantas lo dijeron", () => {
+    // Los numeros son los del vuelo real del bloque 1.
+    const e = escalaDelVuelo([0.885, 0.887, 0.882, 0.881, 0.892, 0.899, 0.876])!;
+    expect(e, "tenia que decidir la escala").not.toBeNull();
+    expect(e.factor).toBeCloseTo(0.885, 2);
+    expect(e.fotos).toBe(7);
+    expect(e.dispersion).toBeLessThan(0.02);
+  });
+
+  it("un disparate no arrastra la mediana", () => {
+    const e = escalaDelVuelo([0.885, 0.887, 0.882, 0.881, 0.892, 0.899, 2.0, 0.4])!;
+    expect(e.factor).toBeCloseTo(0.885, 2);
+    expect(e.fotos, "los imposibles no se cuentan").toBe(6);
   });
 });

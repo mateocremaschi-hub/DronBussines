@@ -19,6 +19,7 @@
 
 import { anguloDeTracker, locate, makeFrame, toGeo } from "@locator";
 import type { CompiledFarm, LocalFrame } from "@locator";
+import { escalaDelVuelo as escalaDeLaHuella } from "./encaje";
 import {
   Acumulador,
   CELDA_M,
@@ -131,6 +132,77 @@ export interface OpcionesDeVuelo {
  * de una, y lo que decide que sale en el informe se puede probar sin un
  * navegador.
  */
+/**
+ * Cuantas fotos se miran para decidir la escala del vuelo.
+ *
+ * Repartidas a lo largo del vuelo, no las primeras: las primeras pueden ser el
+ * despegue o una pasada sobre otra cosa. Cuarenta alcanzan de sobra —en el
+ * vuelo del bloque 1, trece de cuarenta pudieron contar el paso y las trece
+ * coincidieron dentro del 2 %— y cuestan una pasada corta de lectura.
+ */
+const FOTOS_PARA_LA_ESCALA = 40;
+
+/**
+ * Mide, sobre las propias imagenes, cuanto se despega la escala del EXIF.
+ *
+ * Devuelve null cuando no hay con que decidirlo: pocas fotos pudieron contar
+ * el paso, o las que lo contaron no coinciden entre si. En ese caso se usa la
+ * escala del EXIF, que es lo unico que hay, y el aviso lo dice.
+ */
+async function medirLaEscala(
+  farm: CompiledFarm,
+  frame: LocalFrame,
+  files: File[],
+  opts: OpcionesDeVuelo,
+): Promise<{ factor: number; fotos: number; dispersion: number } | null> {
+  const paso = Math.max(1, Math.floor(files.length / FOTOS_PARA_LA_ESCALA));
+  let cam: Camera | null = null;
+  let acc: Acumulador | null = null;
+  let escala: string | null = null;
+
+  for (let i = 0; i < files.length; i += paso) {
+    const file = files[i]!;
+    try {
+      const radio = readRadiometric(await file.arrayBuffer(), escala ?? undefined);
+      if (!radio) continue;
+      if (!escala) escala = radio.escala;
+      const leida = await readPhoto(file, false);
+      const fix = leida.fix;
+      if (!fix || fix.relativeAltitudeM == null) continue;
+      if (!cam) {
+        cam = camaraFrom(fix, radio.width, radio.height);
+        if (!cam) return null;
+        acc = new Acumulador(farm, frame, {
+          camera: cam,
+          moduloAnchoM: opts.moduloAnchoM,
+          moduloLargoM: opts.moduloLargoM,
+          ajuste: opts.ajuste,
+          celdaM: opts.celdaM,
+        });
+      }
+      const cuando = fix.takenAt ? new Date(fix.takenAt) : null;
+      const angulo =
+        cuando && !Number.isNaN(cuando.getTime())
+          ? anguloDeTracker(fix.lat, fix.lon, cuando)
+          : null;
+      acc!.agregar({
+        fileName: file.name,
+        radio,
+        pose: {
+          lat: fix.lat, lon: fix.lon, altitudeAglM: fix.relativeAltitudeM,
+          ...(fix.gimbalYawDeg != null ? { gimbalYawDeg: fix.gimbalYawDeg } : {}),
+          ...(fix.gimbalPitchDeg != null ? { gimbalPitchDeg: fix.gimbalPitchDeg } : {}),
+        },
+      }, angulo?.factorDeAcortamiento ?? 1);
+    } catch {
+      // Una foto que no se puede leer no decide la escala; el bucle de verdad
+      // la va a contar como fallo con su motivo.
+    }
+  }
+
+  return acc ? escalaDeLaHuella(acc.desviosDeEscala().map((e) => e.factor)) : null;
+}
+
 export async function analizarFotos(
   farm: CompiledFarm,
   frame: LocalFrame,
@@ -187,6 +259,28 @@ export async function analizarFotos(
    * veces mas de lo necesario y tarda cuatro veces mas en subirse.
    */
   let superRes = 0;
+
+  /*
+    Antes de medir nada: cuanto mide de verdad un modulo en estas fotos.
+
+    Es la correccion que faltaba, y es la que decide si el vuelo sirve. La
+    huella de cada foto sale de la altura del EXIF, y esa altura puede estar
+    mal sin que nada lo delate: en el vuelo del bloque 1 de Wellington las 371
+    fotos traian 52.0 m clavado —es la altura que se le ORDENO al dron, no una
+    medida— y el paso entre modulos contado sobre la imagen decia 46. Once por
+    ciento de mas en todas las distancias.
+
+    Eso no corre las cajas, las estira desde el centro hacia afuera: en el
+    borde del cuadro son mas de un metro, casi un modulo entero, y ninguna
+    busqueda de corrimiento lo puede arreglar porque no es un corrimiento. Con
+    la escala del EXIF ese vuelo dio 593 hallazgos y la medicion salio no
+    repetible; con la escala contada en la imagen, la misma zona pasa de 156
+    hallazgos a 8 y el mismo panel medido dos veces coincide.
+
+    Se cuenta sobre un puñado de fotos repartidas por el vuelo y se decide una
+    sola escala para todas: la causa es del equipo o del vuelo, no de la foto.
+  */
+  const escalaMedida = await medirLaEscala(farm, frame, files, opts);
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i]!;
@@ -284,7 +378,7 @@ export async function analizarFotos(
         ...(cuando && !Number.isNaN(cuando.getTime()) ? { cuando: cuando.getTime() } : {}),
         radio,
         pose: {
-          lat: fix.lat, lon: fix.lon, altitudeAglM: agl,
+          lat: fix.lat, lon: fix.lon, altitudeAglM: agl * (escalaMedida?.factor ?? 1),
           ...(fix.gimbalYawDeg != null ? { gimbalYawDeg: fix.gimbalYawDeg } : {}),
           ...(fix.gimbalPitchDeg != null ? { gimbalPitchDeg: fix.gimbalPitchDeg } : {}),
         },
@@ -394,20 +488,45 @@ export async function analizarFotos(
       unico que un corrimiento o un giro no pueden arreglar, porque crece desde
       el centro del cuadro hacia afuera.
     */
+    /*
+      La escala, que ahora SE CORRIGE.
+
+      Se decia y no se aplicaba, y esa decision costo un vuelo entero: el
+      bloque 1 de Wellington salio con 593 hallazgos, todos falsos, porque la
+      huella se calculo con una altura que estaba 11 % de mas.
+    */
+    if (escalaMedida) {
+      const pct = (1 - escalaMedida.factor) * 100;
+      fallos.push(
+        `La altura del EXIF no coincide con lo que se ve en la imagen y SE CORRIGIO. Contando el ` +
+        `paso entre modulos sobre ${escalaMedida.fotos} fotos, las distancias reales son un ` +
+        `${Math.abs(pct).toFixed(0)} % ${pct > 0 ? "menores" : "mayores"} que las que predice la ` +
+        `altura del EXIF, y las ${escalaMedida.fotos} fotos coinciden entre si dentro del ` +
+        `${(escalaMedida.dispersion * 100).toFixed(1)} %. Todo el vuelo se midio con la escala de ` +
+        "la imagen. Suele pasar por dos motivos: el dron escribe la altura que se le ORDENO en vez " +
+        "de la que volo, o el despegue fue mas abajo que los paneles. Si te importa el numero " +
+        "exacto, volá con RTK o despegá al lado del bloque.",
+      );
+    }
+
     const escalas = acc.desviosDeEscala();
     if (escalas.length) {
       const peor = escalas.reduce((a, b) => (Math.abs(b.factor - 1) > Math.abs(a.factor - 1) ? b : a));
       const pct = Math.abs(peor.factor - 1) * 100;
-      fallos.push(
-        `En ${escalas.length} de ${termicas} fotos, el paso entre modulos contado sobre la imagen ` +
-        `no coincide con el que predice la altura del EXIF: hasta ${pct.toFixed(0)} % de diferencia. ` +
-        "Sobre un cuadro de 640 px eso es mas de un metro de error en el borde, y no lo arregla " +
-        "ningun corrimiento porque crece del centro hacia afuera. La causa mas probable es que la " +
-        "altura del EXIF se mide contra el punto de despegue —el suelo— y los paneles estan dos " +
-        "metros mas arriba. Todavia NO se corrige: con fotos sueltas el paso se cuenta en muy " +
-        "pocas filas y corregir a medias deja el vuelo con dos escalas. Con solape va a haber con " +
-        "que decidir.",
-      );
+      /*
+        Lo que QUEDA despues de corregir. Si la correccion funciono esto tiene
+        que ser chico; si sigue grande, la escala no era el problema —o no era
+        el unico— y hay que mirarlo antes de creerle a la lista.
+      */
+      if (pct >= 3) {
+        fallos.push(
+          `En ${escalas.length} de ${termicas} fotos, el paso entre modulos contado sobre la ` +
+          `imagen todavia no coincide con la escala usada: hasta ${pct.toFixed(0)} % de ` +
+          "diferencia. Sobre un cuadro de 640 px eso es mas de un metro de error en el borde, y " +
+          "no lo arregla ningun corrimiento porque crece del centro hacia afuera. Con esa " +
+          "diferencia los hallazgos de abajo pueden ser del recuadro y no del panel.",
+        );
+      }
     }
 
     const vinieteo = acc.vinieteo();

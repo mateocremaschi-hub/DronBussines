@@ -610,13 +610,30 @@ export function pasoEnLaImagen(
   const desde = Math.max(4, Math.floor(pasoEsperadoPx * 0.7));
   const hasta = Math.min(n - 2, Math.ceil(pasoEsperadoPx * 1.4));
   let mejorK = 0, mejor = 0;
+  const corr: number[] = [];
   for (let k = desde; k <= hasta; k++) {
     let s = 0;
     for (let i = 0; i + k < n; i++) s += suave[i]! * suave[i + k]!;
     const v = s / cero;
+    corr[k] = v;
     if (v > mejor) { mejor = v; mejorK = k; }
   }
-  return mejorK && mejor >= REPETICION_MINIMA ? { pasoPx: mejorK, fuerza: mejor } : null;
+  if (!mejorK || mejor < REPETICION_MINIMA) return null;
+
+  /*
+    El paso, con decimales.
+
+    La autocorrelacion da un numero entero de pixeles y el paso real anda por
+    los veinte: un pixel de redondeo es un 5 % de error de escala, que es mas
+    grande que el error que estamos tratando de corregir. La parabola que pasa
+    por el pico y sus dos vecinos da la fraccion.
+  */
+  const a = corr[mejorK - 1] ?? mejor, b = mejor, c = corr[mejorK + 1] ?? mejor;
+  const den = a - 2 * b + c;
+  const ajuste = den < 0 ? (0.5 * (a - c)) / den : 0;
+  const pasoPx = mejorK + Math.max(-0.5, Math.min(0.5, ajuste));
+
+  return { pasoPx, fuerza: mejor };
 }
 
 /**
@@ -626,6 +643,45 @@ export function pasoEnLaImagen(
  * pudo contar el paso en ninguna fila: entonces se deja la escala del EXIF,
  * que es lo unico que hay.
  */
+/**
+ * La escala del VUELO, decidida entre todas las fotos que la pudieron contar.
+ *
+ * Esto es lo que faltaba aplicar, y es lo que hacia que el primer bloque real
+ * saliera con 593 hallazgos falsos. La huella de cada foto se calcula con la
+ * altura del EXIF, y en el vuelo del bloque 1 de Wellington el EXIF decia 52 m
+ * en las 371 fotos —clavado, porque es la altura que se le ORDENO al dron, no
+ * una medida— mientras el paso entre modulos contado sobre la imagen decia que
+ * la camara estaba a 46. Once por ciento de mas en cada distancia.
+ *
+ * Un once por ciento no corre las cajas: las ESTIRA desde el centro del cuadro
+ * hacia afuera. En el borde son mas de un metro, o sea casi un modulo entero,
+ * y ninguna busqueda de corrimiento lo arregla porque no es un corrimiento.
+ * Medido sobre 40 fotos de ese vuelo: con la escala del EXIF, 156 hallazgos y
+ * la medicion no repetible; con la escala contada en la imagen, 8 hallazgos y
+ * el mismo panel medido dos veces coincide.
+ *
+ * Se decide por vuelo y no por foto a proposito. La causa —la camara mira un
+ * poco mas ancho de lo que dice, o el despegue fue mas abajo que los paneles—
+ * es la misma en todo el vuelo, asi que una sola escala para todas es mas
+ * robusta que una por foto, y evita que dos fotos vecinas midan el mismo panel
+ * con dos reglas distintas.
+ */
+export function escalaDelVuelo(
+  factores: number[],
+): { factor: number; fotos: number; dispersion: number } | null {
+  const buenos = factores.filter((f) => Number.isFinite(f) && Math.abs(f - 1) <= CORRECCION_MAXIMA);
+  // Con menos de cinco fotos no se toca la escala del vuelo entero: una foto
+  // puede contar un armonico —dos modulos como uno— y eso corrige al doble.
+  if (buenos.length < 5) return null;
+  const o = [...buenos].sort((a, b) => a - b);
+  const factor = mediana(o);
+  // Cuanto discrepan entre si. Si el paso se estuviera contando mal, las fotos
+  // no coincidirian; que coincidan es lo que permite creerle a la correccion.
+  const dispersion = o[Math.floor(o.length * 0.75)]! - o[Math.floor(o.length * 0.25)]!;
+  if (dispersion > 0.05) return null;
+  return { factor, fotos: buenos.length, dispersion };
+}
+
 export function escalaDeLaImagen(
   medidas: Array<{ pasoPx: number; esperadoPx: number }>,
 ): number | null {
