@@ -36,6 +36,7 @@ import {
   type Caja as CajaDeMedicion,
 } from "./encaje";
 import { correccion, medirVinieta, radioNormalizado, type Vinieta } from "./vinieta";
+import { calorDeLaPunta } from "./puntaDeFila";
 import { claseSugerida, clasificarPatron } from "./patron";
 import { aplicarAjuste, footprint, pixelOf, type Ajuste, type PhotoPose } from "./projection";
 import type { Camera } from "./mission";
@@ -274,6 +275,15 @@ const PARTE_DE_UN_MODULO_NORMAL = 0.75;
  */
 const MODULOS_PARA_JUZGAR_LA_PUNTA = 10;
 
+/**
+ * A partir de cuantos grados vale la pena contar que la punta estaba caliente.
+ *
+ * Medio grado. El umbral de anomalia leve anda por los tres, asi que medio
+ * grado no cambia ninguna clasificacion por si solo — pero sobre las puntas de
+ * Wellington la correccion llega a dos y medio, que si la cambia entera.
+ */
+const PUNTA_QUE_SE_NOTA_C = 0.5;
+
 /** Cuantos modulos de una fila tienen que entrar para medirle la union. */
 const MODULOS_PARA_ANCLAR_LA_FILA = 12;
 
@@ -333,6 +343,8 @@ export class Acumulador {
   private fotosFueraDelParque: Array<{ fileName: string; metros: number }> = [];
   /** Cuanto vinieteo hubo que sacarle a cada foto, en grados en la esquina. */
   private vinietas: Array<{ fileName: string; maximoC: number }> = [];
+  /** El calor que trae la punta de la fila y no el modulo, por foto y posicion. */
+  private puntasCalientes: Array<{ fileName: string; posicion: number; grados: number }> = [];
   /**
    * Modulos medidos dos veces, desde fotos distintas, y cuanto se diferencian.
    *
@@ -675,11 +687,30 @@ export class Acumulador {
     const vinieta = medirVinieta(medidas.map((x) => ({ r: x.r, celsius: x.hit.celsius })));
     if (vinieta) this.vinietas.push({ fileName: foto.fileName, maximoC: vinieta.maximoC });
 
+    /*
+      Y el calor que trae la PUNTA de la fila, que tampoco es del modulo.
+
+      Se mide despues del vinieteo y sobre los valores ya corregidos: son dos
+      sesgos distintos —uno crece con el radio en el cuadro, el otro con la
+      cercania a la punta de la fila— y mezclarlos haria que cada uno se coma
+      parte del otro.
+    */
+    const punta = calorDeLaPunta(medidas.map((x) => ({
+      string: `${x.m.rowId}|${x.m.stringNumber}`,
+      posicion: x.m.module,
+      celsius: x.hit.celsius - (vinieta ? correccion(vinieta, x.r) : 0),
+    })));
+    for (const [posicion, grados] of punta) {
+      if (Math.abs(grados) >= PUNTA_QUE_SE_NOTA_C) {
+        this.puntasCalientes.push({ fileName: foto.fileName, posicion, grados });
+      }
+    }
+
     for (const x of medidas) {
       // Se le resta lo mismo a la mediana y al punto caliente: el chequeo
       // interno los compara entre si, y los dos estan al mismo radio, asi que
       // la diferencia tiene que quedar igual.
-      const resta = vinieta ? correccion(vinieta, x.r) : 0;
+      const resta = (vinieta ? correccion(vinieta, x.r) : 0) + (punta.get(x.m.module) ?? 0);
 
       /*
         La misma medicion, hecha desde otra foto.
@@ -1113,6 +1144,18 @@ export class Acumulador {
   }
 
   /** El vinieteo que hubo que sacarle a cada foto, en grados en la esquina. */
+  /**
+   * Lo que se le saco a cada posicion de la fila por estar cerca de la punta.
+   *
+   * Se dice porque es del PARQUE y no del vuelo: si la punta de las filas de
+   * una zona lee tres grados de mas, va a leerlos en todos los vuelos, y es la
+   * diferencia entre una lista corta con un defecto adentro y una lista corta
+   * llena de modulos 1.
+   */
+  calorDeLasPuntas(): Array<{ fileName: string; posicion: number; grados: number }> {
+    return this.puntasCalientes;
+  }
+
   vinieteo(): Array<{ fileName: string; maximoC: number }> {
     return this.vinietas;
   }

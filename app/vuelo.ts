@@ -795,6 +795,28 @@ export async function analizarFotos(
       }
     }
 
+    /*
+      El calor de la punta de la fila, que no es del modulo.
+
+      Se dice porque cambia la lista: sin restarlo, el modulo 1 y el 28 de cada
+      fila ganan siempre, y una lista corta llena de puntas es una lista que
+      nadie mira.
+    */
+    const puntas = acc.calorDeLasPuntas();
+    if (puntas.length) {
+      const peor = puntas.reduce((a, b) => (Math.abs(b.grados) > Math.abs(a.grados) ? b : a));
+      const posiciones = new Set(puntas.map((p) => p.posicion));
+      fallos.push(
+        `A ${puntas.length} posiciones de fila se les saco el calor que traen por estar en la punta: ` +
+        `hasta ${Math.abs(peor.grados).toFixed(1)} °C en el modulo ${peor.posicion}. No es de esos ` +
+        "modulos — es que las puntas dan a la calle de servicio, que al sol lee muy por encima del " +
+        "panel, y se calientan de a poco: sobre este vuelo el modulo 1 de CUATRO filas distintas de " +
+        "la misma foto marcaba entre +2,1 y +3,2 contra sus hermanos de string. Se midio contra el " +
+        `mismo numero de modulo en las otras filas del cuadro. Son ${posiciones.size} posiciones ` +
+        "distintas, casi siempre las primeras y las ultimas de la fila.",
+      );
+    }
+
     const vinieteo = acc.vinieteo();
     if (vinieteo.length) {
       const peor = Math.max(...vinieteo.map((v) => v.maximoC));
