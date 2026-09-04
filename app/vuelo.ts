@@ -19,6 +19,7 @@
 
 import { anguloDeTracker, locate, makeFrame, toGeo } from "@locator";
 import type { CompiledFarm, LocalFrame } from "@locator";
+import type { Warning } from "../src/types.js";
 import { escalaDelVuelo as escalaDeLaHuella } from "./encaje";
 import {
   Acumulador,
@@ -92,6 +93,17 @@ export interface ResultadoDeVuelo {
   /** Lo que no se pudo usar, dicho para una persona. */
   problemas: string[];
   /**
+   * Cuanto esta corrida cada fila A LO LARGO, por "archivo|fila".
+   *
+   * Medido sobre la propia foto con el hueco entre strings, que son 555 mm sin
+   * panel y estan exactamente entre el modulo 28 de un string y el 1 del otro.
+   * No se corrige la medicion con esto —repite entre fotos en el 44 % de las
+   * filas y en el resto no, y correr una fila cambia QUE NUMERO de modulo se
+   * reporta— pero alcanza de sobra para avisar sobre el hallazgo que salio de
+   * esa foto.
+   */
+  corrimientosDeFila: Map<string, number>;
+  /**
    * El dato de cada foto que se pudo leer, por nombre de archivo.
    *
    * Hace falta despues: un hallazgo es un MODULO, pero se midio en una foto
@@ -109,6 +121,16 @@ export interface ResultadoDeVuelo {
  * siendo distinguible del ruido. Con dos grados ya no.
  */
 export const REPETIBLE_C = 1;
+
+/**
+ * A partir de cuanto corrimiento a lo largo hay que avisar, en modulos.
+ *
+ * Un cuarto de modulo son 29 cm sobre un panel de 1,15 m: con eso el recuadro
+ * todavia cae mayormente sobre el modulo que dice, pero ya muerde al vecino, y
+ * una mancha que este cerca del borde se puede atribuir mal. Sobre el vuelo
+ * entero de Wellington, la mitad de las filas medidas pasan ese cuarto.
+ */
+export const FILA_CORRIDA_MODULOS = 0.25;
 
 export interface OpcionesDeVuelo {
   moduloAnchoM: number;
@@ -814,6 +836,33 @@ export async function analizarFotos(
       siguiente. Eso no se arregla volando de nuevo — se arregla en los datos
       del parque, una vez, y despues todos los vuelos de la zona salen bien.
     */
+    /*
+      Cuantas filas estan corridas A LO LARGO, y cuanto.
+
+      Esto no se corrige: se dice. La medicion repite entre fotos en poco menos
+      de la mitad de las filas y en el resto no, y correr una fila a lo largo
+      cambia QUE NUMERO DE MODULO se reporta — un error que no se ve en la foto
+      y que manda a una persona a destornillar el panel de al lado. Mientras no
+      repita en todas, lo honesto es avisar sobre el hallazgo y dejar que la
+      persona mire.
+    */
+    const corridas = acc.unionesMedidas();
+    if (corridas.length >= 10) {
+      const malas = corridas.filter((u) => Math.abs(u.modulos) >= FILA_CORRIDA_MODULOS).length;
+      if (malas) {
+        const filas = new Set(corridas.filter((u) => Math.abs(u.modulos) >= FILA_CORRIDA_MODULOS).map((u) => u.rowId));
+        fallos.push(
+          `En ${malas} de ${corridas.length} mediciones, el hueco entre los dos strings de una fila ` +
+          `no cae donde lo pone el parque: se corre mas de ${FILA_CORRIDA_MODULOS} de modulo a lo ` +
+          `largo. Son ${filas.size} filas distintas. Ese hueco son 555 mm sin panel y esta ` +
+          "exactamente entre el modulo 28 de un string y el 1 del otro, asi que si esta corrido, la " +
+          "numeracion de esa fila tambien lo esta: el recuadro queda a caballo de dos paneles y el " +
+          "modulo que se reporta puede ser el de al lado. Los hallazgos de esas filas salen con el " +
+          "aviso puesto. Se arregla en las coordenadas del parque, no volando de nuevo.",
+        );
+      }
+    }
+
     const donde = acc.modulosFueraDelPanel();
     if (donde.length && donde[0]!.casos >= 5 && donde[0]!.casos >= fuera * 0.4) {
       const p = donde[0]!;
@@ -912,6 +961,7 @@ export async function analizarFotos(
     posesSupuestas: acc ? acc.posesSupuestas() : [],
     anguloMedio: nAngulo ? sumaAngulo / nAngulo : null,
     problemas,
+    corrimientosDeFila: acc ? acc.corrimientosDeFila() : new Map(),
     fixes,
   };
 }
@@ -995,6 +1045,36 @@ const PRECISION_DE_LA_GEOMETRIA = 0.01;
  * De paso quedan los candidatos, que son los modulos vecinos: es lo que la
  * pantalla ofrece para corregir el modulo mirando la foto.
  */
+/**
+ * Le agrega al hallazgo el aviso de que su fila esta corrida a lo largo.
+ *
+ * Va en el hallazgo y no solo en el resumen del vuelo porque es lo unico que
+ * la persona tiene delante cuando decide si el modulo malo es el 25 o el 26.
+ * Y va con el numero medido, no con una advertencia generica: "medio modulo"
+ * dice que mires el panel de al lado, "un cuarto" dice que probablemente este
+ * bien.
+ */
+function avisarSiLaFilaEstaCorrida(
+  warnings: Warning[],
+  corrimiento: number | undefined,
+  rowId: string,
+): Warning[] {
+  if (corrimiento == null || Math.abs(corrimiento) < FILA_CORRIDA_MODULOS) return warnings;
+  return [
+    ...warnings,
+    {
+      code: "row-shifted-along",
+      rowId,
+      message:
+        `Esta fila esta corrida ${Math.abs(corrimiento).toFixed(2)} de modulo a lo largo respecto ` +
+        "de donde la pone el parque — medido en esta misma foto con el hueco entre los dos strings, " +
+        "que son 555 mm sin panel entre el modulo 28 de uno y el 1 del otro. El recuadro queda a " +
+        "caballo de dos paneles: mira la foto antes de anotar el numero, puede ser el de al lado. " +
+        "Se arregla en las coordenadas de la fila, no volando de nuevo.",
+    },
+  ];
+}
+
 export function hallazgosAFindings(
   hallazgos: Hallazgo[],
   farm: CompiledFarm,
@@ -1008,6 +1088,8 @@ export function hallazgosAFindings(
    * suyo se despega de sus hermanos, asi que ninguno esta en la lista corta.
    */
   stringsEnteros?: { eventos: EventoDeString[]; todos: Hallazgo[] },
+  /** Cuanto esta corrida cada fila a lo largo, por "archivo|fila". */
+  corrimientosDeFila?: Map<string, number>,
 ): Finding[] {
   const deModulo = hallazgos.map((h) => {
     const centro = toGeo(frame, h.modulo.x, h.modulo.y);
@@ -1019,7 +1101,9 @@ export function hallazgosAFindings(
       ...(fix ? { fix } : {}),
       address: res.best,
       candidates: res.candidates.slice(0, 8),
-      warnings: res.warnings,
+      warnings: avisarSiLaFilaEstaCorrida(
+        res.warnings, corrimientosDeFila?.get(`${h.fileName}|${h.modulo.rowId}`), h.modulo.rowId,
+      ),
       medicion: medicionDe(h),
       /*
         La anomalia viene PRECARGADA con lo que dice la forma de la mancha.

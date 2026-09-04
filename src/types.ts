@@ -398,7 +398,14 @@ export type WarningCode =
    * ese eje: sus dos puntas estan a la misma latitud (o longitud) y elegir
    * "la punta norte" seria decidirlo con el ruido del relevamiento.
    */
-  | "origin-ambiguous";
+  | "origin-ambiguous"
+  /**
+   * La fila esta corrida A LO LARGO respecto de donde la pone el parque, medido
+   * sobre la propia foto con el hueco entre strings. Con medio modulo de
+   * corrimiento el recuadro queda a caballo de dos paneles y el numero que se
+   * reporta puede ser el de al lado.
+   */
+  | "row-shifted-along";
 
 export interface Warning {
   code: WarningCode;

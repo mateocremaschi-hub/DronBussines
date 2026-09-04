@@ -122,7 +122,7 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
         // desconectado existe porque ninguno de sus modulos se despega.
         eventos: eventosDeString(hallazgos, largoDelString),
         todos: hallazgos,
-      }),
+      }, resultado.corrimientosDeFila),
       cobertura: coberturaDe({
         resultado,
         hallazgos,

@@ -862,3 +862,42 @@ export function pasoDeFilasEnLaImagen(
  * con esto se decide la escala del vuelo entero.
  */
 const CONTRASTE_DE_FILAS_MINIMO = 0.35;
+
+/**
+ * Donde esta el centro de un hueco, medido con sub-pixel.
+ *
+ * El hueco entre los dos strings de una fila son 555 mm sin panel y se ve
+ * durisimo en la termica: sobre las fotos reales su textura da 3,3 a 5,3
+ * contra 0,5 del panel. Y tiene NOMBRE: esta exactamente entre el modulo 28 de
+ * un string y el 1 del siguiente. Por eso sirve de ancla a lo largo de la
+ * fila, que es el eje que no tenia ninguna.
+ *
+ * Se mide con el centro de masa de lo que sobresale del panel, no con el
+ * maximo. El maximo salta de a un pixel entero —que en un modulo de 25 px son
+ * cuatro centesimas de modulo— y ademas se lo lleva cualquier mancha caliente.
+ * El centro de masa usa todo el ancho del hueco y da decimas de pixel.
+ */
+export function centroDelHueco(
+  perfil: Float64Array,
+  centroEsperado: number,
+  ventanaPx: number,
+): { centro: number; realce: number } | null {
+  const n = perfil.length;
+  const desde = Math.max(0, Math.round(centroEsperado - ventanaPx));
+  const hasta = Math.min(n - 1, Math.round(centroEsperado + ventanaPx));
+  if (hasta - desde < 4) return null;
+
+  // El nivel del panel: la mediana de toda la fila, que es panel casi entera.
+  const orden = Array.from(perfil).sort((a, b) => a - b);
+  const base = orden[orden.length >> 1]!;
+
+  let peso = 0, momento = 0, pico = -Infinity;
+  for (let i = desde; i <= hasta; i++) {
+    const w = Math.max(0, perfil[i]! - base);
+    peso += w;
+    momento += w * i;
+    if (perfil[i]! > pico) pico = perfil[i]!;
+  }
+  if (peso <= 0) return null;
+  return { centro: momento / peso, realce: pico - base };
+}

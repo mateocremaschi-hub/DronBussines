@@ -28,6 +28,7 @@ import {
   engancharFoto,
   escalaDeLaImagen,
   girar,
+  centroDelHueco,
   pasoDeFilasEnLaImagen,
   pasoEnLaImagen,
   sondearCaja,
@@ -273,6 +274,9 @@ const PARTE_DE_UN_MODULO_NORMAL = 0.75;
  */
 const MODULOS_PARA_JUZGAR_LA_PUNTA = 10;
 
+/** Cuantos modulos de una fila tienen que entrar para medirle la union. */
+const MODULOS_PARA_ANCLAR_LA_FILA = 12;
+
 export class Acumulador {
   private mejor = new Map<string, Muestra>();
   /** Fotos que llegaron sin rumbo o sin angulo de gimbal, por motivo. */
@@ -308,6 +312,8 @@ export class Acumulador {
    * arregla una vez en los datos en vez de una vez por vuelo.
    */
   private fueraDelPanel: Array<{ rowId: string; module: number; clave: string }> = [];
+  /** Lo que dice el hueco entre strings sobre donde esta la fila a lo largo. */
+  private uniones: Array<{ fileName: string; rowId: string; modulos: number; realce: number }> = [];
   /** Fotos que no se pudieron enganchar a los paneles, y no se midieron. */
   private fotosSinEnganche: Array<{ fileName: string; fraccionLisa: number }> = [];
   /**
@@ -522,6 +528,8 @@ export class Acumulador {
       const e = extremos.get(`${m.rowId}|${m.stringNumber}`);
       return !!e && (m.module === e.min || m.module === e.max);
     };
+
+    this.medirLasUniones(candidatos, foto, sd, dx, dy);
 
     /*
       Cuanto tiene que caer sobre panel la caja de una PUNTA de string.
@@ -838,6 +846,87 @@ export class Acumulador {
    * modulos en unas cuantas filas.
    */
   /**
+   * Donde dice el hueco entre strings que esta la fila, a lo largo.
+   *
+   * Se MIDE y todavia no se aplica: correr una fila a lo largo cambia que
+   * numero de modulo se reporta, y eso no se toca hasta poder demostrar que la
+   * medicion repite entre fotos.
+   */
+  private medirLasUniones(
+    candidatos: Array<{ m: ModuleRef; caja: CajaDeMedicion }>,
+    foto: FotoTermica,
+    sd: Float32Array,
+    dx: number,
+    dy: number,
+  ): void {
+    const porFila = new Map<string, Array<{ m: ModuleRef; caja: CajaDeMedicion }>>();
+    for (const c of candidatos) push2(porFila, c.m.rowId, c);
+
+    for (const [rowId, lista] of porFila) {
+      if (lista.length < MODULOS_PARA_ANCLAR_LA_FILA) continue;
+      lista.sort((a, b) => a.m.positionInRow - b.m.positionInRow);
+      const rot = lista[0]!.caja.rotRad;
+      const cos = Math.cos(rot), sin = Math.sin(rot);
+
+      const saltos: number[] = [];
+      for (let i = 1; i < lista.length; i++) {
+        if (lista[i]!.m.positionInRow - lista[i - 1]!.m.positionInRow !== 1) continue;
+        saltos.push(Math.hypot(
+          lista[i]!.caja.cx - lista[i - 1]!.caja.cx,
+          lista[i]!.caja.cy - lista[i - 1]!.caja.cy,
+        ));
+      }
+      if (saltos.length < 6) continue;
+      saltos.sort((a, b) => a - b);
+      const paso = saltos[saltos.length >> 1]!;
+      if (!(paso > 6)) continue;
+
+      // La union entre dos strings: donde cambia el chunk.
+      let union: number | null = null;
+      for (let i = 1; i < lista.length; i++) {
+        const previo = lista[i - 1]!, actual = lista[i]!;
+        if (actual.m.positionInRow - previo.m.positionInRow !== 1) continue;
+        if (actual.m.chunkIndex === previo.m.chunkIndex) continue;
+        union = ((previo.caja.cx + actual.caja.cx) / 2 + dx - foto.radio.width / 2) * cos
+          + ((previo.caja.cy + actual.caja.cy) / 2 + dy - foto.radio.height / 2) * sin;
+      }
+      if (union == null) continue;
+
+      // Perfil de lisura a lo largo de la fila, centrado en el cuadro.
+      const a = lista[0]!.caja, z = lista[lista.length - 1]!.caja;
+      const u = (c: CajaDeMedicion) =>
+        (c.cx + dx - foto.radio.width / 2) * cos + (c.cy + dy - foto.radio.height / 2) * sin;
+      const desde = Math.min(u(a), u(z)) - paso, hasta = Math.max(u(a), u(z)) + paso;
+      // La union tiene que caer con margen adentro del tramo medido.
+      if (union < desde + paso * 1.5 || union > hasta - paso * 1.5) continue;
+      const n = Math.round(hasta - desde);
+      if (n < paso * 6) continue;
+      const ancho = Math.max(1, Math.round(a.cruzado * 0.35));
+      const perfil = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        const t = desde + i;
+        let suma = 0, cuenta = 0;
+        for (let k = -ancho; k <= ancho; k++) {
+          const x = Math.round(foto.radio.width / 2 + t * cos - k * sin);
+          const y = Math.round(foto.radio.height / 2 + t * sin + k * cos);
+          if (x < 0 || y < 0 || x >= foto.radio.width || y >= foto.radio.height) continue;
+          suma += sd[y * foto.radio.width + x]!;
+          cuenta++;
+        }
+        perfil[i] = cuenta ? suma / cuenta : 0;
+      }
+
+      const hueco = centroDelHueco(perfil, union - desde, paso * 0.9);
+      if (!hueco) continue;
+      this.uniones.push({
+        fileName: foto.fileName, rowId,
+        modulos: (hueco.centro - (union - desde)) / paso,
+        realce: hueco.realce,
+      });
+    }
+  }
+
+  /**
    * La escala de esta foto, contada con el paso ENTRE FILAS.
    *
    * Los dos lados de la comparacion salen del mismo lugar que las cajas: lo
@@ -975,6 +1064,24 @@ export class Acumulador {
    *
    * Ordenado de mas a menos. Lo que interesa es si se concentran.
    */
+  /** Lo que dijo el hueco entre strings de cada fila, foto por foto. */
+  unionesMedidas(): Array<{ fileName: string; rowId: string; modulos: number; realce: number }> {
+    return this.uniones;
+  }
+
+  /**
+   * Cuanto esta corrida cada fila a lo largo, en su propia foto.
+   *
+   * La clave es "archivo|fila". Se devuelve por foto y no promediado por fila:
+   * lo que se hace con esto es AVISAR sobre un hallazgo concreto, que salio de
+   * una foto concreta, y ahi lo que importa es lo que decia esa foto.
+   */
+  corrimientosDeFila(): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const u of this.uniones) out.set(`${u.fileName}|${u.rowId}`, u.modulos);
+    return out;
+  }
+
   modulosFueraDelPanel(): Array<{ module: number; casos: number }> {
     /*
       Cada modulo cuenta UNA vez, y solo si no lo salvo otra foto.

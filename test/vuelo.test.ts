@@ -369,6 +369,44 @@ describe("los umbrales reclasifican sin volver a leer las fotos", () => {
 
 // ---------------------------------------------------------------------------
 
+describe("la fila corrida a lo largo viaja con el hallazgo", () => {
+  /*
+    El aviso va en el hallazgo y no solo en el resumen del vuelo porque es lo
+    unico que la persona tiene delante cuando decide si el modulo malo es el 25
+    o el 26. Mateo encontro un diodo de bypass real cuyo recuadro caia mitad en
+    un panel y mitad en el otro: el defecto estaba, el numero era el de al lado.
+  */
+  const unHallazgo = () => comparar(vueloConUnModuloCaliente.muestras, UMBRALES)
+    .filter((h) => h.peor !== "normal");
+
+  const conCorrimiento = (modulos: number) => {
+    const hs = unHallazgo();
+    const mapa = new Map(hs.map((h) => [`${h.fileName}|${h.modulo.rowId}`, modulos]));
+    return hallazgosAFindings(hs, farm, frame, new Map([["DJI_0001_T.JPG", fixDeLaFoto]]), undefined, mapa);
+  };
+
+  it("avisa, con el numero medido, cuando la fila esta corrida", () => {
+    const f = conCorrimiento(-0.48)[0]!;
+    const aviso = f.warnings.find((w) => w.code === "row-shifted-along");
+    expect(aviso, "no aviso que la fila estaba corrida").toBeDefined();
+    expect(aviso!.message).toContain("0.48");
+    expect(aviso!.rowId).toBe(f.address?.rowId ?? aviso!.rowId);
+  });
+
+  it("no avisa por un corrimiento chico, que es el de siempre", () => {
+    const f = conCorrimiento(0.05)[0]!;
+    expect(f.warnings.map((w) => w.code)).not.toContain("row-shifted-along");
+  });
+
+  it("sin la medicion no inventa el aviso", () => {
+    const hs = unHallazgo();
+    const f = hallazgosAFindings(hs, farm, frame, new Map(), undefined, new Map())[0]!;
+    expect(f.warnings.map((w) => w.code)).not.toContain("row-shifted-along");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
 describe("el vuelo guardado y vuelto a abrir conserva las dos mitades", () => {
   const resultado: ResultadoDeVuelo = {
     muestras: vueloConUnModuloCaliente.muestras,
@@ -380,6 +418,7 @@ describe("el vuelo guardado y vuelto a abrir conserva las dos mitades", () => {
     posesSupuestas: [],
     anguloMedio: 12,
     problemas: [],
+    corrimientosDeFila: new Map(),
     fixes: new Map(),
   };
 
