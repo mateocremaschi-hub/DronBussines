@@ -242,6 +242,21 @@ export class Acumulador {
   private escalas: Array<{ fileName: string; factor: number }> = [];
   /** Fotos que no se pudieron enganchar a los paneles, y no se midieron. */
   private fotosSinEnganche: Array<{ fileName: string; fraccionLisa: number }> = [];
+  /**
+   * Fotos que no cayeron sobre NINGUN modulo del parque, y a que distancia
+   * quedo el modulo mas cercano.
+   *
+   * Es la falla que no daba ni un sintoma. Con el parque equivocado cargado
+   * —o con uno viejo, o con la geometria corrida— la huella de cada foto no
+   * toca ninguna fila, no hay ninguna caja que medir, y el vuelo termina con
+   * cero modulos y cero hallazgos. Eso en el campo se lee como "esta todo
+   * sano", que es la conclusion mas cara posible.
+   *
+   * Perdi una hora con esto sobre las fotos de Edenvale: el parque que tenia
+   * cargado era de tres semanas antes y las fotos caian noventa metros al
+   * este de la fila mas cercana. La app no dijo absolutamente nada.
+   */
+  private fotosFueraDelParque: Array<{ fileName: string; metros: number }> = [];
   /** Cuanto vinieteo hubo que sacarle a cada foto, en grados en la esquina. */
   private vinietas: Array<{ fileName: string; maximoC: number }> = [];
   /**
@@ -301,7 +316,13 @@ export class Acumulador {
      */
     const candidatos = this.candidatosDe(cerca, huella, foto, camera, escalaX, escalaY, acortamiento);
 
-    if (!candidatos.length) return 0;
+    if (!candidatos.length) {
+      this.fotosFueraDelParque.push({
+        fileName: foto.fileName,
+        metros: this.distanciaAlParque(huella.centre),
+      });
+      return 0;
+    }
 
     /*
       La escala, contada en la propia imagen. Se MIDE y se avisa; no se aplica.
@@ -760,6 +781,29 @@ export class Acumulador {
    */
   fotosQueNoEngancharon(): Array<{ fileName: string; fraccionLisa: number }> {
     return this.fotosSinEnganche;
+  }
+
+  /**
+   * Las fotos que cayeron afuera del parque entero.
+   *
+   * Distinto de las que no engancharon: aquellas caen sobre el parque y no se
+   * las puede alinear; estas no tocan ni una fila. Casi siempre es el parque
+   * equivocado, o uno viejo — no es un problema del vuelo.
+   */
+  fotosSinParque(): Array<{ fileName: string; metros: number }> {
+    return this.fotosFueraDelParque;
+  }
+
+  /** A que distancia quedo la fila mas cercana del centro de la huella. */
+  private distanciaAlParque(centro: { x: number; y: number }): number {
+    let mejor = Infinity;
+    for (const row of this.farm.rows) {
+      const dx = Math.max(row.bbox.minX - centro.x, 0, centro.x - row.bbox.maxX);
+      const dy = Math.max(row.bbox.minY - centro.y, 0, centro.y - row.bbox.maxY);
+      const d = Math.hypot(dx, dy);
+      if (d < mejor) mejor = d;
+    }
+    return mejor;
   }
 
   /**

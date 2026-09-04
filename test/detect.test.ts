@@ -303,6 +303,33 @@ describe("el borde del cuadro", () => {
     expect(hallazgos).toEqual([]);
   });
 
+  /*
+    La falla que no daba ni un sintoma.
+
+    Con el parque equivocado cargado —o con uno viejo, guardado antes de
+    corregirle las coordenadas— la huella de la foto no toca ninguna fila. No
+    hay ni una caja que medir, el vuelo termina con cero modulos y cero
+    hallazgos, y eso en el campo se lee como "esta todo sano".
+
+    Pasó de verdad, y con las fotos buenas: el parque que estaba cargado era de
+    tres semanas antes y las fotos de Edenvale caian noventa metros al este de
+    la fila mas cercana. La app no dijo absolutamente nada.
+  */
+  it("una foto que cae afuera del parque se cuenta y se dice, con la distancia", () => {
+    // Un kilometro al norte del parque: ni la huella mas grande llega.
+    const acc = volar(centro.lat + 0.009, centro.lon, 60);
+    expect(acc.muestras().length).toBe(0);
+    const fuera = acc.fotosSinParque();
+    expect(fuera.length, "la foto de afuera no se registro").toBe(1);
+    expect(fuera[0]!.fileName).toBe("T.JPG");
+    // La distancia es lo que separa "el GPS anduvo mal" de "es otro parque".
+    expect(fuera[0]!.metros).toBeGreaterThan(500);
+  });
+
+  it("una foto que cae sobre el parque no se cuenta como afuera", () => {
+    expect(volar(centro.lat, centro.lon, 60).fotosSinParque()).toEqual([]);
+  });
+
   it("los que quedan cortados los cuenta aparte en vez de medirlos", () => {
     // Volando bajo, la fila no entra entera y algun modulo cae partido por el
     // borde. A que altura pasa exactamente depende de la geometria del parque,

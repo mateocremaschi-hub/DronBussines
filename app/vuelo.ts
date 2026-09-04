@@ -327,6 +327,44 @@ export async function analizarFotos(
     el GPS del vuelo estuvo malo y conviene saberlo antes de la proxima salida.
   */
   if (acc) {
+    /*
+      El parque no es el de estas fotos.
+
+      Va antes que todo lo demas porque invalida todo lo demas. Si la huella de
+      una foto no toca ninguna fila del parque no hay ni una caja que medir, y
+      el vuelo termina con cero modulos y cero hallazgos — que en el campo se
+      lee como "esta todo sano". Es la conclusion mas cara que puede sacar este
+      programa y hasta ahora la sacaba en silencio.
+
+      Pasa con el parque equivocado elegido, con uno viejo guardado antes de
+      corregirle las coordenadas, o con un vuelo sobre una zona que todavia no
+      esta cargada. Se dice con la distancia adentro: noventa metros es otro
+      parque, dos metros es la geometria corrida.
+    */
+    const sinParque = acc.fotosSinParque();
+    if (sinParque.length) {
+      const lejos = Math.min(...sinParque.map((f) => f.metros));
+      const todas = sinParque.length === termicas;
+      fallos.push(
+        (todas
+          ? "NINGUNA de las fotos cayo sobre el parque. "
+          : `${sinParque.length} de ${termicas} fotos cayeron afuera del parque. `) +
+        `La fila mas cercana quedo a ${lejos.toFixed(0)} m de la foto mas cercana` +
+        (sinParque.length > 1 ? ` (${sinParque[0]!.fileName}…)` : ` (${sinParque[0]!.fileName})`) +
+        ". Esas fotos no se midieron: no hay ningun modulo adentro de su huella, asi que " +
+        (todas
+          ? "este vuelo no tiene NADA medido y la lista vacia de abajo NO quiere decir que este " +
+            "todo sano. "
+          : "los modulos que salian ahi quedaron sin revisar. ") +
+        (lejos > 30
+          ? "A esa distancia no es el GPS: es otro parque, o el parque guardado es viejo. Fijate " +
+            "que el parque elegido sea el de este vuelo y que sea la version con las coordenadas " +
+            "corregidas."
+          : "A esa distancia puede ser la geometria del parque corrida en esa zona: revisa las " +
+            "coordenadas de esas filas contra el plano."),
+      );
+    }
+
     const corrimientos = acc.corrimientos();
     if (corrimientos.length) {
       const tipico = [...corrimientos].sort((a, b) => a.metros - b.metros)[
