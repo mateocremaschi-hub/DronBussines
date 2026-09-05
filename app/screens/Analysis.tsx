@@ -64,7 +64,7 @@ interface Props {
 export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props) {
   const [archivos, setArchivos] = useState<File[]>([]);
   const [resultado, setResultado] = useState<ResultadoDeVuelo | null>(null);
-  const [progreso, setProgreso] = useState<{ hecho: number; total: number } | null>(null);
+  const [progreso, setProgreso] = useState<{ hecho: number; total: number; etapa?: string } | null>(null);
   const [ajuste, setAjuste] = useState<Ajuste>({ dxM: 0, dyM: 0 });
   const [elegido, setElegido] = useState<Hallazgo | null>(null);
 
@@ -161,7 +161,7 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
         ajuste: conAjuste,
         largoDeclarado: stored.profile.module.lengthMm != null,
       },
-      (hecho, total) => setProgreso({ hecho, total }),
+      (hecho, total, etapa) => setProgreso({ hecho, total, ...(etapa ? { etapa } : {}) }),
     );
     setResultado(r);
     setProgreso(null);
@@ -200,7 +200,9 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
           <span className="muted">{archivos.length ? `${archivos.length} archivos` : "JPEG del dron"}</span>
         </label>
         {progreso && (
-          <p className="note ok">Leyendo {progreso.hecho} de {progreso.total}…</p>
+          <p className="note ok">
+            {progreso.etapa ? `${progreso.etapa}: foto ${progreso.hecho} de ${progreso.total}…` : `Leyendo ${progreso.hecho} de ${progreso.total}…`}
+          </p>
         )}
         {resultado && resultado.problemas.length > 0 && (
           <div className="warnbox">

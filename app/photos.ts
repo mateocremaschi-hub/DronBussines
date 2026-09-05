@@ -135,7 +135,7 @@ export async function leerArchivo(file: File, intentos = 4): Promise<ArrayBuffer
         : await conFileReader(file);
     } catch (e) {
       ultimo = e;
-      await new Promise((r) => setTimeout(r, 150 * (i + 1)));
+      await new Promise((r) => setTimeout(r, 100 * (i + 1)));
     }
   }
   throw ultimo instanceof Error ? ultimo : new Error(String(ultimo));

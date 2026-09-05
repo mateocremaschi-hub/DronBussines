@@ -247,6 +247,7 @@ async function medirElVuelo(
   frame: LocalFrame,
   files: File[],
   opts: OpcionesDeVuelo,
+  onProgreso?: (hecho: number, total: number, etapa?: string) => void,
 ): Promise<MedidasDelVuelo> {
   const paso = Math.max(1, Math.floor(files.length / FOTOS_PARA_LA_ESCALA));
   let cam: Camera | null = null;
@@ -287,6 +288,12 @@ async function medirElVuelo(
   for (let i = 0; i < files.length; i++) {
     if (i < proximo) continue;
     const file = files[i]!;
+    /*
+      Esta pasada previa no medía progreso y la pantalla decía "Leyendo 0 de
+      567" durante uno o dos minutos: parecia colgada. Se informa con su
+      propia etapa.
+    */
+    onProgreso?.(i, files.length, "Midiendo la escala y el giro del vuelo");
     try {
       const buf = await leerArchivo(file);
       const radio = readRadiometric(buf, escala ?? undefined);
@@ -473,7 +480,7 @@ export async function analizarFotos(
   frame: LocalFrame,
   archivosComoVinieron: File[],
   opts: OpcionesDeVuelo,
-  onProgreso?: (hecho: number, total: number) => void,
+  onProgreso?: (hecho: number, total: number, etapa?: string) => void,
 ): Promise<ResultadoDeVuelo> {
   const files = enOrdenDeVuelo(archivosComoVinieron);
   let acc: Acumulador | null = null;
@@ -548,7 +555,7 @@ export async function analizarFotos(
     Se cuenta sobre un puñado de fotos repartidas por el vuelo y se decide una
     sola escala para todas: la causa es del equipo o del vuelo, no de la foto.
   */
-  const medidas = await medirElVuelo(farm, frame, files, opts);
+  const medidas = await medirElVuelo(farm, frame, files, opts, onProgreso);
   const escalaMedida = medidas.escala;
   const giroDeLaCamara = medidas.giro;
 
