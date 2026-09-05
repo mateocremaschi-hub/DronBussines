@@ -532,6 +532,8 @@ export async function analizarFotos(
    * veces mas de lo necesario y tarda cuatro veces mas en subirse.
    */
   let superRes = 0;
+  /** Fotos con la camara inclinada mas de 10 grados respecto de la vertical. */
+  let inclinadas = 0;
   /** Fotos posicionadas con RTK fijo: cambia que significa un corrimiento. */
   let conRtk = 0;
 
@@ -593,6 +595,7 @@ export async function analizarFotos(
       if (!fix) { fallos.push(`${file.name}: ${leida.error ?? "sin coordenada"}`); continue; }
       fixes.set(file.name, fix);
       if (fix.rtkFijo) conRtk++;
+      if (fix.gimbalPitchDeg != null && Math.abs(90 - Math.abs(fix.gimbalPitchDeg)) > 10) inclinadas++;
 
       /*
         La camara se deduce de la PRIMERA foto y despues no se vuelve a
@@ -1051,6 +1054,15 @@ export async function analizarFotos(
     );
   }
 
+  if (inclinadas) {
+    fallos.push(
+      `${inclinadas} de ${termicas} fotos se sacaron con la camara inclinada. La app las ubica ` +
+      "corriendo el centro de la huella, pero todavia las mide como si fueran a plomo: la huella " +
+      "inclinada es un trapecio y en el borde lejano los modulos se ven mas chicos y mas lejos. " +
+      "La tabla de la compuerta de panel dice si alcanzo; si un bloque baja del 90 %, este vuelo " +
+      "sirve para calibrar la medicion inclinada, no para entregar.",
+    );
+  }
   if (superRes) {
     fallos.push(
       `${superRes} de ${termicas} fotos vienen con "Super Resolution" prendida en la camara. ` +

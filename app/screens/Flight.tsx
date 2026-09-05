@@ -34,7 +34,7 @@ import {
   type MissionOptions,
 } from "../mission";
 import { avisosDeKmz, PERFILES_DJI, toKmz } from "../wpml";
-import { huella, pasoEntreFilas, velocidades } from "../mission";
+import { DESVIO_DEL_PANEL_OBJETIVO_DEG, huella, pasoEntreFilas, velocidades, vistaParaLaHora } from "../mission";
 import { PIXELES_POR_CELDA_MINIMO, PIXELES_POR_LADO_OBJETIVO, CELDA_M } from "../detect";
 import { LoQueVeElDron } from "../components/LoQueVeElDron";
 import { ZonaQueSeMide } from "../components/ZonaQueSeMide";
@@ -156,32 +156,6 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     ? Math.max(1, Math.floor(techo.maximaMps * 2) / 2)
     : o.speedMps;
 
-  const opts: MissionOptions = { camera: camara, ...o, altitudeM: altura, speedMps: velocidadElegida, sideOverlap: solapeElegido };
-
-  /*
-    Lo que hace falta para DIBUJAR, que no es lo mismo que para volar.
-
-    Sale de la camara y la altura nomas. Estaba tomado de las estadisticas del
-    plan y eso ataba la figura a tener bloques marcados: uno movia la altura
-    para ver que pasa, y no pasaba nada porque todavia no habia elegido que
-    volar. La pregunta "¿voy a ver la celda?" no depende de que bloque vueles.
-  */
-  const anchoDeHuella = huella(altura, camara.hfovDeg);
-  const separacionDeHuella = Math.max(0.5, anchoDeHuella * (1 - o.sideOverlap));
-  const gsdCmDeHuella = (anchoDeHuella * 100) / camara.imageW;
-
-  const farm = useMemo<CompiledFarm | null>(() => {
-    try { return compileFarm(stored.profile, stored.rows); } catch { return null; }
-  }, [stored]);
-
-  /** El paso real entre filas del parque, para dibujar las pasadas a escala. */
-  const pasoDeFila = useMemo(() => (farm ? pasoEntreFilas(farm.rows) : null), [farm]);
-
-  const plan = useMemo(
-    () => planByBlock(stored.rows, stored.profile, opts, baterias),
-    [stored.rows, stored.profile, opts.camera, o, baterias],
-  );
-
   /**
    * La hora del vuelo, y el angulo en el que van a estar los trackers.
    *
@@ -225,14 +199,57 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     (h) => Math.abs(h.anguloDeg) <= 25 && h.alturaSolarDeg >= 30,
   );
 
+  /*
+    La hora a la que se va a volar, y como va la camara a esa hora.
+
+    Antes la app solo decia cual era la ventana buena. Mateo quiere volar a
+    las 9:30 si la irradiancia ya paso los 600 W/m², sin esperar a que los
+    paneles esten planos — y eso se puede, inclinando la camara para mirar el
+    panel de frente. La hora elegida decide el angulo del tracker, y el
+    angulo decide el gimbal, el rumbo y cuanto se corre el dron. Va al KMZ.
+  */
+  const [horaDeVuelo, setHoraDeVuelo] = useState<string | null>(null);
+  const horaElegida = ventana.find((h) => h.hora === horaDeVuelo) ?? mejorHora;
+  const [inclinarLaCamara, setInclinarLaCamara] = useState(true);
+  const vista = inclinarLaCamara && horaElegida ? vistaParaLaHora(horaElegida.anguloDeg) : null;
+
+  const opts: MissionOptions = {
+    camera: camara, ...o, altitudeM: altura, speedMps: velocidadElegida, sideOverlap: solapeElegido,
+    ...(vista ? { vista } : {}),
+  };
+
+  /*
+    Lo que hace falta para DIBUJAR, que no es lo mismo que para volar.
+
+    Sale de la camara y la altura nomas. Estaba tomado de las estadisticas del
+    plan y eso ataba la figura a tener bloques marcados: uno movia la altura
+    para ver que pasa, y no pasaba nada porque todavia no habia elegido que
+    volar. La pregunta "¿voy a ver la celda?" no depende de que bloque vueles.
+  */
+  const anchoDeHuella = huella(altura, camara.hfovDeg);
+  const separacionDeHuella = Math.max(0.5, anchoDeHuella * (1 - o.sideOverlap));
+  const gsdCmDeHuella = (anchoDeHuella * 100) / camara.imageW;
+
+  const farm = useMemo<CompiledFarm | null>(() => {
+    try { return compileFarm(stored.profile, stored.rows); } catch { return null; }
+  }, [stored]);
+
+  /** El paso real entre filas del parque, para dibujar las pasadas a escala. */
+  const pasoDeFila = useMemo(() => (farm ? pasoEntreFilas(farm.rows) : null), [farm]);
+
+  const plan = useMemo(
+    () => planByBlock(stored.rows, stored.profile, opts, baterias),
+    [stored.rows, stored.profile, opts.camera, o, baterias, vista],
+  );
+
   const agrupado = useMemo(
     () => planByGroup(stored.rows, stored.profile, opts, baterias),
-    [stored.rows, stored.profile, opts.camera, o, baterias],
+    [stored.rows, stored.profile, opts.camera, o, baterias, vista],
   );
 
   const entero = useMemo(
     () => planMission(stored.rows, stored.profile, opts),
-    [stored.rows, stored.profile, opts.camera, o],
+    [stored.rows, stored.profile, opts.camera, o, vista],
   );
 
   // Como quedaria organizado el parque entero, para las cuentas de arriba.
@@ -307,7 +324,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   );
   const mission = useMemo(
     () => (filas.length ? planMission(filas, stored.profile, opts) : null),
-    [filas, stored.profile, opts.camera, o],
+    [filas, stored.profile, opts.camera, o, vista],
   );
 
   const etiqueta = todosMarcados
@@ -549,8 +566,75 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
               <p className="help">
                 Fuera de esa ventana los trackers están demasiado inclinados —un módulo a{" "}
                 {TOPE_TRACKER_DEG}° se ve un 43 % más angosto y la celda se achica igual— o el sol
-                está tan bajo que no se llega a los 600 W/m² que pide la norma.
+                está tan bajo que no se llega a los 600 W/m² que pide la norma. Pero se puede volar
+                igual: eligiendo la hora, la app inclina la cámara para mirar el panel de frente.
               </p>
+
+              {/*
+                La hora, y lo que la camara hace a esa hora.
+
+                Con el tracker a mas de 20 grados la camara a plomo lo mira de
+                costado y el vidrio refleja el cielo y el suelo: es lo que dio
+                el borde caliente del panel a las 14:20 del bloque 2. Inclinada
+                a θ − 20°, desde el lado del sol y mirando al lado contrario,
+                lo mira casi de frente y el reflejo del sol se va para otro
+                lado. No perpendicular: perpendicular al panel es a lo largo del
+                rayo del sol, y el sol vuelve a la camara.
+              */}
+              <div className="row">
+                <label className="inline">
+                  Hora del vuelo
+                  <select
+                    value={horaElegida?.hora ?? ""}
+                    onChange={(e) => setHoraDeVuelo(e.target.value)}
+                  >
+                    {ventana
+                      .filter((h) => h.alturaSolarDeg > 0)
+                      .map((h) => (
+                        <option key={h.hora} value={h.hora}>
+                          {h.hora} · trackers a {Math.abs(h.anguloDeg).toFixed(0)}° · sol a {h.alturaSolarDeg.toFixed(0)}°
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={inclinarLaCamara}
+                    onChange={(e) => setInclinarLaCamara(e.target.checked)}
+                  />
+                  <span>Inclinar la cámara según el ángulo del tracker</span>
+                </label>
+              </div>
+              {horaElegida && (
+                horaElegida.alturaSolarDeg < 30 ? (
+                  <p className="note bad">
+                    A las {horaElegida.hora} el sol está a {horaElegida.alturaSolarDeg.toFixed(0)}° de altura:
+                    difícilmente haya 600 W/m². Con menos irradiancia los defectos calientan menos y el
+                    ΔT no vale para un reclamo. La cámara se puede inclinar igual, pero el problema es el sol.
+                  </p>
+                ) : vista ? (
+                  <p className="note">
+                    A las {horaElegida.hora} los trackers van a estar a{" "}
+                    <strong>{Math.abs(horaElegida.anguloDeg).toFixed(0)}°</strong>, mirando al{" "}
+                    {horaElegida.anguloDeg > 0 ? "este" : "oeste"}. La cámara va inclinada{" "}
+                    <strong>{vista.desvioDeg.toFixed(0)}°</strong> (gimbal a −{(90 - vista.desvioDeg).toFixed(0)}°),
+                    mirando al <strong>{vista.hacia > 0 ? "este" : "oeste"}</strong>, para quedar a{" "}
+                    {DESVIO_DEL_PANEL_OBJETIVO_DEG}° del perpendicular del panel: de frente, pero sin que el
+                    reflejo del sol vuelva a la cámara. El dron vuela{" "}
+                    <strong>{(altura * Math.tan((vista.desvioDeg * Math.PI) / 180)).toFixed(0)} m</strong> al costado
+                    de la fila que fotografía, del lado del sol, con la nariz cruzada a las filas (va de
+                    costado). Todo eso ya está en el KMZ. Ojo: la app todavía mide las fotos inclinadas
+                    como si fueran a plomo — con las fotos del primer vuelo así se calibra.
+                  </p>
+                ) : (
+                  <p className="note ok">
+                    A las {horaElegida.hora} los trackers van a estar a{" "}
+                    {Math.abs(horaElegida.anguloDeg).toFixed(0)}°: con la cámara a plomo ya se mira el
+                    panel a menos de {DESVIO_DEL_PANEL_OBJETIVO_DEG}° del perpendicular. No hace falta inclinar nada.
+                  </p>
+                )
+              )}
             </>
           )}
 

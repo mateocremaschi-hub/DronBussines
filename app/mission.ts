@@ -288,8 +288,72 @@ export function velocidades(
 // Plan
 // ---------------------------------------------------------------------------
 
+/**
+ * La camara inclinada para mirar el panel de frente cuando el tracker no
+ * esta plano.
+ *
+ * Fuera de la ventana del mediodia los trackers estan a 30 o 40 grados y la
+ * camara a plomo los mira de costado: el vidrio del modulo es un espejo en
+ * infrarrojo, y de costado refleja el cielo y el suelo. Es lo que dio el
+ * borde caliente del panel y las filas vecinas a +4 °C en el vuelo de las
+ * 14:20 del bloque 2. Mateo lo pidio con razon: poder volar a las 9:30, con
+ * la irradiancia ya arriba de 600 W/m², sin esperar a que los paneles esten
+ * planos.
+ *
+ * Con un matiz que no es de estilo: la camara NO va perpendicular al panel.
+ * Un tracker apunta al sol, y perpendicular al panel es mirar a lo largo del
+ * rayo del sol — el reflejo del sol vuelve derecho a la camara, y encima se
+ * ve el reflejo del propio dron. La norma (IEC TS 62446-3) pide mirar entre 5
+ * y 30 grados fuera del perpendicular, y las plataformas comerciales hacen lo
+ * mismo. Se apunta a 20.
+ *
+ * Y eso sale solo si el dron vuela DEL LADO HACIA EL QUE MIRAN LOS PANELES
+ * (el lado del sol) y la camara mira hacia el lado contrario al sol: asi el
+ * angulo entre la camara y el perpendicular del panel es θ − φ, y el reflejo
+ * del sol se va para el otro lado. Del otro lado seria θ + φ: peor que a
+ * plomo.
+ */
+export interface VistaInclinada {
+  /** Cuanto se inclina la camara desde la vertical, en grados. 0 es a plomo. */
+  desvioDeg: number;
+  /**
+   * Hacia donde mira la camara, cruzado a las filas. +1 es hacia el este
+   * (o hacia el norte, si las filas fueran este-oeste); -1 al reves.
+   */
+  hacia: 1 | -1;
+}
+
+/** A cuantos grados del perpendicular del panel se quiere mirar. */
+export const DESVIO_DEL_PANEL_OBJETIVO_DEG = 20;
+/**
+ * Lo mas que se inclina la camara. A 52 m y 35 grados el dron vuela 36 m al
+ * costado de la fila que fotografia; mas que eso, la huella se estira tanto
+ * que el borde lejano ya no resuelve la celda.
+ */
+export const DESVIO_MAXIMO_DEG = 35;
+
+/**
+ * Como hay que inclinar la camara para un tracker a `anguloTrackerDeg`.
+ *
+ * El signo del angulo viene de `anguloDeTracker`: positivo es el panel
+ * mirando hacia el este (a la mañana), negativo hacia el oeste. La camara
+ * mira para el lado contrario, desde el lado del sol. Con el tracker a menos
+ * del objetivo no hace falta inclinar nada: a plomo ya se lo mira dentro de
+ * los 20 grados, y `null` es "dejalo a plomo".
+ */
+export function vistaParaLaHora(anguloTrackerDeg: number): VistaInclinada | null {
+  const theta = Math.abs(anguloTrackerDeg);
+  if (theta <= DESVIO_DEL_PANEL_OBJETIVO_DEG) return null;
+  return {
+    desvioDeg: Math.min(DESVIO_MAXIMO_DEG, theta - DESVIO_DEL_PANEL_OBJETIVO_DEG),
+    hacia: anguloTrackerDeg > 0 ? -1 : 1,
+  };
+}
+
 export interface MissionOptions {
   camera: Camera;
+  /** La camara inclinada, si el tracker no va a estar plano. Sin esto, a plomo. */
+  vista?: VistaInclinada;
   /** Altura sobre el terreno, en metros. */
   altitudeM: number;
   /** Solape entre fotos consecutivas de la misma linea, 0 a 1. */
@@ -505,6 +569,16 @@ export interface Mission {
   /** Los vertices en orden de vuelo, ida y vuelta. */
   waypoints: LatLon[];
   stats: MissionStats;
+  /** Como va la camara, si no va a plomo. Es lo que se escribe en el KMZ. */
+  vista?: {
+    /** Angulo del gimbal, negativo hacia abajo: -90 es a plomo. */
+    pitchDeg: number;
+    /** Rumbo fijo del dron durante todo el vuelo, en grados desde el norte. */
+    rumboDeg: number;
+    /** Cuanto vuela el dron al costado de la fila que fotografia, en metros. */
+    corrimientoM: number;
+    desvioDeg: number;
+  };
 }
 
 /**
@@ -559,6 +633,22 @@ export function planMission(
   // Eje de vuelo y su perpendicular.
   const [fx, fy] = opts.alongRows ? [ux, uy] : [-uy, ux];
   const [px, py] = [-fy, fx];
+
+  /*
+    La camara inclinada mira cruzado a las filas, asi que el dron vuela
+    corrido al costado: la huella cae sobre la fila que se apunta, y los
+    waypoints quedan h·tan(desvio) mas alla, del lado del sol. Las pasadas se
+    calculan sobre lo que la camara VE (igual que a plomo) y se corren recien
+    al escribir los puntos. Solo tiene sentido volando a lo largo de las
+    filas: cruzandolas la camara miraria a lo largo de la fila y no de frente
+    al panel.
+  */
+  const vista = opts.vista && opts.alongRows && opts.vista.desvioDeg > 0 ? opts.vista : null;
+  // El eje cruzado con el este positivo (o el norte, si las filas van este-oeste).
+  const signoEste = px > 1e-9 || (Math.abs(px) <= 1e-9 && py > 0) ? 1 : -1;
+  const mira = vista ? vista.hacia * signoEste : 0;
+  const corrimientoM = vista ? opts.altitudeM * Math.tan((vista.desvioDeg * Math.PI) / 180) : 0;
+  const desplazamiento = -mira * corrimientoM;
 
   const along = puntas.map((p) => p.x * fx + p.y * fy);
   const across = puntas.map((p) => p.x * px + p.y * py);
@@ -711,8 +801,9 @@ export function planMission(
         Math.abs(ultimaPunta - t.hasta) < Math.abs(ultimaPunta - t.desde);
       const [d0, d1] = alReves ? [t.hasta, t.desde] : [t.desde, t.hasta];
       ultimaPunta = d1;
-      const A = toGeo(frame, fx * d0 + px * t.c, fy * d0 + py * t.c);
-      const B = toGeo(frame, fx * d1 + px * t.c, fy * d1 + py * t.c);
+      const cd = t.c + desplazamiento;
+      const A = toGeo(frame, fx * d0 + px * cd, fy * d0 + py * cd);
+      const B = toGeo(frame, fx * d1 + px * cd, fy * d1 + py * cd);
       const largo = t.hasta - t.desde;
       lines.push({ a: A, b: B, largoM: largo });
       waypoints.push(A, B);
@@ -798,9 +889,42 @@ export function planMission(
     );
   }
 
+  /*
+    La camara inclinada, dicha con todas las letras: cuanto, hacia donde y
+    cuanto se corre el dron. Y lo que todavia no esta: la app mide las fotos
+    inclinadas como si fueran a plomo hasta que haya un vuelo real con que
+    validarlo.
+  */
+  let vistaDeLaMision: Mission["vista"];
+  if (opts.vista && opts.vista.desvioDeg > 0 && !opts.alongRows) {
+    avisos.push(
+      "La camara inclinada solo sirve volando a lo largo de las filas: cruzandolas miraria a lo " +
+      "largo de la fila y no de frente al panel. Se dejo a plomo.",
+    );
+  } else if (vista) {
+    const lx = mira * px, ly = mira * py;
+    const rumboDeg = ((Math.atan2(lx, ly) * 180) / Math.PI + 360) % 360;
+    vistaDeLaMision = {
+      pitchDeg: -(90 - vista.desvioDeg),
+      rumboDeg,
+      corrimientoM,
+      desvioDeg: vista.desvioDeg,
+    };
+    const lado = rumboDeg > 45 && rumboDeg < 135 ? "este" : rumboDeg > 225 && rumboDeg < 315 ? "oeste" : rumboDeg <= 45 || rumboDeg >= 315 ? "norte" : "sur";
+    avisos.push(
+      `Camara inclinada ${vista.desvioDeg.toFixed(0)}° (gimbal a ${(-(90 - vista.desvioDeg)).toFixed(0)}°), ` +
+      `mirando al ${lado} (rumbo ${rumboDeg.toFixed(0)}°), con el dron volando ${corrimientoM.toFixed(0)} m ` +
+      `al costado de la fila que fotografia, del lado del sol. El dron va de costado: se desplaza ` +
+      `a lo largo de la fila con la nariz cruzada. En la vista previa de Pilot 2 tiene que verse ` +
+      `asi antes de despegar. OJO: la app todavia mide las fotos inclinadas como si fueran a ` +
+      `plomo; con las fotos de este vuelo se calibra.`,
+    );
+  }
+
   return {
     lines,
     waypoints,
+    ...(vistaDeLaMision ? { vista: vistaDeLaMision } : {}),
     stats: {
       lineas: cantidadReal,
       separacionM: separacion,

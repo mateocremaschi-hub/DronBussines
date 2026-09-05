@@ -20,6 +20,7 @@ import {
   SOLAPES,
   toKml,
   toWaypointCsv,
+  vistaParaLaHora,
   type MissionOptions,
 } from "../app/mission";
 import { makeFrame, toLocal } from "../src/index.js";
@@ -429,5 +430,60 @@ describe("bloques que se pisan", () => {
       return t >= -0.01 && t <= 1.01 && perp <= mitad;
     }));
     expect(cubierto).toBe(true);
+  });
+});
+
+/**
+ * La camara inclinada para mirar el panel de frente cuando el tracker no
+ * esta plano. Salio del vuelo de las 14:20 del bloque 2: trackers a 40°,
+ * camara a plomo, y el vidrio del modulo reflejando el cielo y el suelo.
+ */
+describe("la camara inclinada segun el tracker", () => {
+  it("con el tracker a menos de 20 grados se queda a plomo", () => {
+    expect(vistaParaLaHora(0)).toBeNull();
+    expect(vistaParaLaHora(-15)).toBeNull();
+  });
+
+  it("se inclina lo que sobra de 20 grados, y no mas de 35", () => {
+    expect(vistaParaLaHora(40)?.desvioDeg).toBe(20);
+    expect(vistaParaLaHora(-60)?.desvioDeg).toBe(35);
+  });
+
+  /*
+    El lado no es de gusto. El tracker mira al sol; el dron va del lado del
+    sol y la camara mira al lado contrario: θ − φ del perpendicular. Del otro
+    lado seria θ + φ, peor que a plomo.
+  */
+  it("mira para el lado contrario al que miran los paneles", () => {
+    // A la mañana el panel mira al este (angulo positivo): la camara al oeste.
+    expect(vistaParaLaHora(40)?.hacia).toBe(-1);
+    expect(vistaParaLaHora(-40)?.hacia).toBe(1);
+  });
+
+  it("corre las lineas al costado, del lado del sol, y lo escribe en la mision", () => {
+    const plano = planMission(bloque(10), profile, opts({ altitudeM: 50 }))!;
+    const inclinado = planMission(bloque(10), profile, opts({ altitudeM: 50, vista: { desvioDeg: 20, hacia: 1 } }))!;
+    expect(inclinado.vista).toBeDefined();
+    expect(inclinado.vista!.pitchDeg).toBe(-70);
+    // Filas norte-sur, camara mirando al este: rumbo 90.
+    expect(Math.abs(inclinado.vista!.rumboDeg - 90)).toBeLessThan(1);
+    const esperado = 50 * Math.tan((20 * Math.PI) / 180);
+    expect(Math.abs(inclinado.vista!.corrimientoM - esperado)).toBeLessThan(0.01);
+    // Mismas pasadas, todas corridas hacia el OESTE (el dron mira al este).
+    expect(inclinado.lines.length).toBe(plano.lines.length);
+    const frame = makeFrame(-27.4, 152.7);
+    for (let i = 0; i < plano.lines.length; i++) {
+      const a = toLocal(frame, plano.lines[i]!.a.lat, plano.lines[i]!.a.lon);
+      const b = toLocal(frame, inclinado.lines[i]!.a.lat, inclinado.lines[i]!.a.lon);
+      expect(Math.abs((a.x - b.x) - esperado)).toBeLessThan(0.05);
+      expect(Math.abs(a.y - b.y)).toBeLessThan(0.05);
+    }
+    expect(inclinado.stats.avisos.some((a) => /inclinada/.test(a))).toBe(true);
+  });
+
+  it("cruzando las filas no se inclina, y lo dice", () => {
+    const m = planMission(bloque(10), profile, opts({ alongRows: false, vista: { desvioDeg: 20, hacia: 1 } }))!;
+    expect(m.vista).toBeUndefined();
+    expect(m.stats.avisos.some((a) => /a lo largo de las filas/.test(a))).toBe(true);
   });
 });

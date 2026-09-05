@@ -81,6 +81,31 @@ export interface OpcionesKmz {
   fecha: Date;
 }
 
+/**
+ * El angulo del gimbal y el rumbo del dron, en los dos archivos.
+ *
+ * A plomo: gimbal a -90 y la nariz siguiendo la linea. Con la camara
+ * inclinada, el gimbal va al angulo de la mision y la nariz queda FIJA,
+ * cruzada a las filas, durante todo el vuelo: el dron se desplaza a lo largo
+ * de la fila mirando de costado. En WPML eso es `smoothTransition` con el
+ * mismo `waypointHeadingAngle` en todos los puntos — el rumbo "fixed" de DJI
+ * no es este: fija el rumbo que el dron traiga al llegar al primer punto, que
+ * es el que tenga el piloto en ese momento.
+ */
+function gimbalPitch(m: Mission): number {
+  return m.vista?.pitchDeg ?? -90;
+}
+
+function headingParam(m: Mission): string {
+  if (!m.vista) return `<wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>`;
+  return (
+    `<wpml:waypointHeadingMode>smoothTransition</wpml:waypointHeadingMode>\n` +
+    `          <wpml:waypointHeadingAngle>${m.vista.rumboDeg.toFixed(1)}</wpml:waypointHeadingAngle>\n` +
+    `          <wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>\n` +
+    `          <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>`
+  );
+}
+
 /** El KMZ listo para copiar al controlador. */
 export function toKmz(mission: Mission, opts: MissionOptions, kmz: OpcionesKmz): Uint8Array<ArrayBuffer> {
   return zip(
@@ -187,7 +212,7 @@ function templateKml(m: Mission, opts: MissionOptions, k: OpcionesKmz): string {
         <wpml:useGlobalSpeed>1</wpml:useGlobalSpeed>
         <wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>
         <wpml:useGlobalTurnParam>1</wpml:useGlobalTurnParam>
-        <wpml:gimbalPitchAngle>-90</wpml:gimbalPitchAngle>
+        <wpml:gimbalPitchAngle>${gimbalPitch(m)}</wpml:gimbalPitchAngle>
       </Placemark>`,
     )
     .join("\n");
@@ -211,7 +236,7 @@ ${missionConfig(opts, k)}
       <wpml:globalHeight>${opts.altitudeM}</wpml:globalHeight>
       <wpml:gimbalPitchMode>usePointSetting</wpml:gimbalPitchMode>
       <wpml:globalWaypointHeadingParam>
-        <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
+        ${headingParam(m)}
       </wpml:globalWaypointHeadingParam>
       <wpml:globalWaypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:globalWaypointTurnMode>
       <wpml:globalUseStraightLine>1</wpml:globalUseStraightLine>
@@ -226,10 +251,10 @@ ${puntos}
  *
  * Dos grupos de acciones y cada uno resuelve una cosa distinta:
  *
- *   - Al empezar, girar el gimbal a −90°. Mirando derecho para abajo es la
- *     unica posicion en la que la foto se puede proyectar sobre el parque como
- *     un rectangulo; con el gimbal inclinado el modulo fotografiado no es el
- *     que esta debajo.
+ *   - Al empezar, girar el gimbal a −90° —o al angulo de la mision, si la
+ *     camara va inclinada para mirar el panel de frente—. A plomo la foto se
+ *     proyecta sobre el parque como un rectangulo; inclinada, la mision ya
+ *     corrio las lineas para que la camara apunte a la fila que le toca.
  *   - En cada pasada, disparar cada N metros por distancia recorrida. El N
  *     sale del solape frontal que ya calculo el planificador.
  */
@@ -268,7 +293,7 @@ function waylinesWpml(m: Mission, opts: MissionOptions, k: OpcionesKmz): string 
         <wpml:executeHeight>${opts.altitudeM}</wpml:executeHeight>
         <wpml:waypointSpeed>${opts.speedMps}</wpml:waypointSpeed>
         <wpml:waypointHeadingParam>
-          <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
+          ${headingParam(m)}
         </wpml:waypointHeadingParam>
         <wpml:waypointTurnParam>
           <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>
@@ -305,7 +330,7 @@ ${missionConfig(opts, k)}
             <wpml:gimbalHeadingYawBase>aircraft</wpml:gimbalHeadingYawBase>
             <wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode>
             <wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable>
-            <wpml:gimbalPitchRotateAngle>-90</wpml:gimbalPitchRotateAngle>
+            <wpml:gimbalPitchRotateAngle>${gimbalPitch(m)}</wpml:gimbalPitchRotateAngle>
             <wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>
             <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
             <wpml:gimbalYawRotateEnable>0</wpml:gimbalYawRotateEnable>

@@ -318,3 +318,31 @@ describe("el archivo se revisa a si mismo antes de salir", () => {
     expect(avisos.some((a) => a.includes("Pilot 2") && a.includes(`${opts.altitudeM} m`))).toBe(true);
   });
 });
+
+/**
+ * Con la camara inclinada el KMZ lleva el gimbal al angulo de la mision y
+ * la nariz fija cruzada a las filas: el dron va de costado.
+ */
+describe("el KMZ con la camara inclinada", () => {
+  const inclinada = planMission(filas, profile, { ...opts, vista: { desvioDeg: 20, hacia: 1 } })!;
+  const archivos = abrir(toKmz(inclinada, opts, kmzOpts));
+
+  it("el gimbal va a -70 en el template y en la accion inicial", () => {
+    expect(archivos["wpmz/template.kml"]).toContain("<wpml:gimbalPitchAngle>-70</wpml:gimbalPitchAngle>");
+    expect(archivos["wpmz/waylines.wpml"]).toContain("<wpml:gimbalPitchRotateAngle>-70</wpml:gimbalPitchRotateAngle>");
+  });
+
+  it("la nariz queda fija, cruzada a las filas, en todos los puntos", () => {
+    const w = archivos["wpmz/waylines.wpml"]!;
+    expect(w).not.toContain("followWayline");
+    expect(w).toContain("<wpml:waypointHeadingMode>smoothTransition</wpml:waypointHeadingMode>");
+    expect(w).toContain("<wpml:waypointHeadingAngle>90.0</wpml:waypointHeadingAngle>");
+    expect(w).toContain("<wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>");
+  });
+
+  it("a plomo sigue como siempre", () => {
+    const a = abrir(toKmz(mission, opts, kmzOpts));
+    expect(a["wpmz/waylines.wpml"]).toContain("followWayline");
+    expect(a["wpmz/template.kml"]).toContain("<wpml:gimbalPitchAngle>-90</wpml:gimbalPitchAngle>");
+  });
+});
