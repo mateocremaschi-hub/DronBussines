@@ -1367,10 +1367,31 @@ export class Acumulador {
       const puesto = (tt: number) => tt * f + fase;
 
       // 2) El final de la fila: el numero.
+      /*
+        Y tambien el final de cada STRING, que esta en el medio de la fila.
+
+        La punta de la fila entra en pocas fotos: el vuelo va a lo largo de
+        las filas y la punta se ve solo en la primera y la ultima pasada. El
+        hueco entre un string y el siguiente —555 mm mas el eje del tracker,
+        que en Wellington cruza todas las filas por el medio— se ve en muchas
+        mas, y es igual de absoluto: del lado de aca termina el modulo 28 y
+        del otro empieza el 1. Sobre la foto 0433 del bloque 2 el hueco da
+        dieciocho pixeles de aspereza sostenida, contra ocho de la celda
+        caliente de al lado y dos de una junta: no se confunde con ninguna
+        de las dos. Con solo la punta, la fila 2-85-motorizada quedo sin
+        numero confirmado en todo el vuelo, y su unico defecto salio "26 o
+        27".
+      */
+      const puntas = [enCuadro[0]!, enCuadro[enCuadro.length - 1]!];
+      for (const c of enCuadro) {
+        const esFinDeString = c.m.module === row.modulesPerString && c.m.positionInRow !== row.modulesPerRow;
+        const esInicioDeString = c.m.module === 1 && c.m.positionInRow !== 1;
+        if ((esFinDeString || esInicioDeString) && !puntas.includes(c)) puntas.push(c);
+      }
       let residual: number | null = null;
-      for (const punta of [enCuadro[0]!, enCuadro[enCuadro.length - 1]!]) {
-        const esPrimera = punta.m.positionInRow === 1;
-        const esUltima = punta.m.positionInRow === row.modulesPerRow;
+      for (const punta of puntas) {
+        const esPrimera = punta.m.positionInRow === 1 || punta.m.module === 1;
+        const esUltima = punta.m.positionInRow === row.modulesPerRow || punta.m.module === row.modulesPerString;
         if (!esPrimera && !esUltima) continue;
         const hacia = ((esUltima ? 1 : -1) * sentido) as 1 | -1;
         const tc = puesto(t(punta.caja));
@@ -1394,7 +1415,18 @@ export class Acumulador {
           if (intentos === 2) borde = null;
         }
         if (borde == null) continue;
-        residual = borde - (tc + hacia * pasoF / 2);
+        const r = borde - (tc + hacia * pasoF / 2);
+        /*
+          El hueco entre strings solo puede DESEMPATAR, no correr un modulo
+          entero. Si el parque le puso a un string un modulo de mas —pasa, y
+          el aviso de "siempre el mismo numero" lo cuenta— el hueco aparece un
+          modulo antes de donde lo espera el parque, y tomarlo como ancla
+          correria toda la fila. La punta de la fila si puede mover modulos
+          enteros: ahi no hay otro string del otro lado que absorba el error.
+        */
+        const esDeLaFila = punta.m.positionInRow === 1 || punta.m.positionInRow === row.modulesPerRow;
+        if (!esDeLaFila && Math.abs(r) > HUECO_DESEMPATA_HASTA * pasoF) continue;
+        residual = r;
         break;
       }
 
@@ -2062,6 +2094,13 @@ export const PIXELES_POR_LADO_MINIMO = Math.sqrt(PIXELES_POR_CELDA_MINIMO);
  * todavia bastante mas alto —o sea mas rapido— que planificar a ojo.
  */
 export const PIXELES_POR_LADO_OBJETIVO = 3;
+
+/**
+ * Hasta cuanto puede corregir el hueco entre strings, en modulos. Tres
+ * cuartos: alcanza para decidir entre el numero y el de al lado —la duda de
+ * medio modulo de la rejilla— y no para correr un modulo entero.
+ */
+const HUECO_DESEMPATA_HASTA = 0.75;
 
 /** Minimo de vecinos para que una mediana signifique algo. */
 const VECINOS_MINIMOS = 5;
