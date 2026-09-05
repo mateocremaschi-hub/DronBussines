@@ -107,6 +107,49 @@ function firstNumber(meta: Record<string, unknown>, claves: string[]): number | 
   return undefined;
 }
 
+/**
+ * Lee el archivo entero, insistiendo.
+ *
+ * Safari falla al leer archivos elegidos con el dialogo cuando son muchos:
+ * "The I/O read operation failed", al azar, en tandas. En el vuelo del
+ * bloque 2 cargado desde Safari se cayeron 429 de 567 fotos asi — la app
+ * las listo como "no pude usar" y siguio con un cuarto del vuelo, y con un
+ * cuarto del vuelo cada string tiene menos hermanos y el ΔT vale menos.
+ *
+ * El fallo es pasajero: el mismo archivo se lee bien un instante despues.
+ * Se reintenta con una pausa que crece, y por el otro camino de lectura
+ * (FileReader en vez de arrayBuffer), que en WebKit es codigo distinto. Si
+ * despues de eso sigue sin poder leerse, se dice con nombre — pero lo normal
+ * es que no haga falta decirlo.
+ *
+ * Y se lee UNA sola vez por foto: la matriz de temperaturas, el EXIF y el
+ * XMP salen del mismo buffer. Antes cada foto se abria cuatro veces, y cada
+ * apertura era una chance mas de fallar.
+ */
+export async function leerArchivo(file: File, intentos = 4): Promise<ArrayBuffer> {
+  let ultimo: unknown;
+  for (let i = 0; i < intentos; i++) {
+    try {
+      return i % 2 === 0 || typeof FileReader === "undefined"
+        ? await file.arrayBuffer()
+        : await conFileReader(file);
+    } catch (e) {
+      ultimo = e;
+      await new Promise((r) => setTimeout(r, 150 * (i + 1)));
+    }
+  }
+  throw ultimo instanceof Error ? ultimo : new Error(String(ultimo));
+}
+
+function conFileReader(file: File): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result as ArrayBuffer);
+    fr.onerror = () => reject(fr.error ?? new Error("FileReader"));
+    fr.readAsArrayBuffer(file);
+  });
+}
+
 export async function readPhoto(
   file: File,
   /**
@@ -121,14 +164,17 @@ export async function readPhoto(
    * La pantalla de inspecciones si la muestra, asi que ahi sigue en true.
    */
   conMiniatura = true,
+  /** El archivo ya leido, para no volver a abrirlo. */
+  buffer?: ArrayBuffer,
 ): Promise<PhotoRead> {
   let gps: { latitude?: number; longitude?: number } | undefined;
   let meta: Record<string, unknown> = {};
+  const fuente = buffer ?? file;
 
   try {
     const exifr = await import("exifr");
-    gps = (await exifr.gps(file)) ?? undefined;
-    meta = ((await exifr.parse(file, [
+    gps = (await exifr.gps(fuente)) ?? undefined;
+    meta = ((await exifr.parse(fuente, [
       "DateTimeOriginal",
       "CreateDate",
       "GPSAltitude",
@@ -149,7 +195,7 @@ export async function readPhoto(
     try {
       // `chunked` no esta en los tipos de la libreria pero si en su API.
       const opciones = { xmp: true, tiff: false, exif: false, gps: false, chunked: false };
-      const xmp = (await exifr.parse(file, opciones as Parameters<typeof exifr.parse>[1])) as
+      const xmp = (await exifr.parse(fuente, opciones as Parameters<typeof exifr.parse>[1])) as
         | Record<string, unknown>
         | undefined;
       if (xmp) meta = { ...xmp, ...meta };

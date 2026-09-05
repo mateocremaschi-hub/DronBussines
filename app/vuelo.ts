@@ -42,7 +42,7 @@ import {
 } from "./detect";
 import type { Cobertura, Finding, Inspection, Medicion } from "./inspection";
 import { camaraDesdeEquivalente35, type Camera } from "./mission";
-import { readPhoto, type PhotoFix } from "./photos";
+import { leerArchivo, readPhoto, type PhotoFix } from "./photos";
 import type { Ajuste } from "./projection";
 import {
   decidirElGiro,
@@ -288,14 +288,15 @@ async function medirElVuelo(
     if (i < proximo) continue;
     const file = files[i]!;
     try {
-      const radio = readRadiometric(await file.arrayBuffer(), escala ?? undefined);
+      const buf = await leerArchivo(file);
+      const radio = readRadiometric(buf, escala ?? undefined);
       // Un archivo sin temperatura adentro no gasta el turno: se sigue
       // buscando la termica en el siguiente.
       if (!radio) continue;
       proximo = i + paso;
       fotosMiradas++;
       if (!escala) escala = radio.escala;
-      const leida = await readPhoto(file, false);
+      const leida = await readPhoto(file, false, buf);
       const fix = leida.fix;
       if (!fix || fix.relativeAltitudeM == null) continue;
       if (!cam) {
@@ -410,9 +411,10 @@ async function votarElGiro(
   */
   for (let j = i + 1; j < Math.min(files.length, i + 7); j++) {
     try {
-      const otro = readRadiometric(await files[j]!.arrayBuffer(), escala ?? undefined);
+      const bufOtro = await leerArchivo(files[j]!);
+      const otro = readRadiometric(bufOtro, escala ?? undefined);
       if (!otro) continue;
-      const leida = await readPhoto(files[j]!, false);
+      const leida = await readPhoto(files[j]!, false, bufOtro);
       const fix2 = leida.fix;
       if (!fix2) continue;
       /*
@@ -553,7 +555,7 @@ export async function analizarFotos(
   for (let i = 0; i < files.length; i++) {
     const file = files[i]!;
     try {
-      const buf = await file.arrayBuffer();
+      const buf = await leerArchivo(file);
       const radio = readRadiometric(buf, escalaDelVuelo ?? undefined);
       if (!radio) {
         // No es un error: casi siempre es la foto visible del par. Pero si
@@ -579,7 +581,7 @@ export async function analizarFotos(
       // Sin miniatura: la revision marca el modulo sobre la foto entera, y
       // generar una miniatura por foto decodifica y recomprime la imagen
       // completa para tirarla.
-      const leida = await readPhoto(file, false);
+      const leida = await readPhoto(file, false, buf);
       const fix = leida.fix;
       if (!fix) { fallos.push(`${file.name}: ${leida.error ?? "sin coordenada"}`); continue; }
       fixes.set(file.name, fix);
