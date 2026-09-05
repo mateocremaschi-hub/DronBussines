@@ -180,6 +180,27 @@ export interface OpcionesDeVuelo {
  * navegador.
  */
 /**
+ * Las fotos en el orden en que se sacaron, venga como venga la lista.
+ *
+ * El giro de la camara se decide comparando cada foto con LA SIGUIENTE: entre
+ * las dos el dron se movio algo que el GPS sabe, y hacia donde se corrio la
+ * imagen dice de que lado esta puesta. Eso da por sentado que la lista viene
+ * en orden de vuelo — y el dialogo de archivos no lo promete. Safari entrega
+ * los archivos en el orden en que estan acomodados en el Finder, y con la
+ * carpeta "Thermo block 2" en vista de iconos eso fue un orden cualquiera:
+ * los "pares" eran fotos de puntas distintas del bloque, el giro salio al
+ * reves, y todos los recuadros del vuelo cayeron en el lugar espejado de la
+ * imagen — sobre el pasto, con 60 hallazgos que no existian. Las mismas 568
+ * fotos ordenadas por nombre dan 4.
+ *
+ * El nombre del DJI lleva la hora de captura, asi que ordenar por nombre es
+ * ordenar por hora; la fecha del archivo no sirve, cambia al copiarlo.
+ */
+export function enOrdenDeVuelo(files: File[]): File[] {
+  return [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+}
+
+/**
  * Cuantas fotos se miran para decidir la escala del vuelo.
  *
  * Repartidas a lo largo del vuelo, no las primeras: las primeras pueden ser el
@@ -448,10 +469,11 @@ export function escalaPorLaser(
 export async function analizarFotos(
   farm: CompiledFarm,
   frame: LocalFrame,
-  files: File[],
+  archivosComoVinieron: File[],
   opts: OpcionesDeVuelo,
   onProgreso?: (hecho: number, total: number) => void,
 ): Promise<ResultadoDeVuelo> {
+  const files = enOrdenDeVuelo(archivosComoVinieron);
   let acc: Acumulador | null = null;
   let cam: Camera | null = null;
   let sumaGsd = 0;

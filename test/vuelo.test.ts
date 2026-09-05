@@ -30,6 +30,7 @@ import {
   REPETIBLE_C,
   vueloDesdeAnalisis,
   type ResultadoDeVuelo,
+  enOrdenDeVuelo,
 } from "../app/vuelo";
 import { esModeloViejo, summarize, type Finding, type Inspection } from "../app/inspection";
 import { aInformeHtml, toCsv } from "../app/informe";
@@ -710,5 +711,25 @@ describe("la escala que sale del telemetro laser", () => {
   it("si la altura del EXIF ya coincide con el laser, el factor es uno", () => {
     const e = escalaPorLaser(lecturas(20, 52))!;
     expect(e.factor).toBeCloseTo(1, 3);
+  });
+});
+
+/**
+ * El dialogo de archivos no promete ningun orden, y el giro de la camara se
+ * decide comparando cada foto con la siguiente. Safari entrego "Thermo block
+ * 2" en el orden de los iconos del Finder, el giro salio al reves y los 568
+ * recuadros del vuelo cayeron espejados: 60 hallazgos sobre el pasto. Las
+ * fotos se ordenan por nombre, que en el DJI es la hora.
+ */
+describe("las fotos se miran en orden de vuelo, vengan como vengan", () => {
+  const f = (n: string) => new File([new Uint8Array(4)], n, { type: "image/jpeg" });
+  it("ordena por nombre, que es la hora de captura", () => {
+    const sueltas = [
+      f("DJI_20260904142232_0498_T.JPG"), f("DJI_20260904140450_0002_T.JPG"),
+      f("DJI_20260904140707_0070_T.JPG"), f("DJI_20260904140447_0001_T.JPG"),
+    ];
+    expect(enOrdenDeVuelo(sueltas).map((x) => x.name.slice(19, 23))).toEqual(["0001", "0002", "0070", "0498"]);
+    // Y no toca la lista que le dieron.
+    expect(sueltas[0]!.name).toContain("0498");
   });
 });
