@@ -109,6 +109,11 @@ export interface ResultadoDeVuelo {
   /** Cuanto habia que correr cada fila a lo largo, ya aplicado. */
   alineaciones: AlineacionDeFila[];
   /**
+   * La tabla de aceptacion por bloque: cajas medidas, fraccion de panel
+   * adentro, y cuantas freno la compuerta de panel.
+   */
+  auditoria: Array<{ block: string; fotos: number; medidas: number; lisuraMedia: number; bajo90: number; descartadas: number }>;
+  /**
    * Lo mismo indexado por "archivo|fila", que es como lo pide cada hallazgo.
    *
    * `conFinal` dice si a esa fila se le vio el final en alguna foto: ahi el
@@ -1055,6 +1060,7 @@ export async function analizarFotos(
     anguloMedio: nAngulo ? sumaAngulo / nAngulo : null,
     problemas,
     alineaciones: acc ? acc.alineacionesDeFila() : [],
+    auditoria: acc ? acc.auditoriaPorBloque() : [],
     /*
       Lo que se le corrigio a cada fila en cada foto, listo para el hallazgo.
 
@@ -1170,6 +1176,24 @@ const PRECISION_DE_LA_GEOMETRIA = 0.01;
  *   - La mancha caliente cae cerca del borde del modulo. Ahi el numero puede
  *     ser el de al lado aunque la fila este bien puesta, y hay que mirarlo.
  */
+/**
+ * Cuando el numero de modulo NO se puede afirmar.
+ *
+ * La regla es que la geometria del parque nombra y nunca inventa. La fila es
+ * segura —la caja se apoyo sobre la fila mas cercana, a menos de media
+ * separacion—, pero el numero dentro de la fila sale de contar desde la
+ * punta, y si en ninguna foto entro la punta y ademas la rejilla de juntas
+ * dejo la caja a un cuarto de modulo o mas de donde el parque pone al numero,
+ * el panel de abajo puede ser ese numero o el de al lado. Ahi el hallazgo se
+ * entrega con la fila y SIN numero confirmado, con los vecinos como
+ * candidatos, en vez de con un numero que hay que adivinar.
+ */
+export function moduloSinConfirmar(
+  corrimiento: { modulos: number; conFinal: boolean } | undefined,
+): boolean {
+  return corrimiento != null && !corrimiento.conFinal && Math.abs(corrimiento.modulos) >= FILA_CORRIDA_MODULOS;
+}
+
 function avisarDeLaFila(
   warnings: Warning[],
   corrimiento: { modulos: number; conFinal: boolean } | undefined,
@@ -1192,8 +1216,9 @@ function avisarDeLaFila(
           "corregir las coordenadas de la fila en el parque, de una vez y para todos los vuelos."
         : `En los datos del parque esta fila esta corrida ${cuanto} de modulo a lo largo, y en ` +
           "ninguna foto entro la punta de la fila para contar desde ahi. El recuadro esta sobre " +
-          "un panel, pero el numero puede ser el de al lado: mira la foto y conta desde la punta " +
-          "antes de anotarlo. Se arregla corrigiendo las coordenadas de la fila en el parque.",
+          "un panel de esta fila, pero el numero no se puede afirmar: puede ser ese o el de al " +
+          "lado. Se entrega sin numero confirmado — mira la foto y conta desde la punta antes de " +
+          "anotarlo. Se arregla corrigiendo las coordenadas de la fila en el parque.",
     });
   }
 
@@ -1241,6 +1266,8 @@ export function hallazgosAFindings(
     const centro = toGeo(frame, h.modulo.x, h.modulo.y);
     const res = locate({ lat: centro.lat, lon: centro.lon, accuracyM: PRECISION_DE_LA_GEOMETRIA }, farm);
     const fix = fixes.get(h.fileName);
+    const corrimiento = corregidoPorFila?.get(`${h.fileName}|${h.modulo.rowId}`);
+    const sinConfirmar = moduloSinConfirmar(corrimiento);
     return {
       id: idDeModulo(h.modulo.rowId, h.modulo.positionInRow),
       fileName: h.fileName,
@@ -1249,10 +1276,11 @@ export function hallazgosAFindings(
       candidates: res.candidates.slice(0, 8),
       warnings: avisarDeLaFila(
         res.warnings,
-        corregidoPorFila?.get(`${h.fileName}|${h.modulo.rowId}`),
+        corrimiento,
         h,
         farm.rows.find((r) => r.source.id === h.modulo.rowId)?.modulesPerString,
       ),
+      ...(sinConfirmar ? { moduloSinConfirmar: true as const } : {}),
       medicion: medicionDe(h),
       /*
         La anomalia viene PRECARGADA con lo que dice la forma de la mancha.
@@ -1602,3 +1630,73 @@ export const largoDelModulo = (stored: StoredFarm): number =>
  */
 export const compararConUmbrales = (muestras: Muestra[], umbrales: Umbrales): Hallazgo[] =>
   muestras.length ? comparar(muestras, umbrales, UMBRALES_INTERNOS) : [];
+
+/**
+ * La tabla con la que se juzga un vuelo, bloque por bloque.
+ *
+ * Es el criterio de aceptacion que pidio Mateo y va en el resultado, no en
+ * una prueba aparte: cuantas fotos se procesaron de cada bloque, cuantos
+ * recuadros freno la compuerta de panel, que fraccion de los pixeles de los
+ * recuadros que SI se midieron es panel —tiene que pasar del 90 %—, cuantos
+ * hallazgos salieron y cuantos sin numero de modulo confirmado. Un bloque
+ * con hallazgos cuyo recuadro esta mayormente sobre suelo no esta terminado,
+ * y esta tabla es donde se ve.
+ */
+export interface FilaDeAceptacion {
+  block: string;
+  fotos: number;
+  medidas: number;
+  descartadas: number;
+  /** Fraccion media de pixeles de panel en los recuadros medidos, 0 a 1. */
+  panel: number;
+  /** Recuadros medidos con menos del 90 % de panel. */
+  bajo90: number;
+  hallazgos: number;
+  sinNumero: number;
+  /** Si el bloque pasa: panel medio de 90 % o mas. */
+  pasa: boolean;
+}
+
+export function tablaDeAceptacion(
+  auditoria: ResultadoDeVuelo["auditoria"],
+  findings: Finding[],
+): FilaDeAceptacion[] {
+  const porBloque = new Map<string, { hallazgos: number; sinNumero: number }>();
+  for (const f of findings) {
+    const b = f.address?.block ?? "?";
+    const e = porBloque.get(b) ?? { hallazgos: 0, sinNumero: 0 };
+    e.hallazgos++;
+    if (f.moduloSinConfirmar) e.sinNumero++;
+    porBloque.set(b, e);
+  }
+  const bloques = new Set([...auditoria.map((a) => a.block), ...porBloque.keys()]);
+  return [...bloques]
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    .map((block) => {
+      const a = auditoria.find((x) => x.block === block);
+      const h = porBloque.get(block);
+      return {
+        block,
+        fotos: a?.fotos ?? 0,
+        medidas: a?.medidas ?? 0,
+        descartadas: a?.descartadas ?? 0,
+        panel: a?.lisuraMedia ?? 0,
+        bajo90: a?.bajo90 ?? 0,
+        hallazgos: h?.hallazgos ?? 0,
+        sinNumero: h?.sinNumero ?? 0,
+        pasa: (a?.lisuraMedia ?? 0) >= PANEL_ACEPTABLE,
+      };
+    });
+}
+
+/** Lo que tiene que dar de panel, en promedio, un bloque para aceptarse. */
+export const PANEL_ACEPTABLE = 0.9;
+
+/** La misma tabla como texto, para el informe y para la consola. */
+export function textoDeAceptacion(t: FilaDeAceptacion[]): string {
+  const lineas = t.map((r) =>
+    `bloque ${r.block}: ${r.fotos} fotos, ${r.medidas} recuadros medidos con ${(r.panel * 100).toFixed(1)} % ` +
+    `de panel adentro (${r.bajo90} bajo el 90 %), ${r.descartadas} recuadros frenados por la compuerta, ` +
+    `${r.hallazgos} hallazgos (${r.sinNumero} sin numero confirmado)` + (r.pasa ? "" : " — NO PASA"));
+  return lineas.join("\n");
+}

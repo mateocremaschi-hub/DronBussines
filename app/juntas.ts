@@ -228,6 +228,8 @@ export function corrimientoDeLaRejilla(
    */
   centros: number[],
   pasoPx: number,
+  /** Sin buscar la escala: solo la fase. Para preguntar rapido "¿hay juntas aca?". */
+  soloFase = false,
 ): Juntas | null {
   if (centros.length < MODULOS_MINIMOS || !(pasoPx > 2)) return null;
   const orden = centros.slice().sort((a, b) => a - b);
@@ -268,7 +270,7 @@ export function corrimientoDeLaRejilla(
     pocos modulos no hay con que estimarlo y se deja en uno.
   */
   const factores: number[] = [1];
-  if (orden.length >= MODULOS_PARA_LA_ESCALA) {
+  if (!soloFase && orden.length >= MODULOS_PARA_LA_ESCALA) {
     for (let f = 1 - ESCALA_MAXIMA; f <= 1 + ESCALA_MAXIMA + 1e-9; f += PASO_DE_ESCALA) {
       if (Math.abs(f - 1) > 1e-9) factores.push(f);
     }
@@ -478,3 +480,131 @@ export function bordeDelPanel(
   }
   return null;
 }
+
+/**
+ * Cuanto se repite el modulo a lo largo de un perfil: la prueba rapida de
+ * "¿esto son modulos?".
+ *
+ * Es la autocorrelacion del perfil, con la tendencia sacada, a un paso de
+ * modulo menos a medio paso. Una fila de paneles da 0,4 a 0,9: cada paso hay
+ * una junta igual a la anterior, y a medio paso hay lo contrario. La sombra
+ * del panel, la calle y el pasto dan cero o negativo: no tienen nada que se
+ * repita cada 24,8 px.
+ *
+ * Se resta la de medio paso a proposito. La autocorrelacion sola le da un
+ * numero alto al ruido con la tendencia sacada —se vio, 0,69 en ruido blanco—
+ * y a medio paso ese ruido da lo mismo, asi que la resta lo deja en cero.
+ *
+ * Es mucho mas barata que buscar la rejilla entera, y por eso es la que se
+ * usa para elegir entre las bandas lisas al alcance de una fila: hay que
+ * preguntarlo en cada corrimiento posible, decenas de veces por fila.
+ */
+export function periodicidadDeModulos(perfilCrudo: Float64Array, pasoPx: number): number {
+  /*
+    Lo que cae fuera del cuadro no cuenta, pero tampoco anula.
+
+    Una fila que cruza la foto entera termina fuera del cuadro por las dos
+    puntas, y el perfil se pide medio modulo mas alla de la ultima caja: ahi no
+    hay pixeles y el perfil trae NaN. Con un solo NaN esta prueba devolvia
+    cero, y en el vuelo del bloque 2 eso paso en TODAS las filas vecinas —la
+    repeticion no se vio nunca, y sin repeticion decidia la lisura, que
+    prefiere la sombra. Se recortan las puntas vacias y se mide lo que hay.
+  */
+  let a = 0, b = perfilCrudo.length;
+  while (a < b && !Number.isFinite(perfilCrudo[a]!)) a++;
+  while (b > a && !Number.isFinite(perfilCrudo[b - 1]!)) b--;
+  const perfil = perfilCrudo.subarray(a, b);
+  const n = perfil.length;
+  const k = Math.round(pasoPx), k2 = Math.round(pasoPx / 2);
+  if (!(k > 2) || n < k * 3) return 0;
+
+  const ventana = Math.max(3, Math.round(pasoPx * 2));
+  const suave = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    // Un hueco en el medio si anula: no se sabe que hay ahi.
+    if (!Number.isFinite(perfil[i]!)) return 0;
+    let s = 0, m = 0;
+    for (let j = Math.max(0, i - ventana); j <= Math.min(n - 1, i + ventana); j++) { s += perfil[j]!; m++; }
+    suave[i] = perfil[i]! - s / m;
+  }
+  let cero = 0;
+  for (let i = 0; i < n; i++) cero += suave[i]! * suave[i]!;
+  if (cero <= 0) return 0;
+  const r = (lag: number): number => {
+    let s = 0;
+    for (let i = 0; i + lag < n; i++) s += suave[i]! * suave[i + lag]!;
+    return s / cero;
+  };
+  return r(k) - r(k2);
+}
+
+/**
+ * Si en este punto de la fila hay un MODULO: una banda lisa con sus dos
+ * bordes.
+ *
+ * Es la pregunta que le faltaba a `bordeDelPanel`. El final de la fila se
+ * buscaba solo por aspereza a lo largo, y hay suelo que engaña: en la foto
+ * 0215 del bloque 2, pasando el ultimo panel de la fila 2-8-esclava hay un
+ * parche de tierra pisada, liso —0,6 a 1,0 de desvio local, lo mismo que una
+ * junta— y siete grados mas caliente que el panel. El borde se encontro un
+ * modulo mas alla, el modulo 1 se midio sobre ese parche y salio a +5,8 °C.
+ *
+ * Lo que el parche no tiene es forma de modulo: un panel visto desde arriba
+ * es una banda lisa de un ancho conocido, con el suelo o la sombra a los dos
+ * costados, y en esos dos costados el desvio local pega un salto. El parche
+ * es liso para todos lados. Se mira el perfil de aspereza CRUZADO por el
+ * centro del candidato: adentro tiene que ser liso y en los dos bordes,
+ * aspero. Si un borde cae fuera del cuadro no se puede saber y se da por
+ * bueno, como antes.
+ */
+export function tieneBordesCruzados(
+  sd: Float32Array,
+  ancho: number,
+  alto: number,
+  /** Centro del candidato, en pixeles de la imagen. */
+  px: number,
+  py: number,
+  rotRad: number,
+  /** Ancho del modulo cruzado a la fila, en pixeles. */
+  cruzadoModuloPx: number,
+  /** Paso entre modulos a lo largo, en pixeles: cuanto promediar a lo largo. */
+  pasoPx: number,
+): boolean {
+  const medio = cruzadoModuloPx / 2;
+  // El perfil "a lo largo" girado un cuarto de vuelta es el perfil cruzado, y
+  // el ancho que promedia pasa a ser a lo largo de la fila: medio modulo.
+  const p = perfilALoLargo(sd, ancho, alto, px, py, rotRad + Math.PI / 2, pasoPx * 0.6 / 0.35, -medio * 1.15, medio * 1.15);
+  const t0 = -medio * 1.15;
+  const lee = (v: number) => enT(p, t0, v);
+  const adentro: number[] = [];
+  for (let v = -medio * 0.4; v <= medio * 0.4; v += 1) {
+    const x = lee(v);
+    if (Number.isFinite(x)) adentro.push(x);
+  }
+  if (adentro.length < medio * 0.5) return true;
+  adentro.sort((a, b) => a - b);
+  const liso = adentro[adentro.length >> 1]!;
+
+  const bordes = [-1, 1].map((lado) => {
+    let tope = -Infinity, vistos = 0;
+    for (let v = medio * 0.7; v <= medio * 1.15; v += 1) {
+      const x = lee(lado * v);
+      if (!Number.isFinite(x)) continue;
+      vistos++;
+      if (x > tope) tope = x;
+    }
+    return vistos ? tope : null;
+  });
+  // Un costado fuera del cuadro: no se puede saber, y se da por bueno.
+  if (bordes.some((b) => b == null)) return true;
+  return bordes.every((b) => b! >= BORDE_CRUZADO_MINIMO && b! >= liso * BORDE_SOBRE_EL_INTERIOR);
+}
+
+/**
+ * Cuanto desvio local tiene que haber en el borde del modulo, y cuanto mas
+ * que en su interior. Un borde de panel contra pasto o sombra da 1,4 a 2,9 en
+ * las fotos de Wellington; el interior, 0,2 a 0,35. El parche de tierra da
+ * 0,6 a 1,0 en todos lados: no tiene borde.
+ */
+const BORDE_CRUZADO_MINIMO = 1.0;
+const BORDE_SOBRE_EL_INTERIOR = 2;

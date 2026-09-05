@@ -56,7 +56,7 @@ export function nombreDeFoto(f: Finding): string {
     a?.block ? `B${limpio(String(a.block))}` : "sin-bloque",
     a?.tracker ? limpio(String(a.tracker)) : "",
     a?.row ? limpio(String(a.row)) : "",
-    a?.module != null ? `m${a.module}` : "",
+    a?.module != null ? (f.moduloSinConfirmar && f.moduleCorregido == null ? `m${a.module}-sin-confirmar` : `m${f.moduleCorregido ?? a.module}`) : "",
     dt != null ? `${dt >= 0 ? "+" : ""}${dt.toFixed(1)}C` : "",
     f.anomaly ? limpio(f.anomaly) : "",
   ].filter(Boolean);
@@ -117,7 +117,10 @@ export function filaDe(f: Finding): Array<string | number> {
     a?.tracker ?? "",
     a?.row ?? "",
     a?.stringNumber ?? "",
-    a?.module ?? "",
+    // Sin numero confirmado la celda va vacia: un numero que puede ser el de
+    // al lado no se entrega como si fuera el bueno. El aviso dice por que y el
+    // tecnico lo pone en `modulo_corregido` mirando la foto.
+    f.moduloSinConfirmar ? "" : (a?.module ?? ""),
     a ? (a.countedFrom === "near-dc" ? "caja DC" : "punta lejana") : "",
     a?.dcBoxLabel ?? "",
     f.moduleCorregido ?? "",
@@ -374,7 +377,9 @@ export function aInformeHtml(
     const img = porNombre.get(f.fileName);
     const dt = deltaTDe(f);
     return `<article class="h ${severidad(f)}">
-  <h3>${esc(a?.block ?? "?")} · ${esc(a?.tracker ?? "?")}${a?.row ? " " + esc(a.row) : ""} · modulo ${esc(a?.module ?? "?")}</h3>
+  <h3>${esc(a?.block ?? "?")} · ${esc(a?.tracker ?? "?")}${a?.row ? " " + esc(a.row) : ""} · ${
+    f.moduloSinConfirmar ? `modulo sin confirmar (cerca del ${esc(a?.module ?? "?")})` : `modulo ${esc(a?.module ?? "?")}`
+  }</h3>
   <dl>
     <dt>String</dt><dd>${esc(a?.stringNumber ?? "—")}</dd>
     <dt>Caja DC</dt><dd>${esc(a?.dcBoxLabel ?? "—")}</dd>

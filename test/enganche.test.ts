@@ -19,6 +19,7 @@ import {
   escalaDelVuelo,
   desvioLocal,
   engancharFoto,
+  fraccionDelModuloEnElCuadro,
   sondearCaja,
   pasoEnLaImagen,
   escalaDeLaImagen,
@@ -324,5 +325,30 @@ describe("la escala del vuelo entero", () => {
     const e = escalaDelVuelo([0.885, 0.887, 0.882, 0.881, 0.892, 0.899, 2.0, 0.4])!;
     expect(e.factor).toBeCloseTo(0.885, 2);
     expect(e.fotos, "los imposibles no se cuentan").toBe(6);
+  });
+});
+
+/**
+ * La regla de "el modulo entra casi entero o no se mide" se pregunta sobre el
+ * MODULO, no sobre la caja de medicion, que es el 60 % de el. En el vuelo del
+ * bloque 2 la caja entraba y el modulo no, y esos modulos median +3 a +5 °C:
+ * el borde del cuadro.
+ */
+describe("el modulo entero tiene que entrar en el cuadro", () => {
+  // Un modulo de 23 px a lo largo de la fila y 47 cruzado, fila vertical.
+  const modulo = { largo: 14, cruzado: 28, rotRad: Math.PI / 2, largoModulo: 23, cruzadoModulo: 47 };
+
+  it("en el medio del cuadro entra entero", () => {
+    expect(fraccionDelModuloEnElCuadro({ ...modulo, cx: 320, cy: 256 }, 320, 256, 640, 512)).toBe(1);
+  });
+
+  it("con el centro a doce pixeles del borde, la caja entra y el modulo no", () => {
+    const f = fraccionDelModuloEnElCuadro({ ...modulo, cx: 628, cy: 256 }, 628, 256, 640, 512);
+    expect(f).toBeLessThan(0.9);
+    expect(f).toBeGreaterThan(0.6);
+  });
+
+  it("con el centro a media anchura del borde entra casi entero", () => {
+    expect(fraccionDelModuloEnElCuadro({ ...modulo, cx: 616, cy: 256 }, 616, 256, 640, 512)).toBeGreaterThanOrEqual(0.9);
   });
 });

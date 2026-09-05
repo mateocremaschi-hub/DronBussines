@@ -234,6 +234,29 @@ describe("una fila entera con la misma franja es el recuadro, no diodos", () => 
     expect(hs.filter((h) => h.patron?.patron === "diodo")).toHaveLength(2);
   });
 
+  /*
+    La raya del borde del panel no le sale "diodo" a los dos vecinos: al de al
+    lado le cae medio pixel mas afuera y se despega dos grados en vez de tres.
+    Con el retrato crudo del vecino alcanza para verla — misma punta, mismas
+    celdas, caliente contra su propia placa.
+  */
+  it("si al vecino le sale la misma punta tibia, la franja es de la fila", () => {
+    const tibio = () => {
+      const r = conFranja(0);
+      for (let f = 0; f < 3; f++) for (let c = 0; c < 6; c++) r.celdas[f * 6 + c] = 44;
+      return r;
+    };
+    const ms = fila(0).map((x, i) => (i === 4 ? { ...x, retrato: conFranja(3) } : i === 5 ? { ...x, retrato: tibio() } : x));
+    const hs = comparar(ms, UMBRALES);
+    expect(hs.filter((h) => h.patron?.patron === "diodo")).toHaveLength(0);
+    expect(hs.find((h) => h.modulo.positionInRow === 5)!.patron!.porQue).toContain("al lado");
+  });
+
+  it("y si el vecino esta parejo, el diodo queda", () => {
+    const ms = fila(0).map((x, i) => (i === 4 ? { ...x, retrato: conFranja(3) } : x));
+    expect(comparar(ms, UMBRALES).filter((h) => h.patron?.patron === "diodo")).toHaveLength(1);
+  });
+
   it("diez de veinte no: eso es el borde del recuadro", () => {
     const hs = comparar(fila(10), UMBRALES);
     expect(hs.filter((h) => h.patron?.patron === "diodo")).toHaveLength(0);

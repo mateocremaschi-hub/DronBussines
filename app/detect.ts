@@ -25,8 +25,11 @@ import {
   confianzaDeFoto,
   desvioLocal,
   LISO_C,
+  engancharFila,
   engancharFoto,
   escalaDeLaImagen,
+  fraccionDelModuloEnElCuadro,
+  fraccionLisaDeCaja,
   girar,
   pasoDeFilasEnLaImagen,
   pasoEnLaImagen,
@@ -34,10 +37,10 @@ import {
   FRIO_QUE_NO_ES_PANEL_C,
   type Caja as CajaDeMedicion,
 } from "./encaje";
-import { bordeDelPanel, corrimientoDeLaRejilla, perfilALoLargo, type Juntas } from "./juntas";
+import { bordeDelPanel, corrimientoDeLaRejilla, perfilALoLargo, periodicidadDeModulos, tieneBordesCruzados, type Juntas } from "./juntas";
 import { correccion, medirVinieta, radioNormalizado, type Vinieta } from "./vinieta";
 import { calorDeLaPunta } from "./puntaDeFila";
-import { claseSugerida, clasificarPatron } from "./patron";
+import { claseSugerida, clasificarPatron, UMBRAL_PATRON_K } from "./patron";
 import { aplicarAjuste, footprint, pixelOf, type Ajuste, type PhotoPose } from "./projection";
 import type { Camera } from "./mission";
 import { SIN_AJUSTE } from "./projection";
@@ -103,6 +106,15 @@ export interface Muestra {
   cuando?: number;
   /** Distancia del modulo al centro del cuadro. Cerca del borde la termica miente mas. */
   distanciaAlCentroM: number;
+  /**
+   * Lo que midio el mismo modulo en OTRAS fotos, en grados.
+   *
+   * Un defecto de verdad esta caliente en todas las fotos en que entra. Una
+   * caja que cayo sobre la calle esta caliente en una sola. Sin esto no hay
+   * forma de distinguirlas, porque las dos dan el mismo numero contra los
+   * hermanos de string.
+   */
+  otrasC?: number[];
   /**
    * Donde cae este modulo DENTRO de la foto, en pixeles de la imagen termica.
    *
@@ -337,8 +349,34 @@ export interface AlineacionDeFila {
  */
 const ANCLAS_QUE_NO_SE_PONEN_DE_ACUERDO = 0.33;
 
+/**
+ * Con cuanta caja sobre panel se mide, y cuantas cajas hacen una fila.
+ *
+ * Nueve decimos por fila: las filas del bloque que se vuela dan 0,97 a 0,98
+ * de mediana en los dos vuelos reales, y las filas mal puestas de los bloques
+ * vecinos 0,77 a 0,85. Nueve decimos deja pasar a las primeras con margen y
+ * frena a todas las segundas. Medio por caja es el piso absoluto.
+ */
+const PANEL_MINIMO_DE_FILA = 0.9;
+const PANEL_MINIMO_DE_CAJA = 0.5;
+const CAJAS_PARA_JUZGAR_LA_COMPUERTA = 3;
+/**
+ * Con cuantos modulos en el cuadro se le exige a una fila que muestre sus
+ * juntas. Cuatro, que es con cuantos la rejilla se puede buscar: menos que
+ * eso y la fila se juzga caja por caja, con la compuerta de lisura.
+ */
+const MODULOS_PARA_EXIGIR_JUNTAS = 4;
+
 export class Acumulador {
   private mejor = new Map<string, Muestra>();
+  /** Cada medicion de cada modulo, de todas las fotos en que entro. */
+  private todas: Muestra[] = [];
+  /** Lo que la compuerta de panel no dejo medir: una caja por entrada. */
+  private compuerta: Array<{ fileName: string; rowId: string; block: string; lisura: number }> = [];
+  /** Por bloque: cuantas cajas se midieron y con cuanta caja sobre panel. */
+  private auditoria = new Map<string, { medidas: number; sumaLisura: number; bajo90: number; fotos: Set<string> }>();
+  /** Cuanto hubo que correr cada fila cruzado, aparte de la foto. */
+  private enganchesDeFila: Array<{ fileName: string; rowId: string; px: number }> = [];
   /** Fotos que llegaron sin rumbo o sin angulo de gimbal, por motivo. */
   private posesIncompletas = new Map<string, number>();
   /** Modulos que quedaron cortados por el borde del cuadro y no se midieron. */
@@ -491,11 +529,23 @@ export class Acumulador {
     }
 
     const sd = desvioLocal(foto.radio);
+    /*
+      Y el mismo desvio con radio 1, para la compuerta de panel.
+
+      El de radio 3 sirve para enganchar —desparrama el borde y hace la busqueda
+      suave— pero para decidir si un pixel es panel desparrama de mas: a 3 px
+      de un escalon ya todo lee aspero. En un modulo de 14 px con la caja de 9,
+      no queda ni un pixel liso aunque la caja este perfecta. Con radio 1 el
+      escalon sigue siendo escalon y el pasto sigue siendo pasto, pero un pixel
+      de panel a 2 px del borde es panel.
+    */
+    const sdFino = desvioLocal(foto.radio, 1);
 
     const porFilas = this.escalaSegunLasFilas(candidatos, foto, sd);
     if (porFilas != null) this.pasosDeFila.push({ fileName: foto.fileName, factor: porFilas });
 
-    const limitePx = this.limiteDeBusquedaPx(cerca, mPorPx, escalaX);
+    const limites = this.limiteDeBusquedaPx(cerca, mPorPx, escalaX);
+    const limitePx = limites.fotoPx;
     const mPorPxImagen = mPorPx / escalaX;
 
     /*
@@ -546,8 +596,25 @@ export class Acumulador {
       lado, asi que ninguna caja se puede ir al modulo de al lado — lo unico
       que cambia es que la caja del modulo 26 se apoya sobre el modulo 26.
     */
+    /*
+      Y cada fila termina de acomodarse CRUZADO por su cuenta.
+
+      El enganche de la foto corre todas las cajas juntas. En las fotos del
+      borde entran filas de dos bloques con replanteos distintos, el ajuste
+      sigue a la mayoria y deja a las otras un quinto afuera del panel —
+      medido: 98 % de caja sobre panel en las filas del bloque 2, 87 % en las
+      del bloque 1 vistas desde el mismo vuelo, y de ahi 189 hallazgos con ΔT
+      cero. Ver `engancharFila`.
+    */
     const pasoDeLaFila = this.pasoPorFila(candidatos);
-    const alineado = this.alinearALoLargo(candidatos, cerca, foto, sd, puesta, dx, dy, pasoDeLaFila);
+    const cruzadoPorFila = this.engancharCadaFila(candidatos, foto, sd, puesta, dx, dy, limites.filaPx, pasoDeLaFila);
+    const puestaEnFila = (c: { m: ModuleRef; caja: CajaDeMedicion }): CajaDeMedicion => {
+      const g = puesta(c.caja);
+      const e = cruzadoPorFila.get(c.m.rowId);
+      return e ? { ...g, cx: g.cx + e.ex, cy: g.cy + e.ey } : g;
+    };
+
+    const alineado = this.alinearALoLargo(candidatos, cerca, foto, sd, puestaEnFila, dx, dy, pasoDeLaFila);
     for (const [rowId, a] of alineado.filas) {
       this.alineaciones.push({
         fileName: foto.fileName,
@@ -558,8 +625,10 @@ export class Acumulador {
         ...(a.anclaModulos != null ? { ancla: a.anclaModulos } : {}),
       });
     }
-    const corrX = (m: ModuleRef) => dx + (alineado.cajas.get(m)?.ex ?? 0);
-    const corrY = (m: ModuleRef) => dy + (alineado.cajas.get(m)?.ey ?? 0);
+    const corrX = (m: ModuleRef) =>
+      dx + (cruzadoPorFila.get(m.rowId)?.ex ?? 0) + (alineado.cajas.get(m)?.ex ?? 0);
+    const corrY = (m: ModuleRef) =>
+      dy + (cruzadoPorFila.get(m.rowId)?.ey ?? 0) + (alineado.cajas.get(m)?.ey ?? 0);
 
     const sondeos = candidatos.map((c) =>
       sondearCaja(foto.radio, sd, puesta(c.caja), corrX(c.m), corrY(c.m)));
@@ -589,6 +658,8 @@ export class Acumulador {
       d: number;
       textura: number | undefined;
       fraccionPanel: number | undefined;
+      /** Que fraccion de los pixeles de la caja son panel (lisos). */
+      lisura: number;
       r: number;
     }> = [];
 
@@ -694,9 +765,14 @@ export class Acumulador {
         continue;
       }
 
+      // El modulo tiene que haber entrado casi entero — el MODULO, no la
+      // caja, que es el 60 % de el. Medio modulo apoyado en el borde del
+      // sensor no es una medicion, es el borde del cuadro.
+      if (fraccionDelModuloEnElCuadro(caja, cx, cy, foto.radio.width, foto.radio.height) < FRACCION_MINIMA_MEDIDA) {
+        this.recortados.add(clave);
+        continue;
+      }
       const hit = medirCaja(foto.radio, cx, cy, caja.largo, caja.cruzado, celdaPx, caja.rotRad);
-      // El modulo tiene que haber entrado casi entero. Medio modulo apoyado
-      // en el borde del sensor no es una medicion, es el borde del cuadro.
       if (!hit || hit.pixeles < hit.esperados * FRACCION_MINIMA_MEDIDA) {
         this.recortados.add(clave);
         continue;
@@ -706,6 +782,7 @@ export class Acumulador {
         m, clave, ladoCeldaPx, d,
         caja: { ...caja, cx, cy },
         hit,
+        lisura: fraccionLisaDeCaja(sdFino, foto.radio.width, foto.radio.height, { ...caja, cx, cy }) ?? 0,
         // La forma de la mancha, para poder decir QUE defecto es y no solo
         // cuanto se despega.
         retrato: retratoDeCaja(foto.radio, cx, cy, caja.largo, caja.cruzado, caja.rotRad),
@@ -765,6 +842,82 @@ export class Acumulador {
       }
     }
 
+    /*
+      La compuerta de panel: nunca se mide fuera de un panel.
+
+      Pixel por pixel y POR FILA. Por fila, porque la falla que esto frena es
+      de la fila entera —la caja corrida un quinto sobre el suelo, en todos los
+      modulos de esa fila en esa foto— y porque un defecto de verdad tambien
+      ensucia la lisura de SU caja: el diodo de bypass del modulo 26 da 0,70 de
+      pixeles lisos, contra 1,00 de sus vecinos. Juzgar caja por caja tiraria
+      el unico hallazgo real del vuelo junto con el suelo. La mediana de la
+      fila no la mueve un modulo roto, y si la mueve una fila mal puesta.
+
+      Las filas que asoman con pocas cajas se juzgan caja por caja, que es
+      mas duro: ahi no hay mediana que proteja al defecto, y se prefiere
+      perderlo en esta foto —el solape lo agarra en la siguiente— antes que
+      medir suelo.
+
+      Y un piso para todas: con menos de la mitad de la caja sobre panel no
+      hay nada que medir, sea defecto o no.
+    */
+    const lisuraPorFila = new Map<string, number[]>();
+    for (const x of medidas) push2(lisuraPorFila, x.m.rowId, x.lisura);
+    const filasMalPuestas = new Set<string>();
+    for (const [id, lisuras] of lisuraPorFila) {
+      if (lisuras.length >= CAJAS_PARA_JUZGAR_LA_COMPUERTA && percentil(lisuras, 50) < PANEL_MINIMO_DE_FILA) {
+        filasMalPuestas.add(id);
+      }
+    }
+    /*
+      Y la fila donde NO se ven las juntas entre modulos, con modulos de sobra
+      para verlas, tampoco se mide. Una fila de paneles tiene una junta cada
+      paso de modulo; la sombra del panel, la calle y el pasto no. Es la
+      segunda mitad de "nunca medir fuera de un panel": la lisura dice que es
+      una superficie pareja, las juntas dicen que esa superficie son modulos.
+    */
+    const enCuadroPorFila = new Map<string, number>();
+    for (const c of candidatos) {
+      const g = puestaEnFila(c);
+      const cx = g.cx + dx, cy = g.cy + dy;
+      if (cx < 0 || cy < 0 || cx >= foto.radio.width || cy >= foto.radio.height) continue;
+      enCuadroPorFila.set(c.m.rowId, (enCuadroPorFila.get(c.m.rowId) ?? 0) + 1);
+    }
+    /*
+      Solo si en ESTA foto las juntas se ven en alguna fila. Un vuelo mas alto,
+      o una camara mas gruesa, puede no resolver las juntas en ninguna parte, y
+      ahi la regla no puede decir nada: descartaria el parque entero. Con una
+      fila que las muestra, la que no las muestra no es una fila.
+    */
+    const fotoVeJuntas = [...alineado.filas.values()].some((f) => f.contraste != null);
+    if (fotoVeJuntas) {
+      for (const [id, n] of enCuadroPorFila) {
+        if (n >= MODULOS_PARA_EXIGIR_JUNTAS && alineado.filas.get(id)?.contraste == null) {
+          filasMalPuestas.add(id);
+        }
+      }
+    }
+    for (let i = medidas.length - 1; i >= 0; i--) {
+      const x = medidas[i]!;
+      const pocas = (lisuraPorFila.get(x.m.rowId)?.length ?? 0) < CAJAS_PARA_JUZGAR_LA_COMPUERTA;
+      const afuera =
+        filasMalPuestas.has(x.m.rowId) ||
+        x.lisura < PANEL_MINIMO_DE_CAJA ||
+        (pocas && x.lisura < PANEL_MINIMO_DE_FILA);
+      if (!afuera) continue;
+      this.sinPanel.add(x.clave);
+      this.compuerta.push({ fileName: foto.fileName, rowId: x.m.rowId, block: x.m.block, lisura: x.lisura });
+      medidas.splice(i, 1);
+    }
+    for (const x of medidas) {
+      const a = this.auditoria.get(x.m.block) ?? { medidas: 0, sumaLisura: 0, bajo90: 0, fotos: new Set<string>() };
+      a.medidas++;
+      a.sumaLisura += x.lisura;
+      if (x.lisura < 0.9) a.bajo90++;
+      a.fotos.add(foto.fileName);
+      this.auditoria.set(x.m.block, a);
+    }
+
     const vinieta = medirVinieta(medidas.map((x) => ({ r: x.r, celsius: x.hit.celsius })));
     if (vinieta) this.vinietas.push({ fileName: foto.fileName, maximoC: vinieta.maximoC });
 
@@ -815,11 +968,7 @@ export class Acumulador {
       }
       // De las dos se guarda la que vio el modulo mas cerca del centro del
       // cuadro: en el borde la termica miente mas.
-      if (previo && previo.distanciaAlCentroM <= x.d) continue;
-
-      medidos++;
-      this.sinPanel.delete(x.clave);
-      this.mejor.set(x.clave, {
+      const muestra: Muestra = {
         modulo: x.m,
         ...(x.retrato ? { retrato: x.retrato } : {}),
         ...(foto.cuando != null ? { cuando: foto.cuando } : {}),
@@ -851,7 +1000,20 @@ export class Acumulador {
               }
             : {}),
         },
-      });
+      };
+      /*
+        Se guardan TODAS las mediciones, no solo la mejor.
+
+        La mejor —la que vio el modulo mas cerca del centro— es la que se
+        reporta. Las otras son la prueba: un defecto de verdad esta caliente
+        en todas las fotos, y una caja que cayo sobre la calle esta caliente
+        en una sola. `comparar` las usa para no reportar lo que no repite.
+      */
+      this.todas.push(muestra);
+      if (previo && previo.distanciaAlCentroM <= x.d) continue;
+      medidos++;
+      this.sinPanel.delete(x.clave);
+      this.mejor.set(x.clave, muestra);
     }
 
     return medidos;
@@ -1021,6 +1183,83 @@ export class Acumulador {
   }
 
   /**
+   * El corrimiento cruzado de cada fila, despues del de la foto.
+   *
+   * Con un criterio mas que el de la foto: ademas de lisa, la banda tiene que
+   * tener JUNTAS. Es lo que separa un panel de su propia sombra.
+   *
+   * Se vio en el vuelo del bloque 2, foto 0559: las cajas de las filas del
+   * bloque 1 caian todas sobre la banda oscura que hay al lado de cada fila
+   * — la sombra que tira el panel inclinado a las dos de la tarde. La sombra
+   * es lisa, tan lisa como el panel, y la busqueda por lisura elige entre las
+   * dos con el ruido. Elegida la sombra, el modulo mide 29 grados, sin
+   * juntas, y sus hermanos medidos sobre el panel en otra foto salen a +16.
+   * Lo que la sombra no tiene, ni la calle, ni el pasto, es la junta cada
+   * 24,8 px. Asi que entre las bandas lisas que hay al alcance, gana la que
+   * tiene juntas.
+   *
+   * Se guarda cuanto se corrio cada una: es el dato que dice que en el parque
+   * esa fila esta en otro lado que en el campo, y con eso se arregla el parque.
+   */
+  private engancharCadaFila(
+    candidatos: Array<{ m: ModuleRef; caja: CajaDeMedicion }>,
+    foto: FotoTermica,
+    sd: Float32Array,
+    puesta: (c: CajaDeMedicion) => CajaDeMedicion,
+    dx: number,
+    dy: number,
+    limitePx: number,
+    pasoDeLaFila: Map<string, { pasoPx: number; sentido: number }>,
+  ): Map<string, { ex: number; ey: number; conJuntas: boolean }> {
+    const porFila = new Map<string, CajaDeMedicion[]>();
+    for (const c of candidatos) {
+      const g = puesta(c.caja);
+      const caja = { ...g, cx: g.cx + dx, cy: g.cy + dy };
+      if (caja.cx < 0 || caja.cy < 0 || caja.cx >= foto.radio.width || caja.cy >= foto.radio.height) continue;
+      push2(porFila, c.m.rowId, caja);
+    }
+    const pasos = [...pasoDeLaFila.values()].map((p) => p.pasoPx).sort((a, b) => a - b);
+    const pasoDeLaFoto = pasos.length ? pasos[pasos.length >> 1]! : null;
+    const w = foto.radio.width, h = foto.radio.height;
+
+    const out = new Map<string, { ex: number; ey: number; conJuntas: boolean }>();
+    for (const [rowId, cajas] of porFila) {
+      const paso = pasoDeLaFila.get(rowId)?.pasoPx ?? pasoDeLaFoto;
+
+      /*
+        Cuanto se repite el modulo con la fila corrida `t` pixeles cruzado.
+
+        Es la pregunta que la lisura no puede contestar, y se hace con la
+        prueba rapida —la autocorrelacion a un paso— porque hay que hacerla en
+        cada corrimiento posible de cada fila. La rejilla entera, con fase y
+        escala, se busca despues, una vez que la fila ya esta sobre los
+        modulos.
+      */
+      const juntasEn = (t: number, ux: number, uy: number): { repeticion: number; celsius: number } => {
+        if (paso == null || cajas.length < 4) return { repeticion: 0, celsius: NaN };
+        const ddx = t * ux, ddy = t * uy;
+        const rot = cajas[0]!.rotRad;
+        const ax = Math.cos(rot), ay = Math.sin(rot);
+        const cx = cajas.reduce((a, c) => a + c.cx, 0) / cajas.length + ddx;
+        const cy = cajas.reduce((a, c) => a + c.cy, 0) / cajas.length + ddy;
+        const ts = cajas.map((c) => (c.cx + ddx - cx) * ax + (c.cy + ddy - cy) * ay);
+        const t0 = Math.min(...ts) - paso / 2, t1 = Math.max(...ts) + paso / 2;
+        const pC = perfilALoLargo(foto.radio.celsius, w, h, cx, cy, rot, cajas[0]!.cruzado, t0, t1);
+        let suma = 0, n = 0;
+        for (const v of pC) if (Number.isFinite(v)) { suma += v; n++; }
+        return { repeticion: periodicidadDeModulos(pC, paso), celsius: n ? suma / n : NaN };
+      };
+
+      const e = engancharFila(foto.radio, sd, cajas, limitePx, juntasEn);
+      if (!e) continue;
+      out.set(rowId, { ex: e.dx, ey: e.dy, conJuntas: e.conJuntas });
+      this.enganchesDeFila.push({ fileName: foto.fileName, rowId, px: Math.hypot(e.dx, e.dy) });
+    }
+
+    return out;
+  }
+
+  /**
    * Cuanto hay que correr cada fila A LO LARGO para que las cajas caigan sobre
    * los modulos, medido en la propia foto.
    *
@@ -1054,7 +1293,7 @@ export class Acumulador {
     cerca: CompiledFarm["rows"],
     foto: FotoTermica,
     sd: Float32Array,
-    puesta: (c: CajaDeMedicion) => CajaDeMedicion,
+    puesta: (c: { m: ModuleRef; caja: CajaDeMedicion }) => CajaDeMedicion,
     dx: number,
     dy: number,
     pasoDeLaFila: Map<string, { pasoPx: number; sentido: number }>,
@@ -1086,7 +1325,7 @@ export class Acumulador {
 
       lista.sort((a, b) => a.m.positionInRow - b.m.positionInRow);
       const todas = lista.map((c) => {
-        const g = puesta(c.caja);
+        const g = puesta(c);
         return { m: c.m, caja: { ...g, cx: g.cx + dx, cy: g.cy + dy } };
       });
       const rot = todas[0]!.caja.rotRad;
@@ -1137,7 +1376,23 @@ export class Acumulador {
         const tc = puesto(t(punta.caja));
         const t0 = tc - 2.5 * pasoF, t1 = tc + 2.5 * pasoF;
         const perfilA = perfilALoLargo(sd, w, hh, cx, cy, rot, cruz, t0, t1);
-        const borde = bordeDelPanel(perfilA, t0, tc, hacia, pasoF);
+        let borde = bordeDelPanel(perfilA, t0, tc, hacia, pasoF);
+        if (borde == null) continue;
+        /*
+          Y que lo que queda adentro del borde sea un modulo. Si el ultimo
+          "modulo" antes del borde no tiene los dos costados de un panel, el
+          borde esta un modulo mas alla de la cuenta —suelo liso pegado a la
+          fila— y se retrocede un modulo, hasta dos veces.
+        */
+        const cruzadoModulo = punta.caja.cruzadoModulo ?? cruz / FRACCION_UTIL;
+        let intentos = 0;
+        while (borde != null && intentos < 2) {
+          const centro = borde - hacia * pasoF / 2;
+          if (tieneBordesCruzados(sd, w, hh, cx + centro * ux, cy + centro * uy, rot, cruzadoModulo, pasoF)) break;
+          borde -= hacia * pasoF;
+          intentos++;
+          if (intentos === 2) borde = null;
+        }
         if (borde == null) continue;
         residual = borde - (tc + hacia * pasoF / 2);
         break;
@@ -1284,8 +1539,6 @@ export class Acumulador {
    */
   muestras(): Muestra[] {
     const verdadero = this.corrimientoVerdaderoPorFila();
-    if (!verdadero.size) return [...this.mejor.values()];
-
     const aplicado = new Map<string, number>();
     for (const a of this.alineaciones) aplicado.set(`${a.fileName}|${a.rowId}`, a.modulos);
     const refs = new Map<string, ModuleRef[]>();
@@ -1299,8 +1552,16 @@ export class Acumulador {
       return r;
     };
 
-    const salida = new Map<string, Muestra>();
-    for (const m of this.mejor.values()) {
+    /*
+      Primero cada medicion con su nombre definitivo, despues una por modulo.
+
+      Gana la que vio el modulo mas cerca del centro del cuadro, como siempre.
+      Pero las demas no se tiran: viajan con la ganadora como `otrasC`, porque
+      son la unica prueba de que lo que midio la ganadora es del panel y no de
+      la foto.
+    */
+    const porClave = new Map<string, Muestra[]>();
+    for (const m of this.todas) {
       const s = verdadero.get(m.modulo.rowId);
       let ref = m.modulo;
       if (s != null) {
@@ -1318,12 +1579,17 @@ export class Acumulador {
           ref = nuevo;
         }
       }
-      const clave = `${ref.rowId}#${ref.positionInRow}`;
-      const previo = salida.get(clave);
-      if (previo && previo.distanciaAlCentroM <= m.distanciaAlCentroM) continue;
-      salida.set(clave, ref === m.modulo ? m : { ...m, modulo: ref });
+      push2(porClave, `${ref.rowId}#${ref.positionInRow}`, ref === m.modulo ? m : { ...m, modulo: ref });
     }
-    return [...salida.values()];
+
+    const salida: Muestra[] = [];
+    for (const lista of porClave.values()) {
+      lista.sort((a, b) => a.distanciaAlCentroM - b.distanciaAlCentroM);
+      const mejor = lista[0]!;
+      const otras = lista.slice(1).filter((o) => o.fileName !== mejor.fileName).map((o) => o.celsius);
+      salida.push(otras.length ? { ...mejor, otrasC: otras } : mejor);
+    }
+    return salida;
   }
 
   /**
@@ -1413,6 +1679,51 @@ export class Acumulador {
 
   vinieteo(): Array<{ fileName: string; maximoC: number }> {
     return this.vinietas;
+  }
+
+  /**
+   * La tabla de aceptacion, por bloque: cuantas cajas se midieron, con que
+   * fraccion de panel adentro, y cuantas freno la compuerta.
+   *
+   * Es lo que hay que mirar antes que la lista de hallazgos. Un bloque cuyas
+   * cajas medidas no estan sobre panel no tiene hallazgos: tiene ruido.
+   */
+  auditoriaPorBloque(): Array<{
+    block: string;
+    fotos: number;
+    medidas: number;
+    lisuraMedia: number;
+    bajo90: number;
+    descartadas: number;
+  }> {
+    const desc = new Map<string, number>();
+    const fotosDesc = new Map<string, Set<string>>();
+    for (const c of this.compuerta) {
+      desc.set(c.block, (desc.get(c.block) ?? 0) + 1);
+      const f = fotosDesc.get(c.block) ?? new Set<string>();
+      f.add(c.fileName);
+      fotosDesc.set(c.block, f);
+    }
+    const bloques = new Set([...this.auditoria.keys(), ...desc.keys()]);
+    return [...bloques]
+      .map((block) => {
+        const a = this.auditoria.get(block);
+        const fotos = new Set([...(a?.fotos ?? []), ...(fotosDesc.get(block) ?? [])]);
+        return {
+          block,
+          fotos: fotos.size,
+          medidas: a?.medidas ?? 0,
+          lisuraMedia: a && a.medidas ? a.sumaLisura / a.medidas : 0,
+          bajo90: a?.bajo90 ?? 0,
+          descartadas: desc.get(block) ?? 0,
+        };
+      })
+      .sort((x, y) => (Number(x.block) || 0) - (Number(y.block) || 0) || x.block.localeCompare(y.block));
+  }
+
+  /** Cuanto hubo que correr cada fila cruzado, aparte de lo que se corrio la foto. */
+  enganchesPorFila(): Array<{ fileName: string; rowId: string; px: number }> {
+    return this.enganchesDeFila;
   }
 
   /**
@@ -1511,7 +1822,7 @@ export class Acumulador {
     cerca: CompiledFarm["rows"],
     mPorPx: number,
     escalaX: number,
-  ): number {
+  ): { fotoPx: number; filaPx: number } {
     const mPorPxImagen = mPorPx / escalaX;
     let separacion = Infinity;
     if (cerca.length > 1) {
@@ -1532,7 +1843,19 @@ export class Acumulador {
       }
     }
     const metros = Math.min(BUSQUEDA_MAXIMA_M, Number.isFinite(separacion) ? separacion * 0.4 : BUSQUEDA_MAXIMA_M);
-    return metros / mPorPxImagen;
+    /*
+      La FILA busca mas lejos que la foto: media separacion entre filas, sin el
+      tope de los dos metros.
+
+      El tope de la foto esta pensado para el GPS. Pero lo que la fila tiene
+      que poder hacer es saltar de su sombra al panel, y a las dos de la tarde
+      la sombra esta a 50 px del panel: con el tope de 43 no llegaba, y las
+      filas del bloque 1 se quedaban sobre la sombra a 28 grados. Media
+      separacion alcanza para eso y no alcanza para llegar a la fila de al
+      lado, que empieza a mas de 90.
+    */
+    const filaM = Number.isFinite(separacion) ? separacion * 0.5 : BUSQUEDA_MAXIMA_M;
+    return { fotoPx: metros / mPorPxImagen, filaPx: filaM / mPorPxImagen };
   }
 }
 
@@ -1590,6 +1913,13 @@ export interface Hallazgo extends Muestra {
   severidadInterna?: Severidad;
   /** La peor de las dos. Es la que ordena la lista. */
   peor: Severidad;
+  /**
+   * El modulo salio caliente en esta foto y normal en otra: no es del modulo.
+   *
+   * Se deja escrito en vez de borrado, para que se pueda ver por que un
+   * modulo a +16 °C contra sus hermanos no esta en la lista.
+   */
+  contradicha?: boolean;
   /** Cual de las dos comparaciones la disparo. */
   origen: "modulo" | "celda" | "ninguno";
 
@@ -1735,6 +2065,23 @@ export const PIXELES_POR_LADO_OBJETIVO = 3;
 
 /** Minimo de vecinos para que una mediana signifique algo. */
 const VECINOS_MINIMOS = 5;
+
+/**
+ * Que fraccion del umbral de patron tiene que despegarse el mismo extremo
+ * del retrato del vecino para decir que la franja es de la fila. La mitad:
+ * la raya del borde del panel le cae al vecino medio pixel corrida y llega a
+ * uno y medio o dos grados donde al modulo le llego a tres.
+ */
+const FRACCION_DEL_UMBRAL_EN_EL_VECINO = 0.5;
+
+/**
+ * Desde que radio normalizado (0 en el centro, 1,41 en la esquina) una
+ * medicion sola no hace hallazgo de modulo. Son los dos anillos de afuera de
+ * la correccion de vinieteo, donde la correccion residual medida llega a los
+ * tres grados y medio: en la foto 0462 del bloque 2 un modulo visto una sola
+ * vez a 1,02 de radio, pegado al borde de abajo, salio a +3,8 °C.
+ */
+const ESQUINA_DEL_CUADRO_R = 1.0;
 
 /**
  * Cuanto puede pasar entre dos fotos y seguir siendo "el mismo momento".
@@ -1920,6 +2267,68 @@ export function comparar(
       afuera, comparandolo con sus hermanos.
     */
     const patron = m.retrato ? clasificarPatron(m.retrato, deltaT) : undefined;
+    const clase = clasificar({ ...m, deltaT, ...(patron ? { patron: patron.patron } : {}) }, umbrales, internos);
+
+    /*
+      Lo que no repite en otra foto, no se reporta.
+
+      Un defecto de verdad esta caliente en todas las fotos en que entra el
+      modulo. Una caja que cayo sobre la calle —lisa, a 46 grados, que pasa por
+      un modulo en circuito abierto— esta caliente en UNA foto, y en la
+      siguiente, donde la fila entro mejor en el cuadro, el mismo modulo mide
+      como sus hermanos. En el vuelo del bloque 2 eso puso seis modulos
+      seguidos de la fila 1-98 a +16 °C, todos de la misma foto y todos a
+      menos de 90 px del borde del cuadro.
+
+      No es un umbral nuevo: es la misma medicion hecha dos veces. Si otra
+      medicion del mismo modulo queda por debajo de la mitad del umbral leve,
+      la de esta foto no puede ser un defecto del modulo, porque el modulo no
+      cambio entre foto y foto. Se deja como normal y se dice por que. Con una
+      sola medicion no hay con que contradecir, y se reporta como siempre.
+    */
+    const contradicha =
+      clase.severidad !== "normal" &&
+      (m.otrasC ?? []).some((c) => c - referenciaC - (punta.get(m.modulo.module) ?? 0) < umbrales.leve / 2);
+
+    /*
+      Sin hermanos no hay ΔT de modulo.
+
+      Comparar contra la mediana del vuelo entero no es comparar: en el vuelo
+      del bloque 2 las filas del bloque 1, que asoman por el borde del cuadro,
+      leen 44 a 47 °C con los trackers en otra posicion, y el bloque 2 lee 37.
+      Un modulo del bloque 1 visto una sola vez, sin hermanos medidos, salia a
+      +9 °C "modulo completo" contra la mediana del vuelo — un hallazgo
+      inventado por falta de vecinos. El ΔT se informa igual, con su ambito,
+      pero no hace hallazgo. El chequeo interno del modulo —la celda caliente
+      contra su propio panel— no necesita hermanos y queda como esta.
+    */
+    const sinHermanos = ambito === "vuelo" && clase.severidad !== "normal";
+
+    /*
+      Y una sola medicion desde la esquina del cuadro tampoco alcanza.
+
+      El vinieteo se corrige con la propia foto, pero en la esquina es donde
+      menos modulos hay para medirlo y donde mas sube: en la foto 0045 del
+      bloque 2, tres modulos de una fila vecina medidos a mas de 1,1 de radio
+      normalizado —a 50 px de la esquina— quedaron a +3,1, +3,4 y +3,7 °C
+      despues de la correccion, justo arriba del umbral leve, y no se vieron
+      en ninguna otra foto. Un modulo del bloque que se vuela se ve varias
+      veces y cerca del centro; el que solo se vio desde una esquina es de un
+      bloque de al lado, y su ΔT se informa pero no hace hallazgo. El chequeo
+      interno —la celda contra su propio panel— no depende de esto.
+    */
+    const r = m.caja?.ancho && m.caja.alto ? radioNormalizado(m.caja.cx, m.caja.cy, m.caja.ancho, m.caja.alto) : 0;
+    const soloDesdeLaEsquina =
+      clase.severidad !== "normal" && r >= ESQUINA_DEL_CUADRO_R && !(m.otrasC ?? []).length;
+
+    const claseFinal: Clasificacion = sinHermanos || soloDesdeLaEsquina
+      ? {
+          ...clase,
+          severidad: "normal",
+          peor: clase.severidadInterna ?? "normal",
+          origen: (clase.severidadInterna ?? "normal") === "normal" ? "ninguno" : "celda",
+        }
+      : clase;
 
     return {
       ...m,
@@ -1928,7 +2337,21 @@ export function comparar(
       vecinos,
       ambito,
       ...(patron ? { patron } : {}),
-      ...clasificar({ ...m, deltaT, ...(patron ? { patron: patron.patron } : {}) }, umbrales, internos),
+      /*
+        Contradicha, se anula entera, tambien el chequeo interno. La mediana
+        de la caja es lo que se contradijo, y si la mediana no es del panel,
+        el punto mas caliente de esa misma caja tampoco.
+      */
+      ...(contradicha
+        ? {
+            ...claseFinal,
+            severidad: "normal" as const,
+            severidadInterna: "normal" as const,
+            peor: "normal" as const,
+            origen: "ninguno" as const,
+            contradicha: true,
+          }
+        : claseFinal),
     };
   });
 
@@ -1992,6 +2415,47 @@ export function comparar(
         if (Math.abs(g.desde - f.desde) > 1 || Math.abs(g.hasta - f.hasta) > 1) continue;
         enElVecino.add(`${h.fileName}|${h.modulo.rowId}#${h.modulo.positionInRow}`);
         enElVecino.add(`${v!.fileName}|${v!.modulo.rowId}#${v!.modulo.positionInRow}`);
+      }
+
+      /*
+        Y la franja que esta pegada al borde del recuadro se le pregunta al
+        vecino aunque el vecino no haya llegado a "diodo".
+
+        En el vuelo del bloque 2, a las dos de la tarde, el borde bajo del
+        panel inclinado lee cinco grados mas que el resto de la placa en TODA
+        la fila: una raya de un par de pixeles del lado del suelo. Al modulo
+        que le cae justo en las ultimas dos filas del retrato le sale "diodo";
+        al de al lado la misma raya le cae medio pixel mas afuera y no llega a
+        los tres grados. El de arriba no lo agarra porque pide que los dos sean
+        diodo. Lo que se mira aca es el retrato crudo del vecino: si en las
+        mismas celdas del mismo extremo el vecino tambien esta caliente contra
+        su propia placa, esa raya es de la fila y no del modulo.
+      */
+      const pegadaAlBorde = f.desde === 0 || f.hasta === f.de - 1;
+      if (!pegadaAlBorde) continue;
+      for (const d of [-1, 1]) {
+        const v = porPos.get(h.modulo.positionInRow + d);
+        const rv = v?.retrato;
+        if (!rv || rv.filas * rv.columnas !== rv.celdas.length) continue;
+        const largoDelEje = f.eje === "largo" ? rv.filas : rv.columnas;
+        if (largoDelEje !== f.de) continue;
+        const propias = Array.from(rv.celdas).filter((x) => Number.isFinite(x));
+        if (propias.length < rv.celdas.length / 2) continue;
+        const base = percentil(propias, 25);
+        const enFranja: number[] = [];
+        for (let i = 0; i < rv.filas; i++) {
+          for (let j = 0; j < rv.columnas; j++) {
+            const k = f.eje === "largo" ? i : j;
+            if (k < f.desde || k > f.hasta) continue;
+            const x = rv.celdas[i * rv.columnas + j]!;
+            if (Number.isFinite(x)) enFranja.push(x);
+          }
+        }
+        if (!enFranja.length) continue;
+        if (percentil(enFranja, 50) - base >= UMBRAL_PATRON_K * FRACCION_DEL_UMBRAL_EN_EL_VECINO) {
+          enElVecino.add(`${h.fileName}|${h.modulo.rowId}#${h.modulo.positionInRow}`);
+          break;
+        }
       }
     }
   }

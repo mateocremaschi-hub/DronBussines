@@ -441,6 +441,340 @@ export function engancharFoto(
 }
 
 /**
+ * Con menos cajas que esto una fila no se engancha por su cuenta.
+ *
+ * Tres. Con una o dos, cualquier cosa rara adentro de una —un modulo roto, el
+ * motor de la punta— arrastra el ajuste de la fila entera; con tres la caja
+ * rara pierde dos a uno.
+ */
+const CAJAS_MINIMAS_POR_FILA = 3;
+
+/**
+ * Busca el corrimiento cruzado de UNA fila, despues del de la foto.
+ *
+ * El enganche de arriba corre todas las cajas de la foto juntas, y eso deja un
+ * agujero que no se ve en el bloque que se vuela: en las fotos del borde entran
+ * filas de dos bloques, y sus coordenadas en el parque tienen corrimientos
+ * distintos —son replanteos distintos. El enganche sigue a la mayoria y deja a
+ * las otras un quinto afuera del panel. Medido sobre el vuelo del bloque 2: las
+ * filas del bloque 2 quedan con el 98 % de la caja sobre panel, las del bloque
+ * 1 vistas desde ese mismo vuelo con el 87 %, y de esas salian 189 hallazgos
+ * con ΔT cero — el borde de la caja sobre el suelo, contado como punto
+ * caliente. La misma fila 1-44, medida desde el vuelo del bloque 1, da 100 %.
+ *
+ * Y con un criterio que la foto no tiene: las JUNTAS. La lisura sola no
+ * distingue un panel de su sombra —las dos son bandas lisas, una al lado de la
+ * otra, y a las dos de la tarde la sombra es tan ancha como el panel. En la
+ * foto 0559 del bloque 2 todas las filas del bloque 1 quedaron sobre la sombra,
+ * a 29 grados y sin una sola junta. Por eso se buscan TODAS las bandas lisas
+ * al alcance y entre ellas gana la que tiene juntas cada paso de modulo; la
+ * sombra, la calle y el pasto no las tienen.
+ *
+ * `juntasEn(t)` la pone el que llama: es cuanto contraste de juntas hay con la
+ * fila corrida `t` pixeles cruzado. Cero si no se puede saber.
+ */
+export function engancharFila(
+  r: Radiometric,
+  sd: Float32Array,
+  cajas: Caja[],
+  maxPx: number,
+  juntasEn: (t: number, ux: number, uy: number) => { repeticion: number; celsius: number },
+): { dx: number; dy: number; antes: number; despues: number; conJuntas: boolean } | null {
+  if (!cajas.length || maxPx < 1) return null;
+  /*
+    Con menos cajas que el minimo no se busca banda —una caja sola se iria a
+    cualquier superficie lisa a medio paso de fila— pero SI se centra en el
+    panel donde la dejo la foto: en el vuelo del bloque 2 la fila 1-98-esclava
+    asomaba con dos cajas por el borde del cuadro, quedo cuatro pixeles
+    corrida hacia el borde caliente del panel, y ese borde entro al retrato
+    como una franja de "diodo".
+  */
+  const pocas = cajas.length < CAJAS_MINIMAS_POR_FILA;
+  const ang = anguloTipico(cajas);
+  const ux = -Math.sin(ang), uy = Math.cos(ang);
+  const puntaje = (t: number): { panel: number; n: number } => {
+    const dx = Math.round(t * ux), dy = Math.round(t * uy);
+    let suma = 0, n = 0;
+    for (const c of cajas) {
+      const f = panelDeCaja(r, sd, c, dx, dy);
+      if (f == null) continue;
+      suma += f;
+      n++;
+    }
+    return { panel: n ? suma / n : 0, n };
+  };
+  const base = puntaje(0);
+  if (base.n < (pocas ? 1 : CAJAS_MINIMAS_POR_FILA)) return null;
+
+  /*
+    Se recorre todo el alcance de a dos pixeles con las dos preguntas: cuan
+    lisa esta la banda y cuanto se repite el modulo. Gana la repeticion, y la
+    lisura solo dice donde NO mirar (una banda con menos de un cuarto de
+    sondas lisas es pasto, y el pasto tambien puede repetirse por casualidad).
+
+    Por que manda la repeticion y no la lisura: sobre la foto 0559 del bloque
+    2 la sombra del panel da 0,96 de sondas lisas y el panel 0,5 — la sombra
+    es una superficie perfecta, el panel tiene juntas, gradiente de vinieteo y
+    ocho grados entre el centro y la esquina. Por lisura gana la sombra
+    siempre. Por repeticion no gana nunca: no tiene juntas.
+  */
+  const lim = pocas ? 0 : Math.round(maxPx);
+  const curva: Array<{ t: number; panel: number; juntas: number; celsius: number }> = [];
+  let tope = 0, topeJuntas = 0;
+  for (let t = -lim; t <= lim; t += 2) {
+    const p = puntaje(t);
+    if (p.n < base.n * 0.8) continue;
+    const j = p.panel >= LISURA_DE_BANDA_MINIMA ? juntasEn(t, ux, uy) : { repeticion: 0, celsius: NaN };
+    curva.push({ t, panel: p.panel, juntas: j.repeticion, celsius: j.celsius });
+    if (p.panel > tope) tope = p.panel;
+    if (j.repeticion > topeJuntas) topeJuntas = j.repeticion;
+  }
+  if (!curva.length) return null;
+
+  let elegida: number;
+  const conJuntas = topeJuntas >= REPETICION_PARA_ELEGIR;
+  if (conJuntas) {
+    /*
+      Entre las bandas que se repiten, ninguna que sea la sombra.
+
+      La sombra del panel tambien se repite: la luz pasa entre modulo y
+      modulo y dibuja en la sombra una raya cada paso. Lo que la sombra no
+      puede ser es tan caliente como el panel que la tira — es la parte del
+      suelo que no le da el sol, y a las dos de la tarde esta diez o quince
+      grados por debajo. Asi que las bandas con repeticion que estan muy por
+      debajo de la mas caliente se descartan.
+    */
+    const conRep = curva.filter((c) => c.juntas >= REPETICION_PARA_ELEGIR && Number.isFinite(c.celsius));
+    const masCaliente = Math.max(...conRep.map((c) => c.celsius));
+    /*
+      La repeticion dice CUAL banda es panel; la lisura dice DONDE esta el
+      medio. No se elige el corrimiento con mas repeticion: la repeticion es
+      maxima en el BORDE del panel —ahi el marco y el hueco entre modulos se
+      ven mas nitidos que sobre el vidrio— y elegirla ponia la fila con media
+      caja sobre el pasto en los dos vuelos. Se toman los corrimientos que
+      tienen repeticion a menos de medio modulo y que no son la sombra, y
+      entre esos gana el mas liso, que es el medio del panel.
+    */
+    const medioModulo = (cajas[0]!.cruzadoModulo ?? cajas[0]!.cruzado / 0.6) / 2;
+    const candidatas = curva.filter((c) =>
+      c.panel >= LISURA_DE_BANDA_MINIMA &&
+      // Ni la candidata ni la banda que la avala pueden ser la sombra.
+      Number.isFinite(c.celsius) && c.celsius >= masCaliente - SOMBRA_MAS_FRIA_C &&
+      curva.some((d) => Math.abs(d.t - c.t) <= medioModulo && d.juntas >= REPETICION_PARA_ELEGIR &&
+        Number.isFinite(d.celsius) && d.celsius >= masCaliente - SOMBRA_MAS_FRIA_C));
+    let mejor = candidatas[0] ?? conRep[0]!;
+    for (const c of candidatas) {
+      const d = c.panel - mejor.panel;
+      if (d > 1e-9 || (Math.abs(d) <= 1e-9 && Math.abs(c.t) < Math.abs(mejor.t))) mejor = c;
+    }
+    elegida = mejor.t;
+  } else {
+    // Sin repeticion que ver, la lisura: el maximo, y a igual lisura el mas
+    // cercano a cero, que es donde la dejo la foto.
+    let mejor = curva[0]!;
+    for (const c of curva) {
+      const d = c.panel - mejor.panel;
+      if (d > 1e-9 || (Math.abs(d) <= 1e-9 && Math.abs(c.t) < Math.abs(mejor.t))) mejor = c;
+    }
+    elegida = mejor.t;
+  }
+
+  /*
+    Y se centra la fila EN el panel, no en la primera posicion que da lisa.
+
+    La caja mide el 60 % del ancho del modulo, asi que adentro del panel
+    sobran unos veinte pixeles donde la lisura es la misma. Si se deja la
+    primera posicion lisa —la que trajo el GPS—, la caja queda pegada a un
+    borde del panel y el retrato del modulo entero le agarra un par de celdas
+    de suelo: en el bloque 2 eso dio "diodos de bypass" con la franja caliente
+    justo en el borde, en modulos sanos, con el pasto a 42 grados.
+
+    El panel se delimita con la aspereza mirada CRUZADO: a lo largo de la fila
+    la mediana del desvio local es baja sobre todo el ancho del panel —las
+    juntas son dos pixeles cada veinticinco y no mueven una mediana— y sube de
+    golpe en los dos bordes, contra el pasto y contra la sombra, porque el
+    escalon de temperatura es aspero. Se camina desde la posicion elegida
+    hacia los dos lados hasta que la fila deja de ser lisa y se toma el
+    medio. No se usa la lisura de las cajas para esto: en las fotos de la
+    tarde la mitad del panel que mira a la camara muestra las juntas y la
+    otra mitad no, y una meseta de lisura se queda con la mitad sin juntas.
+  */
+  const ax = Math.cos(ang), ay = Math.sin(ang);
+  const asperezaCruzada = (t: number): number => {
+    const v: number[] = [];
+    for (const c of cajas) {
+      // De cada caja, el mas liso de tres puntos a lo largo: la fila todavia
+      // no esta alineada a lo largo y alguno puede caer sobre una junta.
+      let minimoDeCaja = Infinity;
+      for (const k of [-c.largo / 3, 0, c.largo / 3]) {
+        const x = Math.round(c.cx + t * ux + k * ax), y = Math.round(c.cy + t * uy + k * ay);
+        if (x < 0 || y < 0 || x >= r.width || y >= r.height) continue;
+        const a = sd[y * r.width + x]!;
+        if (Number.isFinite(a) && a < minimoDeCaja) minimoDeCaja = a;
+      }
+      if (Number.isFinite(minimoDeCaja)) v.push(minimoDeCaja);
+    }
+    return v.length >= Math.max(1, cajas.length * 0.5) ? mediana(v) : Infinity;
+  };
+  const anchoModulo = cajas[0]!.cruzadoModulo ?? cajas[0]!.cruzado / 0.6;
+  const alcance = Math.round(anchoModulo);
+  /*
+    La elegida puede haber caido en el borde mismo del panel —ahi la aspereza
+    cruzada es alta, es el escalon— asi que la caminata arranca del punto mas
+    liso a menos de medio modulo de la elegida, que esta adentro del panel.
+  */
+  let arranque = elegida, minimo = asperezaCruzada(elegida);
+  for (let t = elegida - Math.round(anchoModulo / 2); t <= elegida + Math.round(anchoModulo / 2); t++) {
+    const v = asperezaCruzada(t);
+    if (v < minimo) { minimo = v; arranque = t; }
+  }
+  /*
+    El limite de la banda es relativo al propio panel, no el absoluto de
+    "liso". En el vuelo de la mañana del bloque 1 hay parches de pasto pegados
+    a la fila con 0,6 a 0,9 de desvio local —debajo del absoluto— y con el
+    absoluto la banda se estiraba sobre el pasto y el medio caia en el borde
+    del panel: cuatro modulos con media caja sobre el pasto y "diodo" en el
+    borde. El panel de esa misma foto da 0,25 a 0,4: el doble de eso deja
+    afuera el pasto y adentro el panel entero, que cruzado no tiene juntas.
+  */
+  const limiteDeBanda = Math.min(LISO_C, Math.max(BANDA_MINIMA_C, minimo * BANDA_SOBRE_EL_PANEL));
+  let a = arranque, b = arranque;
+  if (minimo < LISO_C) {
+    while (arranque - a < alcance && asperezaCruzada(a - 1) < limiteDeBanda) a--;
+    while (b - arranque < alcance && asperezaCruzada(b + 1) < limiteDeBanda) b++;
+  }
+  const ancho = b - a + 1;
+  let mejorT: number;
+  if (ancho >= anchoModulo * 0.5 && ancho <= anchoModulo * 1.3) {
+    mejorT = Math.round((a + b) / 2);
+  } else {
+    // Sin una banda lisa del ancho de un modulo alrededor, se afina de a un
+    // pixel por lisura, como antes.
+    mejorT = elegida;
+    let tope = puntaje(elegida).panel;
+    for (let t = elegida - 3; t <= elegida + 3; t++) {
+      const p = puntaje(t);
+      if (p.n >= base.n * 0.8 && p.panel > tope + 1e-9) { tope = p.panel; mejorT = t; }
+    }
+  }
+  const mejor = puntaje(mejorT);
+  if (mejorT === 0 && mejor.panel - base.panel < MEJORA_MINIMA_FRACCION) {
+    return { dx: 0, dy: 0, antes: base.panel, despues: base.panel, conJuntas };
+  }
+  return {
+    dx: Math.round(mejorT * ux),
+    dy: Math.round(mejorT * uy),
+    antes: base.panel,
+    despues: mejor.panel,
+    conJuntas,
+  };
+}
+
+/**
+ * Cuan lisa tiene que ser una banda para preguntarle si se repite, y cuanto
+ * tiene que repetirse para que mande la repeticion.
+ *
+ * Un cuarto de sondas lisas: menos que eso es pasto o sombra de arbol, y no
+ * vale la pena preguntar. Tres decimos de repeticion: las filas de paneles
+ * de los dos vuelos dan de 0,4 a 0,9 sobre el panel y cero sobre su sombra.
+ */
+const LISURA_DE_BANDA_MINIMA = 0.25;
+
+const REPETICION_PARA_ELEGIR = 0.3;
+/**
+ * Cuanto mas fria que la banda mas caliente con repeticion tiene que estar
+ * una banda para ser la sombra. Ocho grados: la sombra del panel a las dos de
+ * la tarde esta diez a quince grados por debajo del panel; el pasto y el
+ * panel, con los trackers en cualquier posicion, nunca se separan mas de
+ * cinco. No se elige "la mas caliente" —el pasto puede serlo— sino que se
+ * descarta la que es claramente la sombra.
+ */
+const SOMBRA_MAS_FRIA_C = 8;
+/**
+ * Hasta cuanto desvio local sigue siendo el mismo panel al caminar cruzado:
+ * el doble del punto mas liso, y nunca menos de medio grado ni mas que el
+ * absoluto de "liso".
+ */
+const BANDA_SOBRE_EL_PANEL = 2;
+const BANDA_MINIMA_C = 0.5;
+
+/**
+ * Que fraccion del MODULO ENTERO entro en el cuadro.
+ *
+ * La caja que se mide es el 60 % del modulo, y con eso solo se juzgaba si el
+ * modulo habia entrado: una caja casi entera adentro con el modulo un cuarto
+ * afuera pasaba. En el vuelo del bloque 2 eso midio modulos con el centro a
+ * doce pixeles del borde del sensor —la caja entraba, el modulo no— y salieron
+ * a +3 y +5 °C contra sus hermanos, que es lo que lee el borde del cuadro. Se
+ * pregunta por el modulo entero, que es lo que dice la regla.
+ */
+export function fraccionDelModuloEnElCuadro(
+  caja: Caja,
+  cx: number,
+  cy: number,
+  ancho: number,
+  alto: number,
+): number {
+  const largo = caja.largoModulo ?? caja.largo;
+  const cruzado = caja.cruzadoModulo ?? caja.cruzado;
+  const ux = Math.cos(caja.rotRad), uy = Math.sin(caja.rotRad);
+  const vx = -Math.sin(caja.rotRad), vy = Math.cos(caja.rotRad);
+  const N = 12;
+  let adentro = 0;
+  for (let i = 0; i < N; i++) {
+    const a = ((i + 0.5) / N - 0.5) * largo;
+    for (let j = 0; j < N; j++) {
+      const b = ((j + 0.5) / N - 0.5) * cruzado;
+      const x = cx + a * ux + b * vx, y = cy + a * uy + b * vy;
+      if (x >= 0 && y >= 0 && x < ancho && y < alto) adentro++;
+    }
+  }
+  return adentro / (N * N);
+}
+
+/**
+ * Que fraccion de los pixeles de la caja son panel: lisos.
+ *
+ * Es la compuerta que pide la regla de "nunca medir fuera de un panel", y se
+ * mide con la aspereza y no con la temperatura por una razon medida, no
+ * elegida: en el vuelo del bloque 2, a las dos de la tarde, el suelo entre
+ * filas lee 39 a 43 °C y los paneles 36 a 43. Igual o mas caliente. A las once
+ * de la mañana del bloque 1, suelo 41 y panel 40. No hay umbral de temperatura
+ * que separe una cosa de la otra en ninguno de los dos vuelos. La aspereza si:
+ * un panel sano da 0,2 a 0,7 de desvio local y el suelo mas de 1, en las dos
+ * horas y en los dos bloques.
+ *
+ * Pixel por pixel, no con sondas: una caja con un quinto afuera del panel es
+ * justo lo que las 24 sondas no distinguen bien, y un quinto afuera alcanza
+ * para inventar un punto caliente.
+ */
+export function fraccionLisaDeCaja(
+  sd: Float32Array,
+  ancho: number,
+  alto: number,
+  caja: Caja,
+  dx = 0,
+  dy = 0,
+): number | null {
+  const cos = Math.cos(caja.rotRad), sin = Math.sin(caja.rotRad);
+  const cx = caja.cx + dx, cy = caja.cy + dy;
+  const hw = caja.largo / 2, hh = caja.cruzado / 2;
+  const ext = Math.ceil(Math.hypot(hw, hh)) + 1;
+  let n = 0, lisos = 0;
+  for (let y = Math.floor(cy - ext); y <= Math.ceil(cy + ext); y++) {
+    if (y < 0 || y >= alto) continue;
+    for (let x = Math.floor(cx - ext); x <= Math.ceil(cx + ext); x++) {
+      if (x < 0 || x >= ancho) continue;
+      const ddx = x - cx, ddy = y - cy;
+      if (Math.abs(ddx * cos + ddy * sin) > hw || Math.abs(-ddx * sin + ddy * cos) > hh) continue;
+      n++;
+      if (sd[y * ancho + x]! < LISO_C) lisos++;
+    }
+  }
+  return n ? lisos / n : null;
+}
+
+/**
  * Cuanto se acepta girar el cuadro.
  *
  * Es el error de una brujula de dron. Mas que esto ya no es la brujula: seria

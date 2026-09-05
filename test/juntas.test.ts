@@ -7,7 +7,7 @@
  * ver sin instrumentos: cuenta paneles desde la punta y encuentra uno sano.
  */
 import { describe, expect, it } from "vitest";
-import { bordeDelPanel, corrimientoDeLaRejilla, perfilALoLargo } from "../app/juntas";
+import { bordeDelPanel, corrimientoDeLaRejilla, perfilALoLargo, periodicidadDeModulos, tieneBordesCruzados } from "../app/juntas";
 
 const PASO = 25;
 
@@ -183,5 +183,76 @@ describe("bordeDelPanel", () => {
   it("si el final no entro en el cuadro, no contesta", () => {
     const p = new Float64Array(120).fill(0.3);
     expect(bordeDelPanel(p, 0, 100, 1, PASO)).toBeNull();
+  });
+});
+
+/**
+ * La prueba rapida de "¿esto son modulos?": cuanto se repite el perfil cada
+ * paso. Es la que elige, entre las bandas lisas al alcance de una fila, la
+ * que tiene juntas — la sombra del panel es lisa pero no se repite.
+ */
+describe("la repeticion del modulo", () => {
+  it("una fila de paneles se repite; una sombra pareja no", () => {
+    const { c } = fila(300, 0, 0.6);
+    expect(periodicidadDeModulos(c, PASO)).toBeGreaterThan(0.3);
+    const sombra = new Float64Array(300);
+    let semilla = 3;
+    for (let i = 0; i < 300; i++) {
+      semilla = (semilla * 1103515245 + 12345) & 0x7fffffff;
+      sombra[i] = 29 + (semilla / 0x7fffffff - 0.5) * 0.6;
+    }
+    expect(Math.abs(periodicidadDeModulos(sombra, PASO))).toBeLessThan(0.15);
+  });
+
+  /*
+    El caso que dejo la prueba muda en el vuelo del bloque 2: una fila que
+    cruza la foto entera pide el perfil medio modulo mas alla del cuadro, y
+    ahi no hay pixeles. Con las puntas en NaN la repeticion daba cero en todas
+    las filas y la sombra ganaba por lisura.
+  */
+  it("lo que cae fuera del cuadro se recorta, no anula", () => {
+    const { c } = fila(300, 0, 0.6);
+    const conPuntas = new Float64Array(330).fill(NaN);
+    conPuntas.set(c, 15);
+    expect(periodicidadDeModulos(conPuntas, PASO)).toBeGreaterThan(0.3);
+  });
+
+  it("un hueco en el medio si anula", () => {
+    const { c } = fila(300, 0, 0.6);
+    const roto = Float64Array.from(c);
+    roto[150] = NaN;
+    expect(periodicidadDeModulos(roto, PASO)).toBe(0);
+  });
+});
+
+/**
+ * Lo que distingue un modulo de un pedazo de suelo liso: los dos costados.
+ * Salio de la foto 0215 del bloque 2, donde un parche de tierra pisada
+ * pegado a la punta de la fila 2-8-esclava se tomo por el modulo 1.
+ */
+describe("un modulo tiene dos costados", () => {
+  const W = 300, H = 200;
+  /** Mapa de desvio local: pasto en todos lados y una banda de panel vertical en x = [100, 147]. */
+  const mapa = (conBanda: boolean, parche = false) => {
+    const sd = new Float32Array(W * H).fill(1.3);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (conBanda && x >= 100 && x <= 147) sd[y * W + x] = x <= 101 || x >= 146 ? 2.0 : 0.25;
+        if (parche && x >= 90 && x <= 160 && y >= 80 && y <= 120) sd[y * W + x] = 0.7;
+      }
+    }
+    return sd;
+  };
+  // Fila vertical: el eje a lo largo es y, el cruzado es x. Modulo de 47 px cruzado, paso 25.
+  it("la banda de un panel, con sus costados, es un modulo", () => {
+    expect(tieneBordesCruzados(mapa(true), W, H, 123.5, 100, Math.PI / 2, 47, 25)).toBe(true);
+  });
+
+  it("un parche liso sin costados no lo es", () => {
+    expect(tieneBordesCruzados(mapa(false, true), W, H, 125, 100, Math.PI / 2, 47, 25)).toBe(false);
+  });
+
+  it("si un costado quedo fuera del cuadro, no se puede saber y se da por bueno", () => {
+    expect(tieneBordesCruzados(mapa(false, true), W, H, 10, 100, Math.PI / 2, 47, 25)).toBe(true);
   });
 });

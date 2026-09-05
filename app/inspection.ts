@@ -128,6 +128,16 @@ export interface Finding {
   note?: string;
   /** Si el tecnico corrige el modulo mirando la foto, queda registrado aparte. */
   moduleCorregido?: number;
+  /**
+   * El numero de modulo de `address` NO esta confirmado.
+   *
+   * La fila es segura; el numero dentro de la fila no, porque en ninguna foto
+   * entro la punta para contar desde ahi y la rejilla dejo el recuadro a un
+   * cuarto de modulo o mas de donde el parque pone a ese numero. La app no
+   * inventa: se entrega con la fila, con los vecinos como candidatos y con
+   * esta marca, y el numero lo pone la persona mirando la foto.
+   */
+  moduloSinConfirmar?: true;
 
   /**
    * Que dijo la maquina mirando la forma de la mancha, y por que.

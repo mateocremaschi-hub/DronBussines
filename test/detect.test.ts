@@ -126,6 +126,44 @@ describe("comparar contra los vecinos", () => {
     expect(h.every((x) => x.ambito === "vuelo")).toBe(true);
     expect(h[0]!.vecinos).toBe(2);
   });
+
+  /*
+    Y sin hermanos no hace hallazgo. En el vuelo del bloque 2 las filas del
+    bloque 1 asoman por el borde del cuadro y leen 44-47 °C con los trackers
+    en otra posicion; un modulo de ahi, visto una sola vez y sin hermanos
+    medidos, salia a +9 °C contra la mediana del vuelo. Eso no es comparar.
+  */
+  /*
+    Una sola medicion desde la esquina del cuadro tampoco hace hallazgo de
+    modulo: ahi la correccion de vinieteo deja hasta tres grados y medio sin
+    corregir, y en el vuelo del bloque 2 tres modulos de una fila vecina
+    salieron "modulo completo" a +3 desde una esquina, sin verse en ninguna
+    otra foto. Vista dos veces, o cerca del centro, la misma medicion cuenta.
+  */
+  it("una sola medicion desde la esquina del cuadro no hace hallazgo de modulo", () => {
+    const caja = (cx: number, cy: number) => ({ cx, cy, largo: 14, cruzado: 28, rotRad: 0, ancho: 640, alto: 512 });
+    const enLaEsquina = muestras(40, { 3: 5 }).map((x) =>
+      x.modulo.positionInRow === 3 ? { ...x, caja: caja(600, 480) } : x);
+    expect(comparar(enLaEsquina).find((x) => x.modulo.positionInRow === 3)!.severidad).toBe("normal");
+
+    const enElCentro = muestras(40, { 3: 5 }).map((x) =>
+      x.modulo.positionInRow === 3 ? { ...x, caja: caja(330, 250) } : x);
+    expect(comparar(enElCentro).find((x) => x.modulo.positionInRow === 3)!.severidad).toBe("leve");
+
+    const vistaDosVeces = muestras(40, { 3: 5 }).map((x) =>
+      x.modulo.positionInRow === 3 ? { ...x, caja: caja(600, 480), otrasC: [45] } : x);
+    expect(comparar(vistaDosVeces).find((x) => x.modulo.positionInRow === 3)!.severidad).toBe("leve");
+  });
+
+  it("sin hermanos de string ni de fila, el ΔT no hace hallazgo", () => {
+    const m = muestras(40, { 1: 12 }).slice(0, 3);
+    const h = comparar(m);
+    const caliente = h.find((x) => x.modulo.positionInRow === 1)!;
+    expect(caliente.ambito).toBe("vuelo");
+    expect(caliente.deltaT).toBeGreaterThan(5);
+    expect(caliente.severidad).toBe("normal");
+    expect(caliente.peor).toBe("normal");
+  });
 });
 
 // ---------------------------------------------------------------------------

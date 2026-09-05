@@ -36,6 +36,7 @@ import {
   compararConUmbrales,
   hallazgosAFindings,
   largoDelModulo,
+  tablaDeAceptacion,
   type ResultadoDeVuelo,
 } from "../vuelo";
 
@@ -281,6 +282,43 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
                 )}
               </p>
             )}
+
+            {/*
+              La tabla con la que se juzga el vuelo, bloque por bloque: la
+              compuerta de panel y cuanto panel hay adentro de lo que se midio.
+              Un bloque por debajo del 90 % no esta terminado, y se dice.
+            */}
+            {deteccion && resultado.auditoria.length > 0 && (() => {
+              const tabla = tablaDeAceptacion(resultado.auditoria, deteccion.findings);
+              return (
+                <div className="tabla-aceptacion">
+                  <h3>Compuerta de panel, por bloque</h3>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Bloque</th><th>Fotos</th><th>Recuadros medidos</th><th>Panel adentro</th>
+                        <th>Bajo el 90 %</th><th>Frenados</th><th>Hallazgos</th><th>Sin numero</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tabla.map((r) => (
+                        <tr key={r.block} className={r.pasa ? "" : "alerta"}>
+                          <td>{r.block}</td><td>{r.fotos}</td><td>{r.medidas}</td>
+                          <td>{(r.panel * 100).toFixed(1)} %{r.pasa ? "" : " — NO PASA"}</td>
+                          <td>{r.bajo90}</td><td>{r.descartadas}</td><td>{r.hallazgos}</td><td>{r.sinNumero}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="muted small">
+                    "Panel adentro" es que fraccion de los pixeles de los recuadros que se midieron
+                    cae sobre panel, medida por textura. "Frenados" son los recuadros que la compuerta
+                    no dejo medir por caer sobre suelo o sombra. "Sin numero" son hallazgos con la fila
+                    segura pero sin numero de modulo confirmado: en ninguna foto entro la punta.
+                  </p>
+                </div>
+              );
+            })()}
 
             {resumen.eventosDeString.length > 0 && (
               <div className="warnbox">

@@ -202,10 +202,19 @@ describe("la punta de un string donde no hay panel", () => {
     const c = pasto();
     for (const m of previas) pintar(c, m.caja, PANEL_C, PANEL_ENTERO);
     const medio = previas.find((m) => !puntas.has(m.modulo.positionInRow))!;
-    // Media caja 25 grados por encima: parte el modulo al medio, como un diodo.
-    pintar(c, { ...medio.caja, largo: medio.caja!.largo / 2,
-      cx: medio.caja!.cx - (medio.caja!.largo / 4) * Math.cos(medio.caja!.rotRad),
-      cy: medio.caja!.cy - (medio.caja!.largo / 4) * Math.sin(medio.caja!.rotRad) },
+    /*
+      Seis decimos de la caja 25 grados por encima: parte el modulo, como un
+      diodo. Seis decimos y no la mitad justa, porque la mitad justa de una
+      caja de nueve pixeles la decide el redondeo de UN pixel —cuatro filas
+      calientes de nueve dan mediana fria, cinco dan caliente— y esta prueba
+      fija que un defecto grande se reporta, no como redondea la caja.
+    */
+    // Y de lado a lado del modulo, como una substring de verdad: la caja se
+    // acomoda uno o dos pixeles cruzado sobre la imagen, y una franja que
+    // termina justo en el borde de la caja cambia de mediana con eso.
+    pintar(c, { ...medio.caja, largo: medio.caja!.largo * 0.6, cruzado: medio.caja!.cruzado * PANEL_ENTERO,
+      cx: medio.caja!.cx - (medio.caja!.largo * 0.2) * Math.cos(medio.caja!.rotRad),
+      cy: medio.caja!.cy - (medio.caja!.largo * 0.2) * Math.sin(medio.caja!.rotRad) },
       PANEL_C + 25, 1);
     const acc = volar(c);
     const suyo = acc.muestras().find((m) => m.modulo.positionInRow === medio.modulo.positionInRow);

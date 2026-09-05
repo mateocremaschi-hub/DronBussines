@@ -103,7 +103,20 @@ function escenaInclinada(posCaliente: number, alturaM: number, factor: number, s
   const foto = escena(posCaliente, alturaM, 0);
   // El suelo pelado al mediodia lee MAS caliente que un modulo trabajando: 70
   // contra 45. Es el caso de Queensland y el que rompe la medicion.
-  const celsius = new Float32Array(640 * 512).fill(sueloC);
+  /*
+    Y el suelo tiene TEXTURA. Un suelo pintado parejo a 70 grados no existe: la
+    tierra, el pasto y las piedras leen distinto pixel a pixel —en los vuelos
+    reales el desvio local del suelo esta arriba de 1, contra 0,2 a 0,7 del
+    panel— y es esa aspereza, no la temperatura, lo que la compuerta de panel
+    usa para no medir fuera de un panel. Sin textura, el suelo a 70 pasaria
+    por un panel muy caliente.
+  */
+  const celsius = new Float32Array(640 * 512);
+  let semilla = 17;
+  for (let i = 0; i < celsius.length; i++) {
+    semilla = (semilla * 1103515245 + 12345) & 0x7fffffff;
+    celsius[i] = sueloC + (semilla / 0x7fffffff - 0.5) * 6;
+  }
   const anchoM = 2 * alturaM * Math.tan((camara.hfovDeg * Math.PI) / 360);
   const altoM = 2 * alturaM * Math.tan((camara.vfovDeg * Math.PI) / 360);
   const rux = farm.rows[0]!.ux, ruy = farm.rows[0]!.uy;
@@ -197,6 +210,13 @@ describe("con los trackers inclinados", () => {
    * caja dibujada del ancho del modulo ACOSTADO, los pixeles mas calientes de
    * la caja son suelo, y el chequeo interno los reporta como una celda a 70
    * grados: un modulo sano sale como defecto critico.
+   *
+   * La compuerta de panel NO frena este caso, y esta bien que no lo frene: la
+   * caja se pasa del panel medio pixel por lado —el 4 % de la caja— y una
+   * compuerta que tirara cajas con el 96 % sobre panel tiraria tambien los
+   * diodos de bypass reales, que ensucian mas que eso. Lo que arregla este
+   * caso es la correccion por el angulo del tracker, que es lo que fija la
+   * prueba siguiente. Esta queda para que se sepa por que existe aquella.
    */
   it("sin corregir, el suelo caliente entra a la caja y se reporta como celda", () => {
     const sin = medirInclinado(false);

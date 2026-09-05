@@ -104,7 +104,18 @@ function calentar(base: Float32Array, m: Muestra, grados: number): Float32Array 
   const c = m.caja!;
   const salida = Float32Array.from(base);
   const cos = Math.cos(c.rotRad), sin = Math.sin(c.rotRad);
-  const hw = (c.largo / 2) * 0.9, hh = (c.cruzado / 2) * 0.9;
+  /*
+    Se calienta el MODULO ENTERO, no la caja de medicion.
+
+    Se calentaba el 90 % de la caja —que es el 60 % central del modulo— y eso
+    dejaba un escalon de 25 grados a un pixel del borde de la caja. Ningun
+    defecto real hace eso: un modulo caliente esta caliente hasta el marco. Y
+    la compuerta de panel, que mide la aspereza pixel por pixel, veia ese
+    escalon como suelo y descartaba la caja: 0,12 de pixeles lisos. Con el
+    modulo entero calentado el escalon queda afuera de la caja, donde esta el
+    marco de verdad.
+  */
+  const hw = (c.largoModulo ?? c.largo / 0.6) / 2, hh = (c.cruzadoModulo ?? c.cruzado / 0.6) / 2;
   const ext = Math.ceil(Math.hypot(c.largo, c.cruzado) / 2) + 2;
   for (let y = Math.max(0, Math.floor(c.cy - ext)); y <= Math.min(511, Math.ceil(c.cy + ext)); y++) {
     for (let x = Math.max(0, Math.floor(c.cx - ext)); x <= Math.min(639, Math.ceil(c.cx + ext)); x++) {
@@ -395,11 +406,30 @@ describe("la fila corrida a lo largo viaja con el hallazgo", () => {
     expect(aviso!.message).toContain("el numero de arriba es el bueno");
   });
 
-  it("y si no se vio la punta de la fila, dice que el numero puede ser el de al lado", () => {
+  /*
+    Sin la punta y con la rejilla a medio modulo, el numero no se afirma: la
+    regla es que la geometria nombra y nunca inventa. Se entrega la fila, se
+    marca el numero como sin confirmar, y el aviso dice por que. (El texto del
+    aviso cambio con esa regla; la prueba mide la marca, que es lo que se
+    entrega.)
+  */
+  it("y si no se vio la punta de la fila, no afirma el numero", () => {
     const f = conCorrimiento(-0.48, false)[0]!;
     const aviso = f.warnings.find((w) => w.code === "row-shifted-along");
     expect(aviso).toBeDefined();
-    expect(aviso!.message).toContain("puede ser el de al lado");
+    expect(aviso!.message).toContain("puede ser ese o el de al lado");
+    expect(f.moduloSinConfirmar).toBe(true);
+    // La fila sigue: es segura. Lo que no se afirma es el numero.
+    expect(f.address).not.toBeNull();
+  });
+
+  it("con la punta vista, el numero se afirma", () => {
+    const f = conCorrimiento(-0.48, true)[0]!;
+    expect(f.moduloSinConfirmar).toBeUndefined();
+  });
+
+  it("con un corrimiento chico el numero se afirma aunque no se haya visto la punta", () => {
+    expect(conCorrimiento(0.1, false)[0]!.moduloSinConfirmar).toBeUndefined();
   });
 
   it("no avisa por un corrimiento chico, que es el de siempre", () => {
@@ -427,7 +457,7 @@ describe("el vuelo guardado y vuelto a abrir conserva las dos mitades", () => {
     posesSupuestas: [],
     anguloMedio: 12,
     problemas: [],
-    alineaciones: [], corregidoPorFila: new Map(),
+    alineaciones: [], auditoria: [], corregidoPorFila: new Map(),
     fixes: new Map(),
   };
 

@@ -44,7 +44,9 @@ function corto(f: Finding): string {
   const a = f.address;
   if (!a) return "sin ubicar";
   const modulo = f.moduleCorregido ?? a.module;
-  return `${a.tracker}${a.row ? " " + a.row : ""} · s${a.stringNumber} · m${modulo}`;
+  // Sin numero confirmado se dice: el de al lado puede ser el bueno.
+  const m = f.moduleCorregido == null && f.moduloSinConfirmar ? `m? (cerca del ${modulo})` : `m${modulo}`;
+  return `${a.tracker}${a.row ? " " + a.row : ""} · s${a.stringNumber} · ${m}`;
 }
 
 export function Revisor({ findings, archivos, seleccion, onSeleccion, onPatch }: Props) {
