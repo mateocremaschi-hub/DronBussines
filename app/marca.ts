@@ -73,14 +73,26 @@ export const equis = (tinta: string): string => `<svg viewBox="11.5 11.5 77 77" 
  * subtitulo, no el isotipo, que trae el suyo.
  */
 export function lockup(sobre: "claro" | "oscuro", alto = 40): string {
+  /*
+    El SVG tiene que llenar su caja y nada mas.
+
+    `ISOTIPO` lleva width/height propios porque los necesita para cargarse
+    como imagen suelta en el Excel. Adentro de un HTML esos atributos son un
+    tamaño intrinseco de 100 px: Chrome lo escalaba igual, Safari no, y en el
+    informe de Mateo el logo salio gigante tapando el wordmark. El estilo en
+    linea le gana a los atributos y resuelve contra el span que lo envuelve,
+    que es el que sabe cuanto tiene que medir.
+  */
+  const ajustar = (svg: string) =>
+    svg.replace("<svg ", '<svg style="width:100%;height:100%;display:block" ');
   const tinta = sobre === "claro" ? MARCA.negro : MARCA.hielo;
   const acento = sobre === "claro" ? MARCA.cianOscuro : MARCA.cian;
   const px = Math.round(alto * 0.62);
   return `<span style="display:inline-flex;align-items:center;gap:${Math.round(alto * 0.3)}px">
-  <span style="width:${alto}px;height:${alto}px;display:block;flex:none">${ISOTIPO}</span>
+  <span style="width:${alto}px;height:${alto}px;display:block;flex:none">${ajustar(ISOTIPO)}</span>
   <span style="display:flex;flex-direction:column;gap:${Math.round(alto * 0.1)}px">
     <span style="display:flex;align-items:center;gap:1px;font-size:${px}px;font-weight:700;letter-spacing:-.035em;color:${tinta};line-height:1">
-      <span>ni</span><span style="width:${Math.round(px * 0.52)}px;height:${Math.round(px * 0.52)}px;display:block">${equis(tinta)}</span><span>in</span>
+      <span>ni</span><span style="width:${Math.round(px * 0.52)}px;height:${Math.round(px * 0.52)}px;display:block">${ajustar(equis(tinta))}</span><span>in</span>
     </span>
     <span style="font-size:${Math.max(8, Math.round(alto * 0.24))}px;font-weight:500;letter-spacing:.34em;color:${acento};text-transform:uppercase">Software</span>
   </span>

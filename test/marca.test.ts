@@ -114,3 +114,33 @@ describe("el isotipo como archivo suelto", () => {
     expect(decodeURIComponent(url.split(",")[1]!)).toBe(ISOTIPO);
   });
 });
+
+/*
+  El logo tiene que llenar su caja y nada mas.
+
+  `ISOTIPO` lleva width/height propios porque los necesita para cargarse como
+  imagen suelta en el Excel. Adentro de un HTML esos atributos son un tamaño
+  intrinseco de 100 px: Chrome lo escalaba igual, Safari no, y en el informe
+  el logo salio gigante tapando el wordmark.
+*/
+describe("el tamaño del logo en el informe", () => {
+  it("los dos SVG del lockup se ajustan a su caja", () => {
+    const l = lockup("claro", 46);
+    const svgs = l.match(/<svg[^>]*>/g)!;
+    expect(svgs.length).toBe(2);
+    for (const s of svgs) expect(s).toContain("width:100%;height:100%");
+  });
+
+  it("y cada uno va adentro de un span que le fija el tamaño", () => {
+    expect(lockup("claro", 46)).toContain("width:46px;height:46px");
+  });
+
+  /*
+    Sin tocar el original: el que va al Excel se carga como archivo suelto y
+    ahi un width en porcentaje no tiene contra que resolver.
+  */
+  it("el isotipo original conserva su tamaño en pixeles", () => {
+    expect(ISOTIPO).toContain('width="100"');
+    expect(ISOTIPO).not.toContain("width:100%");
+  });
+});
