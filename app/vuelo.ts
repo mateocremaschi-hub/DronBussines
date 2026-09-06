@@ -33,6 +33,7 @@ import {
   resumir,
   sesgoDePunta,
   stringsEnVariasTandas,
+  severidadDe,
   UMBRALES,
   UMBRALES_INTERNOS,
   type AlineacionDeFila,
@@ -1301,7 +1302,7 @@ export function hallazgosAFindings(
    * lista corta: un string desconectado existe justamente porque NINGUN modulo
    * suyo se despega de sus hermanos, asi que ninguno esta en la lista corta.
    */
-  stringsEnteros?: { eventos: EventoDeString[]; todos: Hallazgo[] },
+  stringsEnteros?: { eventos: EventoDeString[]; todos: Hallazgo[]; umbrales?: Umbrales },
   /** Cuanto esta corrida cada fila a lo largo, por "archivo|fila". */
   corregidoPorFila?: Map<string, { modulos: number; conFinal: boolean }>,
 ): Finding[] {
@@ -1343,7 +1344,9 @@ export function hallazgosAFindings(
 
   return stringsEnteros
     ? [
-        ...deStringsEnteros(stringsEnteros.eventos, stringsEnteros.todos, farm, frame, fixes),
+        ...deStringsEnteros(
+          stringsEnteros.eventos, stringsEnteros.todos, farm, frame, fixes, stringsEnteros.umbrales,
+        ),
         ...deModulo,
       ]
     : deModulo;
@@ -1371,6 +1374,7 @@ function deStringsEnteros(
   farm: CompiledFarm,
   frame: LocalFrame,
   fixes: Map<string, PhotoFix>,
+  umbrales: Umbrales = UMBRALES,
 ): Finding[] {
   const out: Finding[] = [];
   for (const e of eventos) {
@@ -1400,7 +1404,27 @@ function deStringsEnteros(
       address: res.best,
       candidates: res.candidates.slice(0, 8),
       warnings: res.warnings,
-      medicion: medicionDe(ancla),
+      /*
+        La medicion que se entrega es la del STRING, no la del modulo ancla.
+
+        Salia la del ancla, y en el Excel eso daba un hallazgo "String
+        completo" con ΔT 0,7 °C y severidad "normal" — que es exactamente lo
+        que el modulo ancla mide contra sus hermanos, porque estan todos
+        calientes por igual. Ese es el sintoma del string, no un error, pero
+        entregado asi el numero contradice al hallazgo. Va el ΔT del string
+        contra los strings vecinos, sobre cuantos modulos se midio, y la
+        severidad que le corresponde a ESE numero.
+      */
+      medicion: {
+        ...medicionDe(ancla),
+        deltaT: e.deltaTMedio,
+        referenciaC: ancla.celsius - e.deltaTMedio,
+        vecinos: e.modulos,
+        ambito: "string" as const,
+        severidad: severidadDe(e.deltaTMedio, umbrales),
+        peor: severidadDe(e.deltaTMedio, umbrales),
+        origen: "modulo" as const,
+      },
       /*
         La anomalia y la clase van PRECARGADAS y con su gemelo de maquina al
         lado (`patron`, `clase`). Sin el gemelo, `revisado()` las lee como el
@@ -1559,6 +1583,8 @@ export interface DatosDeCobertura {
   celdaM: number;
   umbrales: Umbrales;
   fotos: number;
+  /** Cuantos modulos tiene cada bloque del parque, para contar la cobertura real. */
+  modulosPorBloque?: Map<string, number>;
 }
 
 /**
@@ -1568,6 +1594,31 @@ export interface DatosDeCobertura {
  * valioso que produce la deteccion: un informe que no dice que NO miro no
  * sirve para un reclamo.
  */
+/**
+ * Cuantos modulos de cada bloque se midieron de verdad.
+ *
+ * Se cuentan MODULOS DISTINTOS, no mediciones: un modulo que salio en tres
+ * fotos es uno. Salen los bloques que aparecieron en el vuelo, que son los
+ * volados mas los vecinos que asomaron por el borde del cuadro — y esos
+ * vecinos, con dos filas medidas de 186, se ven por lo que son.
+ */
+function coberturaPorBloque(d: DatosDeCobertura): Cobertura["porBloque"] {
+  const medidos = new Map<string, Set<string>>();
+  for (const m of d.resultado.muestras) {
+    const b = m.modulo.block;
+    const s = medidos.get(b) ?? new Set<string>();
+    s.add(`${m.modulo.rowId}#${m.modulo.positionInRow}`);
+    medidos.set(b, s);
+  }
+  return [...medidos.keys()]
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    .map((block) => ({
+      block,
+      modulos: d.modulosPorBloque?.get(block) ?? 0,
+      medidos: medidos.get(block)!.size,
+    }));
+}
+
 export function coberturaDe(d: DatosDeCobertura): Cobertura {
   const eventos = eventosDeString(d.hallazgos, d.modulosPorString);
   const resumen = resumir(
@@ -1593,6 +1644,7 @@ export function coberturaDe(d: DatosDeCobertura): Cobertura {
     posesSupuestas: d.resultado.posesSupuestas,
     eventosDeString: eventos,
     limitaciones: resumen.limitaciones,
+    ...(d.modulosPorBloque ? { porBloque: coberturaPorBloque(d) } : {}),
   };
 }
 

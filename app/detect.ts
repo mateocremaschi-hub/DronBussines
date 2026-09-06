@@ -2638,7 +2638,7 @@ const ESCALA: Severidad[] = ["normal", "leve", "moderada", "critica"];
 const peorDe = (a: Severidad, b: Severidad): Severidad =>
   ESCALA.indexOf(a) >= ESCALA.indexOf(b) ? a : b;
 
-function severidadDe(deltaT: number, u: Umbrales): Severidad {
+export function severidadDe(deltaT: number, u: Umbrales): Severidad {
   if (deltaT >= u.critica) return "critica";
   if (deltaT >= u.moderada) return "moderada";
   if (deltaT >= u.leve) return "leve";

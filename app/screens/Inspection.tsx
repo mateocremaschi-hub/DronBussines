@@ -37,6 +37,7 @@ import { UMBRALES, type Severidad, type Umbrales } from "../detect";
 import { deleteAnalysis, loadAnalysis, type StoredFarm } from "../storage";
 import { aExcel, aInformeHtml, entregables, nombreDeFoto, toCsv } from "../informe";
 import { fusionarRevision, reclasificarFindings, vueloDesdeAnalisis } from "../vuelo";
+import { aExcelEntregable, nombreEntregado } from "../entregable";
 import { bloquesDelParque, puntosDeHallazgos } from "../mapa";
 import { acuerdoDeLaMuestra, muestraARevisar } from "../muestreo";
 import { MapaDelParque } from "../components/MapaDelParque";
@@ -83,6 +84,8 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
   const inputFotos = useRef<HTMLInputElement>(null);
   const pedido = useRef<((fs: File[]) => void) | null>(null);
   const [exportando, setExportando] = useState<string | null>(null);
+  /** La carpeta de Drive donde estan las fotos, para el link que abre online. */
+  const [driveUrl, setDriveUrl] = useState("");
   const [filtro, setFiltro] = useState<"todos" | "muestra" | "pendiente" | "confirmado" | "sin-ubicar">("muestra");
   /**
    * Que porcentaje de cada tipo se revisa a mano.
@@ -268,7 +271,11 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
         esta a mano —esta pantalla ya recibe el parque entero— y de ahi sale la
         linea que declara la convencion.
       */
-      const bytes = await aExcel(current, "fotos", stored.profile.addressing);
+      const bytes = await aExcelEntregable(current, {
+        carpeta: "photos",
+        ...(driveUrl.trim() ? { driveUrl: driveUrl.trim() } : {}),
+        addressing: stored.profile.addressing,
+      });
       descargarBytes(
         `${current.name}.xlsx`,
         bytes,
@@ -295,10 +302,14 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
       */
       const usados = new Set<string>();
       const entradas = [];
-      for (const f of entregables(current)) {
+      const lista = entregables(current);
+      for (const [n, f] of lista.entries()) {
         const file = encontradas.get(f.fileName);
         if (!file) continue;
-        let ruta = `fotos/${nombreDeFoto(f)}`;
+        // El nombre arranca por el numero de referencia del Excel, asi que la
+        // carpeta sale en el mismo orden que la tabla y una foto suelta se
+        // puede rastrear hasta su fila.
+        let ruta = `photos/${nombreEntregado(f, n)}`;
         if (usados.has(ruta)) {
           const ext = /\.[a-z0-9]+$/i.exec(ruta)?.[0] ?? "";
           ruta = `${ruta.slice(0, ruta.length - ext.length)}__${f.id.replace(/[^\w.-]+/g, "-")}${ext}`;
@@ -667,12 +678,33 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
           */}
           <h3>Entregar</h3>
           <div className="acciones-entrega">
-            <button onClick={() => void exportarExcel()}>Excel + link a las fotos</button>
+            <button onClick={() => void exportarExcel()}>Excel (English)</button>
             <button onClick={() => void exportarFotos()}>Carpeta de fotos renombradas</button>
             <button onClick={() => void exportarInforme()}>Informe visual (HTML / PDF)</button>
             <button className="ghost" onClick={() => download(`${current.name}.csv`, toCsv(current), "text/csv")}>
               CSV
             </button>
+          </div>
+          {/*
+            La carpeta de Drive, opcional.
+
+            El link relativo a la foto solo abre con el ZIP descomprimido y
+            Excel de escritorio: en Safari y en Google Sheets el navegador no
+            deja que una planilla abra un archivo del disco, y ahi no pasa
+            nada al hacer click. Pegando aca la carpeta de Drive donde subiste
+            las fotos, el Excel lleva ademas una columna que abre online.
+          */}
+          <div className="field">
+            <label htmlFor="drive-url">Carpeta de Drive con las fotos (opcional)</label>
+            <input
+              id="drive-url" type="url" placeholder="https://drive.google.com/drive/folders/…"
+              value={driveUrl} onChange={(e) => setDriveUrl(e.target.value)}
+            />
+            <span className="help">
+              Si la pegás, el Excel suma una columna "Photo (online)" que abre la foto desde
+              cualquier lado. El link de al lado sigue apuntando a la carpeta <code>photos/</code>
+              {" "}que viaja en el ZIP.
+            </span>
           </div>
           {exportando && <p className="note ok">{exportando}</p>}
           <p className="help">

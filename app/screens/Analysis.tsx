@@ -104,6 +104,13 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
 
   const totalModulos = farm.rows.reduce((s, r) => s + r.modulesPerRow, 0);
 
+  /** Cuantos modulos tiene cada bloque: la cobertura se cuenta contra esto. */
+  const modulosPorBloque = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of farm.rows) m.set(r.source.block, (m.get(r.source.block) ?? 0) + r.modulesPerRow);
+    return m;
+  }, [farm]);
+
   /** Todos los modulos medidos, comparados contra sus vecinos. */
   const hallazgos = useMemo(
     () => (resultado ? compararConUmbrales(resultado.muestras, umbrales) : []),
@@ -126,6 +133,7 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
         // desconectado existe porque ninguno de sus modulos se despega.
         eventos: eventosDeString(hallazgos, largoDelString),
         todos: hallazgos,
+        umbrales,
       }, resultado.corregidoPorFila),
       cobertura: coberturaDe({
         resultado,
@@ -135,9 +143,10 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
         celdaM,
         umbrales,
         fotos: archivos.length,
+        modulosPorBloque,
       }),
     };
-  }, [resultado, hallazgos, cortos, farm, frame, totalModulos, largoDelString, celdaM, umbrales, archivos.length]);
+  }, [resultado, hallazgos, cortos, farm, frame, totalModulos, largoDelString, celdaM, umbrales, archivos.length, modulosPorBloque]);
 
   /*
     La deteccion se entrega hacia arriba, no se guarda aca.

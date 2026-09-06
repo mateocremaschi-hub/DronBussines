@@ -206,6 +206,15 @@ export interface Cobertura {
   umbrales: Umbrales;
   /** Fotos que se ubicaron con un supuesto porque les faltaba un dato. */
   posesSupuestas: Array<{ motivo: string; fotos: number }>;
+  /**
+   * Cobertura BLOQUE POR BLOQUE, que es la que le importa al cliente.
+   *
+   * "14.751 de 377.888 modulos" es verdad y no dice nada: 377.888 es el parque
+   * entero de 36 bloques y el vuelo cubrio cuatro. Puesto asi, un vuelo
+   * perfecto parece un 4 % de cobertura. Lo que hay que contar es cuantos
+   * modulos tiene cada bloque volado y cuantos se midieron de ese bloque.
+   */
+  porBloque?: Array<{ block: string; modulos: number; medidos: number }>;
   /** Strings enteros calientes: no son defectos de modulo, se arreglan en otro lado. */
   eventosDeString: EventoDeString[];
   /** Las frases, ya escritas, de lo que este vuelo no permite afirmar. */
