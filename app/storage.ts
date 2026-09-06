@@ -100,7 +100,7 @@ export function downloadFarm(farm: StoredFarm): void {
   a.href = url;
   // Una sola extension: en iOS un nombre con dos puntos hace que el selector
   // de archivos no lo reconozca y lo muestre en gris.
-  a.download = `${farm.profile.id}-pica.json`;
+  a.download = `${farm.profile.id}-nixin.json`;
   a.click();
   URL.revokeObjectURL(url);
 }

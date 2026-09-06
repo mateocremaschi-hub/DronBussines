@@ -220,7 +220,7 @@ function templateKml(m: Mission, opts: MissionOptions, k: OpcionesKmz): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <kml ${NS}>
   <Document>
-    <wpml:author>Pica</wpml:author>
+    <wpml:author>niXin</wpml:author>
     <wpml:createTime>${t}</wpml:createTime>
     <wpml:updateTime>${t}</wpml:updateTime>
 ${missionConfig(opts, k)}

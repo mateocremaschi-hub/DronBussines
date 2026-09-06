@@ -8,7 +8,7 @@
  *
  * Lo que hace que esto entre en el navegador es una simplificacion, no un
  * atajo: el pipeline original rasterizaba las paginas con poppler porque
- * DIBUJABA los planos. Pica no los dibuja — le alcanza con las etiquetas y sus
+ * DIBUJABA los planos. Esta app no los dibuja — le alcanza con las etiquetas y sus
  * coordenadas. Sin imagenes no hace falta poppler, y pdf.js da el texto con
  * posicion, que es exactamente lo que daba `pdftotext -bbox`.
  *
@@ -24,7 +24,7 @@
  * contando desde la calle—. Se calculaba agrupando columnas con una tolerancia
  * en pixeles de una imagen a 300 dpi, y aca no hay imagen: el mismo numero
  * sobre coordenadas de PDF agruparia cualquier cosa. Y no se pierde nada,
- * porque Pica no lo usa: su `pos` es la posicion ELECTRICA en la linea, otra
+ * porque esta app no lo usa: su `pos` es la posicion ELECTRICA en la linea, otra
  * cosa con el mismo nombre, y `plans.ts` tiene una prueba que impide copiarlo.
  */
 

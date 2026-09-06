@@ -154,7 +154,7 @@ export function Farms({ farms, onNew, onOpen, onInspect, onAddGeometry, onParams
     <div className="screen">
       <header className="screen-head">
         <div>
-          <p className="eyebrow">Pica</p>
+          <p className="eyebrow">niXin Software</p>
           <h1>Parques</h1>
         </div>
         <button onClick={onNew}>Nuevo parque</button>

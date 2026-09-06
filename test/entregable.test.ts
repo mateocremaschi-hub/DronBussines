@@ -350,3 +350,29 @@ describe("el por que del motor, en el informe", () => {
     expect(html).toContain("hot patch");
   });
 });
+
+/*
+  Quien firma el informe.
+
+  Un PDF suelto que se reenvia y se abre seis meses despues tiene que seguir
+  teniendo dueño. El membrete va arriba de todo y la firma al pie.
+*/
+describe("la marca en el entregable", () => {
+  const html = () => aInformeEntregable(insp([f({ status: "confirmado" })]));
+
+  it("el informe abre con el membrete de niXin", () => {
+    const h = html();
+    expect(h).toContain("membrete");
+    expect(h).toContain("Software");
+    expect(h).toContain("Thermographic inspection report");
+  });
+
+  it("y cierra firmado", () => {
+    expect(html()).toContain("Surveyed and reported by");
+    expect(html()).toContain("niXin Software");
+  });
+
+  it("no queda rastro del nombre viejo", () => {
+    expect(html()).not.toMatch(/\bPica\b/);
+  });
+});

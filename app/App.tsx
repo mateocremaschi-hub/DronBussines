@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Farms } from "./screens/Farms";
+import { equis, ISOTIPO, MARCA } from "./marca";
 import { Inspection } from "./screens/Inspection";
 import { Locate } from "./screens/Locate";
 import { Setup } from "./screens/Setup";
@@ -104,8 +105,18 @@ export function App() {
             onClick={() => setView({ name: "farms" })}
             aria-label="Volver a los parques"
           >
-            <span className="marca-icono" aria-hidden="true" />
-            <span className="marca-nombre">Pica</span>
+            {/*
+              El isotipo y el wordmark salen del set de logos, no de una
+              version dibujada a mano acá: la marca se define en un solo lugar
+              y la usan igual la barra, el informe y el Excel.
+            */}
+            <span className="marca-icono" dangerouslySetInnerHTML={{ __html: ISOTIPO }} />
+            <span className="marca-nombre">
+              <span className="marca-palabra">
+                ni<span className="marca-equis" dangerouslySetInnerHTML={{ __html: equis("currentColor") }} />in
+              </span>
+              <span className="marca-tag">Software</span>
+            </span>
           </button>
           {!enParques && "farm" in view && view.farm && (
             <span className="barra-donde">
@@ -173,7 +184,7 @@ export function App() {
           <button className="link" onClick={() => location.reload()}>Recargar ahora</button>
         )}
         <br />
-        Pica · los datos viven solo en este dispositivo · nada se sube a ningun lado
+        {MARCA.producto} · los datos viven solo en este dispositivo · nada se sube a ningun lado
       </footer>
     </div>
     </>

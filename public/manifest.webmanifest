@@ -1,10 +1,10 @@
 {
-  "name": "Pica — Localizador de modulos",
-  "short_name": "Pica",
-  "description": "Localiza modulos fotovoltaicos a partir de una coordenada, en cualquier planta.",
+  "name": "niXin Software — Inspeccion termografica",
+  "short_name": "niXin",
+  "description": "Inspeccion termografica de plantas fotovoltaicas con dron: localiza y mide cada modulo.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0F1318",
-  "theme_color": "#0E6F72",
+  "background_color": "#05070A",
+  "theme_color": "#05070A",
   "icons": []
 }

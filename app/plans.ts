@@ -9,7 +9,7 @@
  *
  * Lo que se importa aca es la salida del extractor de planos (`all_blocks.json`,
  * del pipeline del Tracker Finder), que ya esta validado sobre 3458 trackers de
- * Edenvale sin un solo nulo. Pica no vuelve a extraer nada: consume.
+ * Edenvale sin un solo nulo. Esta app no vuelve a extraer nada: consume.
  *
  * Y hay un dato que NO se importa, a proposito, aunque este ahi con un nombre
  * que invita: el `pos` del plano es la posicion FISICA del tracker contando

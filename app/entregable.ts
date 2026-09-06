@@ -22,6 +22,7 @@ import type { FarmProfile } from "@locator";
 import type { Severidad } from "./detect";
 import type { Finding, Inspection } from "./inspection";
 import { entregables } from "./informe";
+import { isotipoPng, lockup, MARCA } from "./marca";
 
 /** Como se dice cada cosa en el entregable. */
 /*
@@ -326,7 +327,7 @@ export async function aExcelEntregable(
   const lista = entregables(i);
   const cols = columnas(o);
   const wb = new ExcelJS.Workbook();
-  wb.creator = "Pica";
+  wb.creator = MARCA.producto;
   wb.created = new Date();
 
   // --- Hoja 1: el resumen ---------------------------------------------------
@@ -383,10 +384,26 @@ export async function aExcelEntregable(
     return r;
   };
 
-  const r1 = s.addRow(["Thermographic inspection report"]);
+  /*
+    El membrete: quien firma la planilla.
+
+    Un Excel que se reenvia por mail y se abre seis meses despues tiene que
+    seguir diciendo de quien es. El isotipo va como imagen —ExcelJS no mete
+    SVG— y si el navegador no puede rasterizarlo queda el nombre en texto,
+    que es lo que habia antes.
+  */
+  const png = await isotipoPng(160);
+  if (png) {
+    const id = wb.addImage({ base64: png, extension: "png" });
+    s.addImage(id, { tl: { col: 0.15, row: 0.15 }, ext: { width: 46, height: 46 } });
+  }
+  const r0 = s.addRow([png ? "        " + MARCA.producto : MARCA.producto]);
+  r0.font = { bold: true, size: 13, color: { argb: "FF" + MARCA.cianOscuro.slice(1) } };
+  r0.height = 22;
+  const r1 = s.addRow([png ? "        Thermographic inspection report" : "Thermographic inspection report"]);
   r1.font = { bold: true, size: 18, color: { argb: TINTA } };
   r1.height = 26;
-  s.addRow([i.farmName]).font = { size: 12, color: { argb: "FF5A6672" } };
+  s.addRow([png ? "        " + i.farmName : i.farmName]).font = { size: 12, color: { argb: "FF5A6672" } };
   s.addRow([]);
 
   titulo("Flight");
@@ -685,8 +702,17 @@ export function aInformeEntregable(
   * { box-sizing: border-box; }
   body { font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; color: #14202a;
          background: #fff; max-width: 960px; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }
-  h1 { font-size: 1.75rem; margin: 0 0 .2rem; color: var(--tinta); letter-spacing: -.01em; }
-  .sub { color: var(--suave); margin: 0 0 2rem; font-size: 1.02rem; }
+  /*
+    El membrete: quien firma el informe, arriba de todo.
+
+    Es lo primero que mira el que lo recibe, y lo que hace que un PDF suelto
+    seis meses despues siga teniendo dueño.
+  */
+  .membrete { display: flex; align-items: center; gap: 1.4rem; padding-bottom: 1.1rem;
+              border-bottom: 3px solid var(--tinta); margin-bottom: 1.8rem; }
+  .membrete .quien { display: flex; flex-direction: column; gap: .18rem; }
+  .membrete strong { font-size: 1.5rem; color: var(--tinta); letter-spacing: -.015em; }
+  .membrete span { color: var(--suave); font-size: 1rem; }
   h2 { font-size: 1.1rem; text-transform: uppercase; letter-spacing: .06em; color: var(--tinta);
        margin: 2.4rem 0 .8rem; padding-bottom: .35rem; border-bottom: 2px solid var(--tinta); }
   .tarjetas { display: grid; grid-template-columns: repeat(3, 1fr); gap: .8rem; margin-bottom: 1.4rem; }
@@ -735,6 +761,10 @@ export function aInformeEntregable(
   .f img { width: 100%; border-radius: 5px; display: block; image-rendering: -webkit-optimize-contrast; }
   .sinfoto { color: #98a2ab; font-style: italic; margin: 0; }
   code { font-size: .87em; background: #f2f5f7; padding: .1em .35em; border-radius: 3px; }
+  .firma { margin-top: 2.6rem; padding-top: 1rem; border-top: 1px solid var(--linea);
+           color: var(--suave); font-size: .86rem; display: flex; justify-content: space-between;
+           gap: 1rem; flex-wrap: wrap; }
+  .firma b { color: var(--tinta); }
   @media print {
     body { max-width: none; padding: 0; font-size: 11pt; }
     h2 { margin-top: 1.4rem; }
@@ -742,8 +772,13 @@ export function aInformeEntregable(
     .f img { width: 100%; max-height: 15cm; object-fit: contain; }
   }
 </style></head><body>
-<h1>Thermographic inspection report</h1>
-<p class="sub">${esc(i.farmName)} · ${esc(i.name)} · ${lista.length} finding${lista.length === 1 ? "" : "s"}</p>
+<header class="membrete">
+  ${lockup("claro", 46)}
+  <div class="quien">
+    <strong>Thermographic inspection report</strong>
+    <span>${esc(i.farmName)} · ${esc(i.name)} · ${lista.length} finding${lista.length === 1 ? "" : "s"}</span>
+  </div>
+</header>
 
 <div class="tarjetas">
   ${porSeveridad(lista).map((c) => `<div class="t ${c.severidad}"><b>${c.n}</b><span>${esc(c.nombre)}</span></div>`).join("")}
@@ -811,5 +846,10 @@ ${[...porBloque.entries()].sort(([a], [b]) => a.localeCompare(b, undefined, { nu
   .map(([b, fs]) => `<h2>Block ${esc(b)} — ${fs.length} finding${fs.length === 1 ? "" : "s"}</h2>${
     fs.map((f) => ficha(f, lista.indexOf(f))).join("")
   }`).join("")}
+
+<footer class="firma">
+  <span>Surveyed and reported by <b>${esc(MARCA.producto)}</b></span>
+  <span>${esc(i.farmName)} · ${esc(i.createdAt.slice(0, 10))}</span>
+</footer>
 </body></html>`;
 }

@@ -16,6 +16,9 @@
 :root {
   --paper: #F4F6F8; --surface: #FFFFFF; --surface-2: #EBEFF3;
   --ink: #0D1519; --ink-2: #46545F; --ink-3: #77858F;
+  /* El cian de niXin. El de la marca (#5AD1DB) da 1,8:1 sobre blanco: sobre
+     fondo claro va el bajado, que da 6,3:1. */
+  --marca-acento: #146A75;
   --rule: #DDE3E9; --rule-strong: #BFC9D2;
 
   /* Teal: el dato confirmado, y el color de accion. */
@@ -43,6 +46,8 @@
   :root:not([data-theme="light"]) {
     --paper: #0B1014; --surface: #141B21; --surface-2: #1B242C;
     --ink: #EAF0F5; --ink-2: #A7B4C0; --ink-3: #74828E;
+    /* Sobre el fondo oscuro va el cian de la marca, tal cual: 11:1. */
+    --marca-acento: #5AD1DB;
     --rule: #26313A; --rule-strong: #3A4854;
 
     --accent: #45C8C2; --accent-ink: #8BE3DD; --accent-soft: #0D3230;
@@ -95,14 +100,28 @@ body {
   background: none; border: none; padding: 0; cursor: pointer;
   color: var(--ink);
 }
-/* El icono: la misma rampa, en chico. */
-.marca-icono {
-  width: 22px; height: 22px; border-radius: 6px; background: var(--ramp);
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .12);
-}
-.marca-nombre {
+/*
+  El isotipo: el visor con la X adentro. Trae su propio fondo oscuro, asi que
+  no necesita una version por tema.
+*/
+.marca-icono { width: 26px; height: 26px; display: block; flex: none; }
+.marca-icono svg { width: 100%; height: 100%; display: block; }
+.marca-nombre { display: flex; flex-direction: column; gap: 1px; line-height: 1; }
+.marca-palabra {
   font-family: Archivo, sans-serif; font-weight: 700; font-size: 17px;
-  letter-spacing: -.01em;
+  letter-spacing: -.02em;
+  display: flex; align-items: center; gap: .5px;
+}
+/*
+  La X del wordmark es una LETRA: mide lo que una minuscula y no sobresale.
+  0,52 em es la altura de x de Archivo, medida sobre el propio wordmark.
+*/
+.marca-equis { width: .52em; height: .52em; display: block; }
+.marca-equis svg { width: 100%; height: 100%; display: block; }
+.marca-tag {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 8px; font-weight: 500; letter-spacing: .3em;
+  text-transform: uppercase; color: var(--marca-acento);
 }
 .barra-donde {
   color: var(--ink-2); font-size: 14px; min-width: 0;
