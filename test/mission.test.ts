@@ -439,14 +439,15 @@ describe("bloques que se pisan", () => {
  * camara a plomo, y el vidrio del modulo reflejando el cielo y el suelo.
  */
 describe("la camara inclinada segun el tracker", () => {
-  it("con el tracker a menos de 20 grados se queda a plomo", () => {
-    expect(vistaParaLaHora(0)).toBeNull();
-    expect(vistaParaLaHora(-15)).toBeNull();
+  // Camara de 36 grados de campo: el centro se apunta a 5 + 18 = 23.
+  it("con el tracker a menos de 5 + medio campo se queda a plomo", () => {
+    expect(vistaParaLaHora(0, 36)).toBeNull();
+    expect(vistaParaLaHora(-23, 36)).toBeNull();
   });
 
-  it("se inclina lo que sobra de 20 grados, y no mas de 35", () => {
-    expect(vistaParaLaHora(40)?.desvioDeg).toBe(20);
-    expect(vistaParaLaHora(-60)?.desvioDeg).toBe(35);
+  it("se inclina lo que sobra, para que el borde lejano quede a 5 grados, y no mas de 35", () => {
+    expect(vistaParaLaHora(40, 36)?.desvioDeg).toBeCloseTo(17, 6);
+    expect(vistaParaLaHora(-70, 36)?.desvioDeg).toBe(35);
   });
 
   /*
@@ -456,8 +457,8 @@ describe("la camara inclinada segun el tracker", () => {
   */
   it("mira para el lado contrario al que miran los paneles", () => {
     // A la mañana el panel mira al este (angulo positivo): la camara al oeste.
-    expect(vistaParaLaHora(40)?.hacia).toBe(-1);
-    expect(vistaParaLaHora(-40)?.hacia).toBe(1);
+    expect(vistaParaLaHora(40, 36)?.hacia).toBe(-1);
+    expect(vistaParaLaHora(-40, 36)?.hacia).toBe(1);
   });
 
   it("corre las lineas al costado, del lado del sol, y lo escribe en la mision", () => {

@@ -305,7 +305,8 @@ export function velocidades(
  * rayo del sol — el reflejo del sol vuelve derecho a la camara, y encima se
  * ve el reflejo del propio dron. La norma (IEC TS 62446-3) pide mirar entre 5
  * y 30 grados fuera del perpendicular, y las plataformas comerciales hacen lo
- * mismo. Se apunta a 20.
+ * mismo. Se apunta el centro del cuadro a 5 grados mas medio campo de la
+ * camara, para que ningun punto del cuadro baje de 5.
  *
  * Y eso sale solo si el dron vuela DEL LADO HACIA EL QUE MIRAN LOS PANELES
  * (el lado del sol) y la camara mira hacia el lado contrario al sol: asi el
@@ -323,8 +324,20 @@ export interface VistaInclinada {
   hacia: 1 | -1;
 }
 
-/** A cuantos grados del perpendicular del panel se quiere mirar. */
-export const DESVIO_DEL_PANEL_OBJETIVO_DEG = 20;
+/**
+ * Lo mas cerca del perpendicular del panel que puede quedar CUALQUIER punto
+ * del cuadro. La camara ve 36 grados de ancho: si el centro esta a 20 del
+ * perpendicular, el borde cercano al dron queda a 38 y el lejano a 2 — y a 2
+ * grados el sol vuelve a la camara como una mancha caliente en el vidrio.
+ * Cinco grados es el minimo de la IEC TS 62446-3. El centro se apunta a
+ * 5 + medio campo, para que el borde lejano quede justo a 5.
+ */
+export const MARGEN_DEL_REFLEJO_DEG = 5;
+
+/** A cuantos grados del perpendicular se apunta el CENTRO del cuadro con esta camara. */
+export function desvioObjetivoDeg(hfovDeg: number): number {
+  return MARGEN_DEL_REFLEJO_DEG + hfovDeg / 2;
+}
 /**
  * Lo mas que se inclina la camara. A 52 m y 35 grados el dron vuela 36 m al
  * costado de la fila que fotografia; mas que eso, la huella se estira tanto
@@ -341,11 +354,12 @@ export const DESVIO_MAXIMO_DEG = 35;
  * del objetivo no hace falta inclinar nada: a plomo ya se lo mira dentro de
  * los 20 grados, y `null` es "dejalo a plomo".
  */
-export function vistaParaLaHora(anguloTrackerDeg: number): VistaInclinada | null {
+export function vistaParaLaHora(anguloTrackerDeg: number, hfovDeg: number): VistaInclinada | null {
   const theta = Math.abs(anguloTrackerDeg);
-  if (theta <= DESVIO_DEL_PANEL_OBJETIVO_DEG) return null;
+  const objetivo = desvioObjetivoDeg(hfovDeg);
+  if (theta <= objetivo) return null;
   return {
-    desvioDeg: Math.min(DESVIO_MAXIMO_DEG, theta - DESVIO_DEL_PANEL_OBJETIVO_DEG),
+    desvioDeg: Math.min(DESVIO_MAXIMO_DEG, theta - objetivo),
     hacia: anguloTrackerDeg > 0 ? -1 : 1,
   };
 }

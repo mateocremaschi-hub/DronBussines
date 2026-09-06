@@ -34,7 +34,7 @@ import {
   type MissionOptions,
 } from "../mission";
 import { avisosDeKmz, PERFILES_DJI, toKmz } from "../wpml";
-import { DESVIO_DEL_PANEL_OBJETIVO_DEG, huella, pasoEntreFilas, velocidades, vistaParaLaHora } from "../mission";
+import { desvioObjetivoDeg, huella, MARGEN_DEL_REFLEJO_DEG, pasoEntreFilas, velocidades, vistaParaLaHora } from "../mission";
 import { PIXELES_POR_CELDA_MINIMO, PIXELES_POR_LADO_OBJETIVO, CELDA_M } from "../detect";
 import { LoQueVeElDron } from "../components/LoQueVeElDron";
 import { ZonaQueSeMide } from "../components/ZonaQueSeMide";
@@ -211,7 +211,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   const [horaDeVuelo, setHoraDeVuelo] = useState<string | null>(null);
   const horaElegida = ventana.find((h) => h.hora === horaDeVuelo) ?? mejorHora;
   const [inclinarLaCamara, setInclinarLaCamara] = useState(true);
-  const vista = inclinarLaCamara && horaElegida ? vistaParaLaHora(horaElegida.anguloDeg) : null;
+  const vista = inclinarLaCamara && horaElegida ? vistaParaLaHora(horaElegida.anguloDeg, camara.hfovDeg) : null;
 
   const opts: MissionOptions = {
     camera: camara, ...o, altitudeM: altura, speedMps: velocidadElegida, sideOverlap: solapeElegido,
@@ -619,9 +619,11 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
                     <strong>{Math.abs(horaElegida.anguloDeg).toFixed(0)}°</strong>, mirando al{" "}
                     {horaElegida.anguloDeg > 0 ? "este" : "oeste"}. La cámara va inclinada{" "}
                     <strong>{vista.desvioDeg.toFixed(0)}°</strong> (gimbal a −{(90 - vista.desvioDeg).toFixed(0)}°),
-                    mirando al <strong>{vista.hacia > 0 ? "este" : "oeste"}</strong>, para quedar a{" "}
-                    {DESVIO_DEL_PANEL_OBJETIVO_DEG}° del perpendicular del panel: de frente, pero sin que el
-                    reflejo del sol vuelva a la cámara. El dron vuela{" "}
+                    mirando al <strong>{vista.hacia > 0 ? "este" : "oeste"}</strong>. Así el centro del cuadro
+                    queda a {desvioObjetivoDeg(camara.hfovDeg).toFixed(0)}° del perpendicular del panel y el
+                    borde lejano a {MARGEN_DEL_REFLEJO_DEG}°: ningún panel del cuadro queda tan de frente como para
+                    que el reflejo del sol vuelva a la cámara, ni tan de costado como para reflejar el suelo.
+                    El dron vuela{" "}
                     <strong>{(altura * Math.tan((vista.desvioDeg * Math.PI) / 180)).toFixed(0)} m</strong> al costado
                     de la fila que fotografía, del lado del sol, con la nariz cruzada a las filas (va de
                     costado). Todo eso ya está en el KMZ. Ojo: la app todavía mide las fotos inclinadas
@@ -630,8 +632,9 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
                 ) : (
                   <p className="note ok">
                     A las {horaElegida.hora} los trackers van a estar a{" "}
-                    {Math.abs(horaElegida.anguloDeg).toFixed(0)}°: con la cámara a plomo ya se mira el
-                    panel a menos de {DESVIO_DEL_PANEL_OBJETIVO_DEG}° del perpendicular. No hace falta inclinar nada.
+                    {Math.abs(horaElegida.anguloDeg).toFixed(0)}°: con la cámara a plomo el cuadro entero ya
+                    queda entre {MARGEN_DEL_REFLEJO_DEG}° y {(desvioObjetivoDeg(camara.hfovDeg) * 2 - MARGEN_DEL_REFLEJO_DEG).toFixed(0)}° del
+                    perpendicular. No hace falta inclinar nada.
                   </p>
                 )
               )}
