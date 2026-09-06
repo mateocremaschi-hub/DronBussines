@@ -1743,3 +1743,108 @@ export function textoDeAceptacion(t: FilaDeAceptacion[]): string {
     `${r.hallazgos} hallazgos (${r.sinNumero} sin numero confirmado)` + (r.pasa ? "" : " — NO PASA"));
   return lineas.join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// Cargar el vuelo por partes
+// ---------------------------------------------------------------------------
+
+/**
+ * Junta dos tandas de fotos del MISMO vuelo en un resultado solo.
+ *
+ * Un parque de cuatro bloques son dos mil fotos y ocho gigas: no entran de una
+ * en el dialogo del navegador ni en la memoria del equipo, y Mateo las carga
+ * por partes. Antes cada carga PISABA la anterior, asi que el Excel y el
+ * informe que se bajaban de ahi eran los de la ultima tanda: para entregar el
+ * parque entero habia que cargar todo junto o entregar cuatro archivos.
+ *
+ * Se juntan los RESULTADOS y no los archivos. Volver a leer las fotos viejas
+ * costaria los mismos minutos otra vez, y no hace falta: lo que necesita la
+ * comparacion contra los hermanos de string son las MUESTRAS, y esas ya estan
+ * medidas. Cada tanda mide su escala y su giro con sus propias fotos —son del
+ * mismo vuelo, dan lo mismo— y la mediana de cada string se calcula despues,
+ * sobre todo lo junto.
+ *
+ * Un modulo que salio en las dos tandas se queda con la medicion que lo vio
+ * mas cerca del centro del cuadro, igual que entre dos fotos de la misma
+ * tanda, y la otra viaja como `otrasC`: es la prueba de que lo que se midio es
+ * del panel y no de la foto.
+ */
+export function unirVuelos(a: ResultadoDeVuelo | null, b: ResultadoDeVuelo): ResultadoDeVuelo {
+  if (!a) return b;
+  const push2 = <K, V>(m: Map<K, V[]>, k: K, v: V) => {
+    const l = m.get(k);
+    if (l) l.push(v); else m.set(k, [v]);
+  };
+
+  const porModulo = new Map<string, Muestra>();
+  const otras = new Map<string, number[]>();
+  for (const m of [...a.muestras, ...b.muestras]) {
+    const k = `${m.modulo.rowId}#${m.modulo.positionInRow}`;
+    push2(otras, k, m.celsius);
+    for (const c of m.otrasC ?? []) push2(otras, k, c);
+    const previo = porModulo.get(k);
+    if (!previo || m.distanciaAlCentroM < previo.distanciaAlCentroM) porModulo.set(k, m);
+  }
+  const muestras = [...porModulo.entries()].map(([k, m]) => {
+    // La propia no cuenta como "otra": se saca una sola vez, la mas parecida.
+    const resto = [...(otras.get(k) ?? [])];
+    const i = resto.findIndex((c) => Math.abs(c - m.celsius) < 1e-9);
+    if (i >= 0) resto.splice(i, 1);
+    return resto.length ? { ...m, otrasC: resto } : { ...m, otrasC: undefined };
+  });
+
+  const auditoria = [...a.auditoria];
+  for (const t of b.auditoria) {
+    const v = auditoria.find((x) => x.block === t.block);
+    if (!v) { auditoria.push({ ...t }); continue; }
+    const medidas = v.medidas + t.medidas;
+    v.lisuraMedia = medidas ? (v.lisuraMedia * v.medidas + t.lisuraMedia * t.medidas) / medidas : 0;
+    v.medidas = medidas;
+    v.fotos += t.fotos;
+    v.bajo90 += t.bajo90;
+    v.descartadas += t.descartadas;
+  }
+  auditoria.sort((x, y) => x.block.localeCompare(y.block, undefined, { numeric: true }));
+
+  /*
+    Las filas que se midieron en las DOS tandas hay que decirlas.
+
+    El numero de modulo de una fila sale de contar desde su punta, y cada tanda
+    cuenta con las puntas que vio: si una fila entra partida en dos cargas, las
+    dos mitades pueden numerarse distinto. Volando bloque por bloque no pasa
+    —cada fila vive en una carga sola— y por eso no se prohibe; pero callarlo
+    seria entregar dos numeraciones bajo el mismo nombre.
+  */
+  const filasDe = (r: ResultadoDeVuelo) => new Set([...r.corregidoPorFila.keys()].map((k) => k.split("|")[1]!));
+  const enLasDos = [...filasDe(a)].filter((f) => filasDe(b).has(f));
+  const problemas = [...new Set([...a.problemas, ...b.problemas])];
+  if (enLasDos.length) {
+    problemas.push(
+      `${enLasDos.length} filas salieron en mas de una carga de fotos (${enLasDos.slice(0, 3).join(", ")}` +
+      `${enLasDos.length > 3 ? "…" : ""}). El numero de modulo de una fila se cuenta desde su punta, y ` +
+      "cada carga cuenta con las puntas que vio: si una fila entro partida entre dos cargas, revisá " +
+      "su numeracion antes de entregar. Cargando un bloque por vez esto no pasa.",
+    );
+  }
+
+  const rep = [a.repetibilidad, b.repetibilidad].filter((r): r is NonNullable<typeof r> => r != null);
+  return {
+    muestras,
+    camera: a.camera ?? b.camera,
+    gsdCm: a.fotosTermicas + b.fotosTermicas
+      ? (a.gsdCm * a.fotosTermicas + b.gsdCm * b.fotosTermicas) / (a.fotosTermicas + b.fotosTermicas)
+      : a.gsdCm,
+    fotosTermicas: a.fotosTermicas + b.fotosTermicas,
+    soloEnElBorde: a.soloEnElBorde + b.soloEnElBorde,
+    // La repetibilidad de la carga con mas modulos vistos dos veces: es la que
+    // tiene con que decirlo. Sumar las dos daria un numero que no midio nadie.
+    repetibilidad: rep.length ? rep.reduce((x, y) => (y.modulos > x.modulos ? y : x)) : null,
+    posesSupuestas: [...a.posesSupuestas, ...b.posesSupuestas],
+    anguloMedio: a.anguloMedio ?? b.anguloMedio,
+    problemas,
+    alineaciones: [...a.alineaciones, ...b.alineaciones],
+    auditoria,
+    corregidoPorFila: new Map([...a.corregidoPorFila, ...b.corregidoPorFila]),
+    fixes: new Map([...a.fixes, ...b.fixes]),
+  };
+}

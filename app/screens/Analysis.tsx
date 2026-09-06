@@ -37,6 +37,7 @@ import {
   hallazgosAFindings,
   largoDelModulo,
   tablaDeAceptacion,
+  unirVuelos,
   type ResultadoDeVuelo,
 } from "../vuelo";
 
@@ -65,6 +66,8 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
   const [archivos, setArchivos] = useState<File[]>([]);
   const [resultado, setResultado] = useState<ResultadoDeVuelo | null>(null);
   const [progreso, setProgreso] = useState<{ hecho: number; total: number; etapa?: string } | null>(null);
+  /** Cuantas fotos de la ultima carga ya estaban: se avisa en vez de no hacer nada. */
+  const [repetidas, setRepetidas] = useState(0);
   const [ajuste, setAjuste] = useState<Ajuste>({ dxM: 0, dyM: 0 });
   const [elegido, setElegido] = useState<Hallazgo | null>(null);
 
@@ -147,7 +150,17 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
     if (deteccion) onDeteccion(deteccion);
   }, [deteccion, onDeteccion]);
 
-  async function analizar(files: File[], conAjuste: Ajuste) {
+  /**
+   * Lee una tanda de fotos y la SUMA a lo que el vuelo ya tenia.
+   *
+   * Un parque de cuatro bloques son dos mil fotos: no entran de una en el
+   * dialogo ni en la memoria, y se cargan por partes. Antes cada carga pisaba
+   * la anterior y el Excel que salia de ahi era el de la ultima tanda.
+   *
+   * Se vuelven a leer SOLO las fotos nuevas. Las viejas ya estan medidas, y
+   * volver a leerlas costaria los mismos minutos otra vez.
+   */
+  async function analizar(files: File[], conAjuste: Ajuste, sumarA: ResultadoDeVuelo | null) {
     setProgreso({ hecho: 0, total: files.length });
     setElegido(null);
     const r = await analizarFotos(
@@ -163,14 +176,19 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
       },
       (hecho, total, etapa) => setProgreso({ hecho, total, ...(etapa ? { etapa } : {}) }),
     );
-    setResultado(r);
+    setResultado(unirVuelos(sumarA, r));
     setProgreso(null);
   }
 
+  /*
+    Mover la grilla SI vuelve a leer todo: la temperatura se mide en otros
+    pixeles de cada imagen, asi que ninguna medicion vieja sirve.
+  */
   const mover = (dx: number, dy: number) => {
     const nuevo = { dxM: ajuste.dxM + dx, dyM: ajuste.dyM + dy };
     setAjuste(nuevo);
-    void analizar(archivos, nuevo);
+    setResultado(null);
+    void analizar(archivos, nuevo, null);
   };
 
   const resumen = deteccion?.cobertura ?? null;
@@ -190,15 +208,43 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
           <input
             type="file" accept="image/jpeg" multiple
             onChange={(e) => {
-              const f = [...(e.target.files ?? [])];
-              setArchivos(f);
-              onFotos?.(f);
-              if (f.length) void analizar(f, ajuste);
+              const nuevas = [...(e.target.files ?? [])];
+              e.target.value = "";
+              if (!nuevas.length) return;
+              // Las que ya estaban no se vuelven a leer: se descartan del lote
+              // nuevo por nombre. Elegir la misma carpeta dos veces no duplica.
+              const yaEstan = new Set(archivos.map((x) => x.name));
+              const frescas = nuevas.filter((x) => !yaEstan.has(x.name));
+              const todas = [...archivos, ...frescas];
+              setArchivos(todas);
+              onFotos?.(todas);
+              if (frescas.length) void analizar(frescas, ajuste, resultado);
+              else setRepetidas(nuevas.length);
             }}
           />
-          <strong>Elegir fotos</strong>
-          <span className="muted">{archivos.length ? `${archivos.length} archivos` : "JPEG del dron"}</span>
+          <strong>{archivos.length ? "Agregar más fotos" : "Elegir fotos"}</strong>
+          <span className="muted">
+            {archivos.length ? `${archivos.length} archivos cargados — las nuevas se suman` : "JPEG del dron"}
+          </span>
         </label>
+        {repetidas > 0 && !progreso && (
+          <p className="note">
+            Esas {repetidas} fotos ya estaban cargadas en este vuelo, así que no se volvieron a leer.{" "}
+            <button className="link" onClick={() => setRepetidas(0)}>entendido</button>
+          </p>
+        )}
+        {archivos.length > 0 && !progreso && (
+          <p className="help">
+            Podés cargar el vuelo por partes —un bloque por vez— y el Excel y el informe salen con
+            todo junto. Para empezar de cero,{" "}
+            <button
+              className="link"
+              onClick={() => { setArchivos([]); setResultado(null); setElegido(null); setRepetidas(0); onFotos?.([]); }}
+            >
+              vaciar y volver a cargar
+            </button>.
+          </p>
+        )}
         {progreso && (
           <p className="note ok">
             {progreso.etapa ? `${progreso.etapa}: foto ${progreso.hecho} de ${progreso.total}…` : `Leyendo ${progreso.hecho} de ${progreso.total}…`}
