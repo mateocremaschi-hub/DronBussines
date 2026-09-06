@@ -375,4 +375,17 @@ describe("la marca en el entregable", () => {
   it("no queda rastro del nombre viejo", () => {
     expect(html()).not.toMatch(/\bPica\b/);
   });
+
+  /*
+    En Safari el logo salia gigante tapando el wordmark: el isotipo lleva
+    width/height en pixeles —los necesita para el Excel— y adentro del HTML
+    eso es un tamaño intrinseco de 100 px que Safari respeta.
+  */
+  it("el logo del membrete se ajusta a su caja y no sale a tamaño natural", () => {
+    const h = html();
+    const membrete = h.slice(h.indexOf("membrete"), h.indexOf("</header>"));
+    for (const svg of membrete.match(/<svg[^>]*>/g)!) {
+      expect(svg).toContain("width:100%;height:100%");
+    }
+  });
 });
