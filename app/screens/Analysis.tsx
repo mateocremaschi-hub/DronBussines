@@ -20,7 +20,7 @@
  * una resta.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { makeFrame } from "@locator";
 import type { CompiledFarm } from "@locator";
 import { ThermalMap } from "../components/ThermalMap";
@@ -68,8 +68,35 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
   const [progreso, setProgreso] = useState<{ hecho: number; total: number; etapa?: string } | null>(null);
   /** Cuantas fotos de la ultima carga ya estaban: se avisa en vez de no hacer nada. */
   const [repetidas, setRepetidas] = useState(0);
+  /**
+   * Las fotos que YA ESTAN adentro del resultado que se ve en pantalla.
+   *
+   * No es lo mismo que `archivos`, y esa confusion le costo a Mateo un vuelo
+   * entero: habia elegido las dos carpetas —el contador decia 1021— pero el
+   * resultado era el de una sola, y al volver a elegir la que faltaba la app
+   * le contestaba "esas fotos ya estaban cargadas" y no hacia nada. Estaban
+   * elegidas, si; medidas, no. Se descarta por lo que el resultado tiene
+   * adentro, asi que volver a elegir la carpeta que se perdio la arregla.
+   */
+  const [medidas, setMedidas] = useState<Set<string>>(new Set());
   const [ajuste, setAjuste] = useState<Ajuste>({ dxM: 0, dyM: 0 });
   const [elegido, setElegido] = useState<Hallazgo | null>(null);
+
+  /*
+    Las cargas se hacen de a una, en fila.
+
+    Cada tanda se fusiona contra el resultado que hay cuando le toca, no contra
+    el que habia cuando se apreto el boton: si se elegia la segunda carpeta
+    mientras la primera todavia estaba midiendo, las dos partian del mismo
+    "todavia no hay nada" y la que terminaba ultima pisaba a la otra. Lo que se
+    veia era una sola carpeta medida y el resto de las fotos elegidas pero
+    invisibles — sin ningun error a la vista.
+  */
+  const cola = useRef<Promise<void>>(Promise.resolve());
+  const ultimo = useRef<ResultadoDeVuelo | null>(null);
+  const medidasRef = useRef<Set<string>>(new Set());
+  const enCola = useRef<Set<string>>(new Set());
+  const [esperando, setEsperando] = useState(0);
 
   const anchoM = stored.profile.module.widthMm / 1000;
   const largoM = largoDelModulo(stored);
@@ -169,24 +196,58 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
    * Se vuelven a leer SOLO las fotos nuevas. Las viejas ya estan medidas, y
    * volver a leerlas costaria los mismos minutos otra vez.
    */
-  async function analizar(files: File[], conAjuste: Ajuste, sumarA: ResultadoDeVuelo | null) {
+  async function analizar(files: File[], conAjuste: Ajuste, desdeCero: boolean) {
     setProgreso({ hecho: 0, total: files.length });
     setElegido(null);
-    const r = await analizarFotos(
-      farm,
-      frame,
-      files,
-      {
-        moduloAnchoM: anchoM,
-        moduloLargoM: largoM,
-        celdaM,
-        ajuste: conAjuste,
-        largoDeclarado: stored.profile.module.lengthMm != null,
-      },
-      (hecho, total, etapa) => setProgreso({ hecho, total, ...(etapa ? { etapa } : {}) }),
-    );
-    setResultado(unirVuelos(sumarA, r));
-    setProgreso(null);
+    try {
+      const r = await analizarFotos(
+        farm,
+        frame,
+        files,
+        {
+          moduloAnchoM: anchoM,
+          moduloLargoM: largoM,
+          celdaM,
+          ajuste: conAjuste,
+          largoDeclarado: stored.profile.module.lengthMm != null,
+        },
+        (hecho, total, etapa) => setProgreso({ hecho, total, ...(etapa ? { etapa } : {}) }),
+      );
+      /*
+        La base es la de AHORA (`ultimo.current`), no la que habia cuando se
+        eligio la carpeta. Ahi estaba el problema: dos tandas lanzadas juntas
+        partian las dos de null y la ultima en terminar borraba a la otra.
+      */
+      const unido = unirVuelos(desdeCero ? null : ultimo.current, r);
+      ultimo.current = unido;
+      setResultado(unido);
+      const nombres = files.map((f) => f.name);
+      medidasRef.current = desdeCero
+        ? new Set(nombres)
+        : new Set([...medidasRef.current, ...nombres]);
+      setMedidas(new Set(medidasRef.current));
+    } finally {
+      // Salgan bien o mal, estas fotos ya no estan esperando su turno.
+      for (const f of files) enCola.current.delete(f.name);
+      setEsperando(enCola.current.size);
+      setProgreso(null);
+    }
+  }
+
+  /**
+   * Pone una tanda en la fila y la mide cuando le toca.
+   *
+   * De a una y no en paralelo a proposito: son cientos de JPEG de 1,5 MB y dos
+   * lecturas simultaneas es como Safari se quedo sin memoria y devolvio "The
+   * I/O read operation failed" en medio de un vuelo.
+   */
+  function encolar(files: File[], conAjuste: Ajuste, desdeCero: boolean) {
+    for (const f of files) enCola.current.add(f.name);
+    setEsperando(enCola.current.size);
+    cola.current = cola.current
+      .catch(() => {})
+      .then(() => analizar(files, conAjuste, desdeCero));
+    void cola.current;
   }
 
   /*
@@ -197,7 +258,8 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
     const nuevo = { dxM: ajuste.dxM + dx, dyM: ajuste.dyM + dy };
     setAjuste(nuevo);
     setResultado(null);
-    void analizar(archivos, nuevo, null);
+    ultimo.current = null;
+    encolar(archivos, nuevo, true);
   };
 
   const resumen = deteccion?.cobertura ?? null;
@@ -220,26 +282,57 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
               const nuevas = [...(e.target.files ?? [])];
               e.target.value = "";
               if (!nuevas.length) return;
-              // Las que ya estaban no se vuelven a leer: se descartan del lote
-              // nuevo por nombre. Elegir la misma carpeta dos veces no duplica.
+              /*
+                Lo que decide si una foto se vuelve a leer es si esta MEDIDA
+                —adentro del resultado— o esperando su turno, no si figura en
+                la lista de elegidas. Volver a elegir una carpeta que se perdio
+                por el camino la mide; elegir dos veces la misma no duplica
+                nada.
+              */
+              const frescas = nuevas.filter(
+                (x) => !medidasRef.current.has(x.name) && !enCola.current.has(x.name),
+              );
               const yaEstan = new Set(archivos.map((x) => x.name));
-              const frescas = nuevas.filter((x) => !yaEstan.has(x.name));
-              const todas = [...archivos, ...frescas];
+              const todas = [...archivos, ...nuevas.filter((x) => !yaEstan.has(x.name))];
               setArchivos(todas);
               onFotos?.(todas);
-              if (frescas.length) void analizar(frescas, ajuste, resultado);
+              if (frescas.length) { setRepetidas(0); encolar(frescas, ajuste, false); }
               else setRepetidas(nuevas.length);
             }}
           />
           <strong>{archivos.length ? "Agregar más fotos" : "Elegir fotos"}</strong>
           <span className="muted">
-            {archivos.length ? `${archivos.length} archivos cargados — las nuevas se suman` : "JPEG del dron"}
+            {archivos.length
+              ? `${medidas.size} fotos medidas${
+                  esperando ? ` · ${esperando} esperando su turno` : ""
+                } — las nuevas se suman`
+              : "JPEG del dron"}
           </span>
         </label>
         {repetidas > 0 && !progreso && (
           <p className="note">
-            Esas {repetidas} fotos ya estaban cargadas en este vuelo, así que no se volvieron a leer.{" "}
+            Esas {repetidas} fotos ya estan medidas en este vuelo, así que no se volvieron a leer.{" "}
             <button className="link" onClick={() => setRepetidas(0)}>entendido</button>
+          </p>
+        )}
+        {/*
+          Elegidas pero no medidas.
+
+          Es el estado en el que quedo Mateo sin poder verlo: el contador decia
+          1021 fotos y el resultado era el de una sola carpeta. Ahora se dice, y
+          se arregla con un boton en vez de tener que vaciar y volver a cargar
+          las mil.
+        */}
+        {!progreso && !esperando && archivos.length > medidas.size && (
+          <p className="note">
+            Hay {archivos.length - medidas.size} fotos elegidas que no estan medidas: lo que ves y
+            lo que se entrega sale de las {medidas.size} que si.{" "}
+            <button
+              className="link"
+              onClick={() => encolar(archivos.filter((f) => !medidasRef.current.has(f.name)), ajuste, false)}
+            >
+              medir las que faltan
+            </button>
           </p>
         )}
         {archivos.length > 0 && !progreso && (
@@ -248,7 +341,11 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
             todo junto. Para empezar de cero,{" "}
             <button
               className="link"
-              onClick={() => { setArchivos([]); setResultado(null); setElegido(null); setRepetidas(0); onFotos?.([]); }}
+              onClick={() => {
+                setArchivos([]); setResultado(null); setElegido(null); setRepetidas(0);
+                ultimo.current = null; medidasRef.current = new Set(); setMedidas(new Set());
+                onFotos?.([]);
+              }}
             >
               vaciar y volver a cargar
             </button>.
