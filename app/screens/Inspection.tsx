@@ -39,6 +39,7 @@ import { entregables } from "../informe";
 import { fusionarRevision, reclasificarFindings, vueloDesdeAnalisis } from "../vuelo";
 import { aCsvEntregable, aExcelEntregable, aInformeEntregable, nombreEntregado } from "../entregable";
 import { CALIDAD_INFORME, fotoDelHallazgo } from "../fotoEntregada";
+import { borrarFotos, guardarFotos, leerFotos, limpiarHuerfanas } from "../fotosGuardadas";
 import { bloquesDelParque, puntosDeHallazgos } from "../mapa";
 import { acuerdoDeLaMuestra, muestraARevisar } from "../muestreo";
 import { MapaDelParque } from "../components/MapaDelParque";
@@ -115,6 +116,8 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
     la foto grande; sin ellas sigue funcionando todo lo demas y lo dice.
   */
   const [fotosDelVuelo, setFotosDelVuelo] = useState<File[]>([]);
+  /** Cuantas de las fotos de los hallazgos quedaron guardadas con el vuelo. */
+  const [fotosEnDisco, setFotosEnDisco] = useState<{ guardadas: number; pedidas: number } | null>(null);
   /** El bloque abierto en el mapa. `null` es la escala del parque entero. */
   const [bloqueAbierto, setBloqueAbierto] = useState<string | null>(null);
   const [elegido, setElegido] = useState<string | null>(null);
@@ -136,7 +139,10 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
   }, [stored]);
 
   const refresh = useCallback(async () => {
-    setList(await listInspections(stored.profile.id));
+    const vuelos = await listInspections(stored.profile.id);
+    setList(vuelos);
+    // Un vuelo borrado dejaba sus fotos ocupando lugar para siempre.
+    void limpiarHuerfanas(new Set(vuelos.map((v) => v.id))).catch(() => {});
   }, [stored.profile.id]);
 
   useEffect(() => { void refresh(); }, [refresh]);
@@ -165,6 +171,50 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
   useEffect(() => {
     if (current) void saveInspection(current).then(refresh);
   }, [current, refresh]);
+
+  /*
+    Las fotos de los hallazgos se guardan CON el vuelo.
+
+    El vuelo entero no —son miles de JPEG— pero el entregable son decenas, y
+    sin ellas cerrar la pestaña costaba volver a elegir la carpeta del disco
+    para bajar el informe, despues de haber esperado diez minutos a que se
+    midiera el vuelo. Se reescriben cada vez que cambia la lista de hallazgos
+    o las fotos que hay a mano: el hallazgo que aparece al bajar un umbral
+    tambien tiene que dejar la suya.
+  */
+  const nombresDeHallazgos = useMemo(
+    () => new Set((current?.findings ?? []).map((f) => f.fileName)),
+    [current],
+  );
+
+  useEffect(() => {
+    if (!current || !fotosDelVuelo.length || !nombresDeHallazgos.size) return;
+    let vivo = true;
+    void guardarFotos(current.id, fotosDelVuelo, nombresDeHallazgos)
+      .then((r) => { if (vivo) setFotosEnDisco(r); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [current, fotosDelVuelo, nombresDeHallazgos]);
+
+  /*
+    Y se vuelven a leer al abrir el vuelo, antes de que nadie apriete nada.
+
+    Es lo que hace que "Report" no abra el Finder al dia siguiente. Solo si no
+    hay fotos en memoria: las recien elegidas son las buenas —pueden ser mas—
+    y no las tiene que pisar lo que quedo guardado.
+  */
+  const vueloId = current?.id;
+  useEffect(() => {
+    if (!vueloId || fotosDelVuelo.length) return;
+    let vivo = true;
+    void leerFotos(vueloId).then((fs) => {
+      if (vivo && fs.length) setFotosDelVuelo(fs);
+    }).catch(() => {});
+    return () => { vivo = false; };
+    // Solo al cambiar de vuelo: si dependiera de `fotosDelVuelo` volveria a
+    // correr en cuanto las carga y se pisaria a si mismo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vueloId]);
 
   function abrir(i: Insp) {
     setCurrent(i);
@@ -472,7 +522,11 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
                     <button
                       className="link danger"
                       onClick={async () => {
-                        if (confirm(`¿Borrar "${i.name}"?`)) { await deleteInspection(i.id); void refresh(); }
+                        if (confirm(`¿Borrar "${i.name}"?`)) {
+                          await deleteInspection(i.id);
+                          await borrarFotos(i.id);
+                          void refresh();
+                        }
                       }}
                     >
                       Borrar
@@ -757,8 +811,15 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
           */}
           <p className="help">
             {fotosDelVuelo.length
-              ? `Las fotos salen de las ${fotosDelVuelo.length} que ya cargaste en este vuelo — no hace falta volver a elegirlas. `
-              : "Este vuelo se abrió en otra sesión, así que el navegador ya no tiene las fotos: al exportar te las va a pedir una vez. "}
+              ? `Las fotos salen de las ${fotosDelVuelo.length} que hay en este vuelo — no hace falta volver a elegirlas${
+                  fotosEnDisco?.guardadas
+                    ? `, y las ${fotosEnDisco.guardadas} de los hallazgos quedan guardadas con el vuelo: mañana siguen acá`
+                    : ""
+                }. `
+              : "Todavía no hay fotos en este vuelo: al exportar te las va a pedir una vez. "}
+            {fotosEnDisco && fotosEnDisco.guardadas < fotosEnDisco.pedidas
+              ? `No entraron todas: quedaron guardadas ${fotosEnDisco.guardadas} de ${fotosEnDisco.pedidas} — para las que faltan hay que tener la carpeta a mano. `
+              : ""}
             <button
               className="link"
               onClick={() => { setFotosDelVuelo([]); void pedirFotos(); }}

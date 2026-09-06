@@ -188,9 +188,10 @@ export function Revisor({ findings, archivos, seleccion, onSeleccion, onPatch }:
               <FotoDelHallazgo fileName={actual.fileName} caja={m?.caja} archivos={archivos} explicar={false} />
             ) : (
               <p className="note">
-                Las fotos no se guardan con el vuelo —son miles de archivos—, asi que para verlas
-                hay que volver a elegir la carpeta arriba. La lista, la medicion y todo lo que
-                clasificaste siguen igual.
+                De este hallazgo no quedo la foto guardada. Con el vuelo se guardan las de los
+                hallazgos, no las miles del vuelo entero, asi que las de un vuelo viejo —o las que
+                no entraron por espacio— hay que volver a buscarlas eligiendo la carpeta arriba. La
+                lista, la medicion y todo lo que clasificaste siguen igual.
               </p>
             )}
 
