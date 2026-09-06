@@ -439,26 +439,31 @@ describe("bloques que se pisan", () => {
  * camara a plomo, y el vidrio del modulo reflejando el cielo y el suelo.
  */
 describe("la camara inclinada segun el tracker", () => {
-  // Camara de 36 grados de campo: el centro se apunta a 5 + 18 = 23.
-  it("con el tracker a menos de 5 + medio campo se queda a plomo", () => {
-    expect(vistaParaLaHora(0, 36)).toBeNull();
-    expect(vistaParaLaHora(-23, 36)).toBeNull();
+  it("con el tracker casi plano se queda a plomo", () => {
+    expect(vistaParaLaHora(0)).toBeNull();
+    expect(vistaParaLaHora(-2)).toBeNull();
   });
 
-  it("se inclina lo que sobra, para que el borde lejano quede a 5 grados, y no mas de 35", () => {
-    expect(vistaParaLaHora(40, 36)?.desvioDeg).toBeCloseTo(17, 6);
-    expect(vistaParaLaHora(-70, 36)?.desvioDeg).toBe(35);
+  it("copia el angulo del tracker, y no pasa de 35", () => {
+    expect(vistaParaLaHora(20)?.desvioDeg).toBe(20);
+    expect(vistaParaLaHora(-70)?.desvioDeg).toBe(35);
   });
 
   /*
-    El lado no es de gusto. El tracker mira al sol; el dron va del lado del
-    sol y la camara mira al lado contrario: θ − φ del perpendicular. Del otro
-    lado seria θ + φ, peor que a plomo.
+    El lado SI importa, y es al reves de como estaba.
+
+    La regla vieja miraba para el lado contrario a los paneles, para esquivar
+    el reflejo del sol. Se apoyaba en que "el tracker apunta al sol", que es
+    falso en un tracker de UN EJE norte-sur: el eje solo persigue la componente
+    este-oeste, asi que el panel nunca apunta al sol —23 a 34 grados de
+    diferencia todo el dia en el parque de Mateo— y el reflejo del sol cae a lo
+    largo de la fila, fuera del cuadro. Lo que ensucia las fotos es el
+    horizonte, y de eso se escapa mirando de frente al panel.
   */
-  it("mira para el lado contrario al que miran los paneles", () => {
-    // A la mañana el panel mira al este (angulo positivo): la camara al oeste.
-    expect(vistaParaLaHora(40, 36)?.hacia).toBe(-1);
-    expect(vistaParaLaHora(-40, 36)?.hacia).toBe(1);
+  it("mira para el MISMO lado que los paneles: de frente", () => {
+    // A la mañana el panel mira al este (angulo positivo): la camara tambien.
+    expect(vistaParaLaHora(40)?.hacia).toBe(1);
+    expect(vistaParaLaHora(-40)?.hacia).toBe(-1);
   });
 
   it("corre las lineas al costado, del lado del sol, y lo escribe en la mision", () => {

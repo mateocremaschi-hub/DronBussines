@@ -34,7 +34,8 @@ import {
   type MissionOptions,
 } from "../mission";
 import { avisosDeKmz, PERFILES_DJI, toKmz } from "../wpml";
-import { desvioObjetivoDeg, huella, MARGEN_DEL_REFLEJO_DEG, pasoEntreFilas, velocidades, vistaParaLaHora } from "../mission";
+import { huella, pasoEntreFilas, velocidades, vistaParaLaHora } from "../mission";
+import { reflejoDelVidrio } from "../reflejo";
 import { PIXELES_POR_CELDA_MINIMO, PIXELES_POR_LADO_OBJETIVO, CELDA_M } from "../detect";
 import { LoQueVeElDron } from "../components/LoQueVeElDron";
 import { ZonaQueSeMide } from "../components/ZonaQueSeMide";
@@ -211,7 +212,27 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
   const [horaDeVuelo, setHoraDeVuelo] = useState<string | null>(null);
   const horaElegida = ventana.find((h) => h.hora === horaDeVuelo) ?? mejorHora;
   const [inclinarLaCamara, setInclinarLaCamara] = useState(true);
-  const vista = inclinarLaCamara && horaElegida ? vistaParaLaHora(horaElegida.anguloDeg, camara.hfovDeg) : null;
+  const vista = inclinarLaCamara && horaElegida ? vistaParaLaHora(horaElegida.anguloDeg) : null;
+  /*
+    Que va a ver la camara reflejada en el vidrio a esa hora.
+
+    No es un adorno: es lo que decide si el vuelo sirve. Con el vidrio
+    devolviendo horizonte, la comparacion contra los hermanos del string sale
+    sucia y el informe se llena de bordes calientes. Se calcula con el sol de
+    verdad y con la inclinacion que se va a usar, para poder decirlo ANTES de
+    manejar hasta el parque.
+  */
+  const reflejo = useMemo(() => {
+    if (!horaElegida || horaElegida.alturaSolarDeg <= 0) return null;
+    const c = stored.rows[0];
+    if (!c) return null;
+    return reflejoDelVidrio(
+      c.start.lat, c.start.lon, horaElegida.cuando,
+      horaElegida.anguloDeg,
+      vista ? vista.desvioDeg * vista.hacia : 0,
+      camara.hfovDeg, camara.vfovDeg,
+    );
+  }, [horaElegida, vista, camara, stored.rows]);
 
   const opts: MissionOptions = {
     camera: camara, ...o, altitudeM: altura, speedMps: velocidadElegida, sideOverlap: solapeElegido,
@@ -613,29 +634,48 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
                     difícilmente haya 600 W/m². Con menos irradiancia los defectos calientan menos y el
                     ΔT no vale para un reclamo. La cámara se puede inclinar igual, pero el problema es el sol.
                   </p>
-                ) : vista ? (
-                  <p className="note">
-                    A las {horaElegida.hora} los trackers van a estar a{" "}
-                    <strong>{Math.abs(horaElegida.anguloDeg).toFixed(0)}°</strong>, mirando al{" "}
-                    {horaElegida.anguloDeg > 0 ? "este" : "oeste"}. La cámara va inclinada{" "}
-                    <strong>{vista.desvioDeg.toFixed(0)}°</strong> (gimbal a −{(90 - vista.desvioDeg).toFixed(0)}°),
-                    mirando al <strong>{vista.hacia > 0 ? "este" : "oeste"}</strong>. Así el centro del cuadro
-                    queda a {desvioObjetivoDeg(camara.hfovDeg).toFixed(0)}° del perpendicular del panel y el
-                    borde lejano a {MARGEN_DEL_REFLEJO_DEG}°: ningún panel del cuadro queda tan de frente como para
-                    que el reflejo del sol vuelva a la cámara, ni tan de costado como para reflejar el suelo.
-                    El dron vuela{" "}
-                    <strong>{(altura * Math.tan((vista.desvioDeg * Math.PI) / 180)).toFixed(0)} m</strong> al costado
-                    de la fila que fotografía, del lado del sol, con la nariz cruzada a las filas (va de
-                    costado). Todo eso ya está en el KMZ. Ojo: la app todavía mide las fotos inclinadas
-                    como si fueran a plomo — con las fotos del primer vuelo así se calibra.
-                  </p>
                 ) : (
-                  <p className="note ok">
-                    A las {horaElegida.hora} los trackers van a estar a{" "}
-                    {Math.abs(horaElegida.anguloDeg).toFixed(0)}°: con la cámara a plomo el cuadro entero ya
-                    queda entre {MARGEN_DEL_REFLEJO_DEG}° y {(desvioObjetivoDeg(camara.hfovDeg) * 2 - MARGEN_DEL_REFLEJO_DEG).toFixed(0)}° del
-                    perpendicular. No hace falta inclinar nada.
-                  </p>
+                  <>
+                    <p className="note">
+                      A las {horaElegida.hora} los trackers van a estar a{" "}
+                      <strong>{Math.abs(horaElegida.anguloDeg).toFixed(0)}°</strong>, mirando al{" "}
+                      {horaElegida.anguloDeg > 0 ? "este" : "oeste"}.{" "}
+                      {vista ? (
+                        <>
+                          La cámara va <strong>perpendicular al panel</strong>: inclinada{" "}
+                          <strong>{vista.desvioDeg.toFixed(0)}°</strong> (gimbal a −{(90 - vista.desvioDeg).toFixed(0)}°),
+                          mirando al <strong>{vista.hacia > 0 ? "este" : "oeste"}</strong>, el mismo lado que
+                          los paneles. El dron vuela{" "}
+                          <strong>{(altura * Math.tan((vista.desvioDeg * Math.PI) / 180)).toFixed(0)} m</strong> al
+                          costado de la fila que fotografía, con la nariz cruzada a las filas (va de costado).
+                          Todo eso ya está en el KMZ.
+                        </>
+                      ) : (
+                        <>Están casi planos: la cámara va a plomo y no hace falta inclinar nada.</>
+                      )}
+                    </p>
+                    {/*
+                      El veredicto del reflejo, que es lo que decide si el vuelo
+                      sirve. Va aparte del parrafo de arriba a proposito: eso
+                      explica el plan, esto dice si conviene volarlo.
+                    */}
+                    {reflejo && (
+                      <p className={`note ${reflejo.veredicto === "limpio" ? "ok" : reflejo.veredicto === "sucio" ? "bad" : ""}`}>
+                        <strong>
+                          {reflejo.veredicto === "limpio" ? "El vidrio refleja cielo." :
+                           reflejo.veredicto === "al filo" ? "El reflejo queda al filo." :
+                           "Ojo con el reflejo."}
+                        </strong>{" "}
+                        {reflejo.porQue}
+                      </p>
+                    )}
+                    {vista && (
+                      <p className="note">
+                        Ojo: la app todavía mide las fotos inclinadas como si fueran a plomo — con las
+                        fotos del primer vuelo así se calibra.
+                      </p>
+                    )}
+                  </>
                 )
               )}
             </>

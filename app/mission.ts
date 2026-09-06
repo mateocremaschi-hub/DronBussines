@@ -294,25 +294,41 @@ export function velocidades(
  *
  * Fuera de la ventana del mediodia los trackers estan a 30 o 40 grados y la
  * camara a plomo los mira de costado: el vidrio del modulo es un espejo en
- * infrarrojo, y de costado refleja el cielo y el suelo. Es lo que dio el
- * borde caliente del panel y las filas vecinas a +4 °C en el vuelo de las
- * 14:20 del bloque 2. Mateo lo pidio con razon: poder volar a las 9:30, con
- * la irradiancia ya arriba de 600 W/m², sin esperar a que los paneles esten
- * planos.
+ * infrarrojo, y de costado NO refleja el cielo — refleja el horizonte. Con el
+ * tracker a 41 grados y la camara a plomo, el rayo que la camara ve reflejado
+ * sale a 7 grados sobre el horizonte, y en el borde lejano del cuadro a 18
+ * grados POR DEBAJO: filas vecinas y suelo. En el vuelo de las 14:20 del
+ * bloque 2 el suelo estaba a 44-47 °C contra paneles a 37-40, y de ahi
+ * salieron los bordes calientes y las filas vecinas a +4 °C.
  *
- * Con un matiz que no es de estilo: la camara NO va perpendicular al panel.
- * Un tracker apunta al sol, y perpendicular al panel es mirar a lo largo del
- * rayo del sol — el reflejo del sol vuelve derecho a la camara, y encima se
- * ve el reflejo del propio dron. La norma (IEC TS 62446-3) pide mirar entre 5
- * y 30 grados fuera del perpendicular, y las plataformas comerciales hacen lo
- * mismo. Se apunta el centro del cuadro a 5 grados mas medio campo de la
- * camara, para que ningun punto del cuadro baje de 5.
+ * La camara va PERPENDICULAR AL PANEL. La version anterior apuntaba 30 grados
+ * afuera del perpendicular para esquivar el reflejo del sol, con este
+ * razonamiento: "un tracker apunta al sol, asi que perpendicular al panel es
+ * mirar a lo largo del rayo del sol". Es falso en un tracker de UN EJE
+ * norte-sur, que es el de Mateo y el de casi cualquier parque grande: el eje
+ * solo persigue la componente este-oeste del sol, asi que el panel NUNCA
+ * apunta al sol. Medido sobre su parque, el angulo entre el panel y el sol va
+ * de 23 a 34 grados todo el dia, y el reflejo del sol cae unos 30 grados A LO
+ * LARGO DE LA FILA, donde el cuadro solo llega a 21: queda afuera de 9 a 15 h,
+ * con 9 a 25 grados de margen.
  *
- * Y eso sale solo si el dron vuela DEL LADO HACIA EL QUE MIRAN LOS PANELES
- * (el lado del sol) y la camara mira hacia el lado contrario al sol: asi el
- * angulo entre la camara y el perpendicular del panel es θ − φ, y el reflejo
- * del sol se va para el otro lado. Del otro lado seria θ + φ: peor que a
- * plomo.
+ * Y la cuenta de cuanto se gana no deja lugar a dudas. Con todo el cuadro
+ * reflejando cielo por encima de 20 grados de elevacion, en su parque:
+ *
+ *     a plomo         10:42 - 13:13   (4,0 h de vuelo util)
+ *     30 afuera       10:42 - 13:13   (4,0 h — la regla vieja no compraba nada:
+ *                                      recien inclinaba con el tracker a 30 y
+ *                                      lo que inclinaba no alcanzaba)
+ *     perpendicular    9:40 - 14:15   (7,1 h)
+ *
+ * Lo que se paga: perpendicular, el dron se ve a si mismo reflejado en el
+ * centro del cuadro. Son cinco o seis pixeles de 640, y atenuados porque el
+ * vidrio de frente refleja apenas un 5 %. Es mucho menos grave que medio
+ * cuadro reflejando horizonte caliente, que ademas viene con gradiente y por
+ * eso ensucia la comparacion entre hermanos de string.
+ *
+ * Sale bien de los dos lados: el dron puede volar del lado del sol o del otro,
+ * porque lo que se copia es el angulo del tracker, no un desvio.
  */
 export interface VistaInclinada {
   /** Cuanto se inclina la camara desde la vertical, en grados. 0 es a plomo. */
@@ -325,19 +341,13 @@ export interface VistaInclinada {
 }
 
 /**
- * Lo mas cerca del perpendicular del panel que puede quedar CUALQUIER punto
- * del cuadro. La camara ve 36 grados de ancho: si el centro esta a 20 del
- * perpendicular, el borde cercano al dron queda a 38 y el lejano a 2 — y a 2
- * grados el sol vuelve a la camara como una mancha caliente en el vidrio.
- * Cinco grados es el minimo de la IEC TS 62446-3. El centro se apunta a
- * 5 + medio campo, para que el borde lejano quede justo a 5.
+ * Cuanto margen se le pide al reflejo del sol para darlo por afuera del cuadro.
+ *
+ * Cinco grados, que es tambien el minimo que pide la IEC TS 62446-3 para el
+ * angulo de vista. No alcanza con que el reflejo caiga justo en el borde: el
+ * sol tiene medio grado de ancho pero su halo en el vidrio, mucho mas.
  */
 export const MARGEN_DEL_REFLEJO_DEG = 5;
-
-/** A cuantos grados del perpendicular se apunta el CENTRO del cuadro con esta camara. */
-export function desvioObjetivoDeg(hfovDeg: number): number {
-  return MARGEN_DEL_REFLEJO_DEG + hfovDeg / 2;
-}
 /**
  * Lo mas que se inclina la camara. A 52 m y 35 grados el dron vuela 36 m al
  * costado de la fila que fotografia; mas que eso, la huella se estira tanto
@@ -348,19 +358,25 @@ export const DESVIO_MAXIMO_DEG = 35;
 /**
  * Como hay que inclinar la camara para un tracker a `anguloTrackerDeg`.
  *
- * El signo del angulo viene de `anguloDeTracker`: positivo es el panel
- * mirando hacia el este (a la mañana), negativo hacia el oeste. La camara
- * mira para el lado contrario, desde el lado del sol. Con el tracker a menos
- * del objetivo no hace falta inclinar nada: a plomo ya se lo mira dentro de
- * los 20 grados, y `null` es "dejalo a plomo".
+ * Copia el angulo del tracker: la camara queda perpendicular al panel y el
+ * vidrio le devuelve el cielo. El signo viene de `anguloDeTracker` —positivo
+ * es el panel mirando al este, a la mañana— y la camara se inclina para EL
+ * MISMO lado, que es lo que la deja de frente.
+ *
+ * Con el tracker casi plano no hace falta inclinar nada y devuelve `null`, que
+ * es "dejalo a plomo": mover el gimbal dos grados no cambia nada y complica el
+ * plan de vuelo. Y por encima del tope se inclina lo que se pueda — la huella
+ * de una camara muy oblicua se estira tanto que el borde lejano ya no resuelve
+ * la celda, y eso es peor que un reflejo.
  */
-export function vistaParaLaHora(anguloTrackerDeg: number, hfovDeg: number): VistaInclinada | null {
+export const TRACKER_CASI_PLANO_DEG = 3;
+
+export function vistaParaLaHora(anguloTrackerDeg: number, _hfovDeg?: number): VistaInclinada | null {
   const theta = Math.abs(anguloTrackerDeg);
-  const objetivo = desvioObjetivoDeg(hfovDeg);
-  if (theta <= objetivo) return null;
+  if (theta < TRACKER_CASI_PLANO_DEG) return null;
   return {
-    desvioDeg: Math.min(DESVIO_MAXIMO_DEG, theta - objetivo),
-    hacia: anguloTrackerDeg > 0 ? -1 : 1,
+    desvioDeg: Math.min(DESVIO_MAXIMO_DEG, theta),
+    hacia: anguloTrackerDeg > 0 ? 1 : -1,
   };
 }
 
