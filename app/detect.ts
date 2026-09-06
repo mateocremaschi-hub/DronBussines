@@ -2872,6 +2872,8 @@ export interface ResumenDeteccion {
   conChequeoDeCelda: number;
   /** Lo que la resolucion del vuelo NO permite afirmar. */
   limitaciones: string[];
+  /** Las que van al informe del cliente: sin el control de calidad de la medicion. */
+  limitacionesDelCliente: string[];
 }
 
 export function resumir(
@@ -2898,6 +2900,17 @@ export function resumir(
   // caminar el parque no le importa cual de los dos chequeos disparo.
   const n = (s: Severidad) => hallazgos.filter((h) => h.peor === s).length;
   const limitaciones: string[] = [];
+  /**
+   * Cuales de esas NO van al informe del cliente, por su posicion en la lista.
+   *
+   * Ninguna se pierde: van todas al CSV de trabajo y al informe interno. Lo
+   * que se decide aca es cual de las dos preguntas contesta cada una. "Que
+   * puede y que no puede afirmar este vuelo" es del cliente; "como salio la
+   * medicion" es de quien vuela, y mezclarlas hace que el cliente desconfie de
+   * la lista entera por un dato que ademas ya esta, hallazgo por hallazgo, en
+   * la fila que le corresponde.
+   */
+  const soloInternas: number[] = [];
 
   // Primero lo que afecta a DONDE estan las cosas: si la foto se ubico con un
   // supuesto, todo lo demas de este resumen habla de modulos que pueden no ser
@@ -2953,6 +2966,17 @@ export function resumir(
 
   const flojos = hallazgos.filter((h) => h.ambito !== "string").length;
   if (flojos) {
+    /*
+      Esta va al informe INTERNO y no al del cliente.
+
+      No es que se esconda: el hallazgo que se comparo contra un vecindario
+      flojo lo dice en SU FILA, en la columna "Compared against", que es donde
+      la advertencia sirve — al lado del numero que hay que mirar con pinzas.
+      Arriba de todo, en cambio, es un conteo suelto que no se puede accionar y
+      que pone en duda la lista entera: once modulos de sesenta hallazgos
+      hacian dudar de los sesenta.
+    */
+    soloInternas.push(limitaciones.length);
     limitaciones.push(
       `${flojos} modulos se compararon contra un vecindario mas suelto que su propio string, ` +
       `porque no habia suficientes vecinos medidos. Su delta T es menos confiable.`,
@@ -2963,6 +2987,10 @@ export function resumir(
   // porque si son muchos, el vuelo tuvo poco solape y la solucion es volar
   // distinto, no bajar los umbrales.
   if (soloEnElBorde) {
+    // Interna tambien: lo que el cliente necesita saber de cobertura es cuanto
+    // se cubrio de CADA BLOQUE, y eso es una tabla del entregable. El conteo de
+    // modulos cortados por el borde es control de calidad del vuelo.
+    soloInternas.push(limitaciones.length);
     limitaciones.push(
       `${soloEnElBorde} modulos aparecieron solo cortados por el borde de alguna foto y no se ` +
       `midieron: en el borde del sensor la lectura se va varios grados y daria hallazgos falsos. ` +
@@ -2981,6 +3009,14 @@ export function resumir(
     );
   }
   if (totalModulos > hallazgos.length) {
+    /*
+      Y esta tambien, porque cuenta el PARQUE ENTERO: 363.137 de 377.888 son
+      los 32 bloques que el vuelo ni sobrevolo. Dicho asi hace ver un vuelo
+      perfecto de cuatro bloques como una cobertura del 4 %. Lo que el cliente
+      tiene que ver es cuanto se cubrio de cada bloque volado, y eso es la
+      tabla "Coverage by block" del entregable.
+    */
+    soloInternas.push(limitaciones.length);
     limitaciones.push(
       `${totalModulos - hallazgos.length} modulos del parque no cayeron en ninguna foto. ` +
       `No se puede afirmar nada sobre ellos.`,
@@ -2996,5 +3032,6 @@ export function resumir(
     eventosDeString: eventos.length,
     conChequeoDeCelda: conCelda,
     limitaciones,
+    limitacionesDelCliente: limitaciones.filter((_, n) => !soloInternas.includes(n)),
   };
 }

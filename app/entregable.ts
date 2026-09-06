@@ -24,12 +24,25 @@ import type { Finding, Inspection } from "./inspection";
 import { entregables } from "./informe";
 
 /** Como se dice cada cosa en el entregable. */
-const ANOMALIA_EN: Record<string, string> = {
+/*
+  Los once patrones, en el ingles con el que se los nombra en la industria.
+
+  Estan LOS ONCE de `ANOMALIAS`, no solo los cinco que sabe clasificar el
+  motor: los otros seis los pone Mateo a mano en el revisor, y si falta uno la
+  celda del Excel sale en castellano en medio de una planilla en ingles.
+*/
+export const ANOMALIA_EN: Record<string, string> = {
   "Modulo completo": "Open circuit (whole module)",
   "Diodo de bypass": "Bypass diode",
   "Celda multiple": "Multiple cells",
   "Punto caliente": "Hot spot",
   "String completo": "Whole string",
+  PID: "Potential-induced degradation (PID)",
+  Suciedad: "Soiling",
+  Sombra: "Shading",
+  "Caja de conexion": "Junction box",
+  "Vidrio roto": "Broken glass",
+  Otro: "Other",
 };
 const SEVERIDAD_EN: Record<Severidad, string> = {
   normal: "None", leve: "Minor", moderada: "Moderate", critica: "Critical",
@@ -141,6 +154,82 @@ export function columnas(o: OpcionesDeEntrega): Columna[] {
   return cols;
 }
 
+/**
+ * La misma tabla, en CSV.
+ *
+ * Es el formato que se abre en cualquier cosa —Sheets, Numbers, un script de
+ * python del cliente— y el que sobrevive cuando el .xlsx no. Sale de las
+ * MISMAS columnas que el Excel a proposito: dos entregables de un mismo vuelo
+ * que no coinciden fila por fila es lo primero que rompe la confianza.
+ *
+ * Va con BOM: sin el, Excel en Windows lee los grados y el ΔT como simbolos
+ * rotos.
+ */
+export function aCsvEntregable(i: Inspection, o: OpcionesDeEntrega = {}): string {
+  const cols = columnas(o).filter((c) => c.clave !== "photo_online");
+  const celda = (v: string | number | null): string => {
+    const t = String(v ?? "");
+    return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+  };
+  const lista = entregables(i);
+  const filas = [cols.map((c) => celda(c.titulo)).join(",")];
+  for (const [n, f] of lista.entries()) {
+    filas.push(cols.map((c) => celda(c.valor(f, n))).join(","));
+  }
+  return "\uFEFF" + filas.join("\r\n") + "\r\n";
+}
+
+/**
+ * Por que el motor dijo lo que dijo, en ingles.
+ *
+ * El texto que guarda el hallazgo (`patron.porQue`) esta en castellano: es el
+ * que se lee en pantalla mientras se revisa, y ahi tiene que quedar asi. Pero
+ * en el informe del cliente aparecia un parrafo en castellano abajo de una
+ * ficha en ingles — se vio en la primera entrega real.
+ *
+ * Se vuelve a escribir en vez de traducirse porque el hallazgo guarda los
+ * numeros con los que se armo —que fraccion del modulo esta caliente, cuantas
+ * manchas, donde cayo la franja—, asi que la frase en ingles se arma de la
+ * misma fuente y no de una cadena ya cocinada.
+ */
+export function porQueEnIngles(f: Finding): string | null {
+  const p = f.patron;
+  if (!p) return null;
+  const m = f.medicion;
+  const dt = m ? Math.abs(m.deltaT).toFixed(1) : "";
+
+  if (f.anomaly === "String completo") {
+    return `The whole string runs ${dt} °C above the others, across ${m?.vecinos ?? "several"} ` +
+      "measured modules. No single module stands out from its siblings: they are all equally " +
+      "warm, which is the signature of a string that is not delivering current — disconnected, " +
+      "a blown fuse or an open connector. It is not a row of bad modules, it is one connection.";
+  }
+
+  switch (p.patron) {
+    case "modulo-completo":
+      return `The module is warm, ${dt} °C above its siblings of the same string, with no hot ` +
+        "patch inside it. That is a module delivering no current: an open circuit.";
+    case "diodo": {
+      const parte = p.franja ? Math.round(((p.franja.hasta - p.franja.desde + 1) / p.franja.de) * 100) : null;
+      return "A hot band crosses the module from side to side" +
+        (parte != null ? `, over ${parte} % of its length` : "") +
+        ". That is a whole substring, which is what a bypass diode shorts out.";
+    }
+    case "celda-multiple":
+      return `There are ${p.grumos} separate hot patches, with no band shape. It can be cracked ` +
+        "cells, but also soiling or something resting on the glass: that is decided by looking " +
+        "at the photo.";
+    case "punto-caliente":
+      return `A single small hot patch (${Math.round(p.fraccionCaliente * 100)} % of the module) ` +
+        "that does not cross from side to side. Check the image: a patch of dirt looks the same " +
+        "on a thermal.";
+    case "sin-patron":
+      return "No detached area was found inside the module and the module as a whole is not " +
+        "above its neighbours. It may be an edge finding or a framing difference.";
+  }
+  return null;
+}
+
 /** El conteo por tipo y por clase, que es lo que se mira primero. */
 export function resumenDeEntrega(lista: Finding[]) {
   const porTipo = new Map<string, { n: number; c1: number; c2: number; c3: number }>();
@@ -192,7 +281,13 @@ export async function aExcelEntregable(
     // ultimas columnas se cortan y el que lo imprime no ve que faltan.
     pageSetup: { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } },
   });
-  s.columns = [{ width: 36 }, { width: 22 }, { width: 19 }, { width: 19 }, { width: 19 }, { width: 40 }];
+  /*
+    La B lleva la accion de cada clase ("Next scheduled maintenance"), que a 22
+    salia cortada por la columna de al lado en la primera entrega real. De la C
+    a la F no se tocan: ahi va el significado de cada clase, en celdas unidas
+    cuya altura se calcula suponiendo ese ancho.
+  */
+  s.columns = [{ width: 34 }, { width: 30 }, { width: 19 }, { width: 19 }, { width: 19 }, { width: 40 }];
 
   const titulo = (t: string) => {
     const r = s.addRow([t]);
@@ -317,9 +412,11 @@ export async function aExcelEntregable(
   });
   s.addRow([]);
 
-  if (cob?.limitaciones?.length) {
+  // Las del cliente, no las del control de calidad: ver `limitacionesDelCliente`.
+  const limites = cob?.limitacionesDelCliente ?? cob?.limitaciones ?? [];
+  if (limites.length) {
     titulo("What this survey does not cover");
-    for (const l of cob.limitaciones) parrafo(l, true);
+    for (const l of limites) parrafo(l, true);
     s.addRow([]);
   }
 
@@ -440,6 +537,14 @@ export function numeracionEnIngles(addressing?: FarmProfile["addressing"]): stri
 export interface FotoEmbebida {
   fileName: string;
   dataUrl: string;
+  /**
+   * El hallazgo al que pertenece ESTA imagen, cuando fue dibujada para el.
+   *
+   * Una misma foto del dron puede traer dos hallazgos, y cada uno se entrega
+   * con su propio recuadro: sin esto los dos mostrarian el mismo dibujo y uno
+   * de los dos senialaria el panel equivocado.
+   */
+  id?: string;
 }
 
 const esc = (v: unknown): string =>
@@ -466,6 +571,7 @@ export function aInformeEntregable(
   o: OpcionesDeEntrega = {},
 ): string {
   const porNombre = new Map(fotos.map((f) => [f.fileName, f.dataUrl]));
+  const porId = new Map(fotos.flatMap((f) => (f.id ? [[f.id, f.dataUrl] as const] : [])));
   const lista = entregables(i);
   const cob = i.cobertura;
 
@@ -481,7 +587,7 @@ export function aInformeEntregable(
   const ficha = (f: Finding, n: number) => {
     const a = f.address;
     const m = f.medicion;
-    const img = porNombre.get(f.fileName);
+    const img = porId.get(f.id) ?? porNombre.get(f.fileName);
     const k = clase(f);
     return `<article class="f k${k}">
   <header>
@@ -505,7 +611,7 @@ export function aInformeEntregable(
     <dt>Location</dt><dd>${a?.center ? `${a.center.lat.toFixed(6)}, ${a.center.lon.toFixed(6)}` : "—"}</dd>
     <dt>Source image</dt><dd><code>${esc(f.fileName)}</code></dd>
   </dl>
-  ${f.patron?.porQue ? `<p class="por-que">${esc(f.patron.porQue)}</p>` : ""}
+  ${(() => { const q = porQueEnIngles(f); return q ? `<p class="por-que">${esc(q)}</p>` : ""; })()}
   ${f.note ? `<p class="nota">${esc(f.note)}</p>` : ""}
   ${img ? `<img src="${img}" alt="${esc(f.fileName)}">` : `<p class="sinfoto">Image not included in this export.</p>`}
 </article>`;
@@ -600,8 +706,8 @@ ${cob ? `<tr><td>Thermal images</td><td>${cob.fotosTermicas}</td></tr>
 <tr><td>ΔT thresholds</td><td>minor ${cob.umbrales.leve} · moderate ${cob.umbrales.moderada} · critical ${cob.umbrales.critica} °C</td></tr>` : ""}
 </tbody></table>
 
-${cob?.limitaciones?.length ? `<section class="limites"><h2>What this survey does not cover</h2>${
-  cob.limitaciones.map((l) => `<p>${esc(l)}</p>`).join("")
+${(cob?.limitacionesDelCliente ?? cob?.limitaciones ?? []).length ? `<section class="limites"><h2>What this survey does not cover</h2>${
+  (cob!.limitacionesDelCliente ?? cob!.limitaciones).map((l) => `<p>${esc(l)}</p>`).join("")
 }</section>` : ""}
 
 <h2>Method</h2>

@@ -6,8 +6,8 @@
  * que quedan se llaman por lo que son, y va en ingles.
  */
 import { describe, expect, it } from "vitest";
-import { aInformeEntregable, columnas, nombreEntregado, refDe, resumenDeEntrega } from "../app/entregable";
-import type { Finding, Inspection } from "../app/inspection";
+import { aCsvEntregable, aInformeEntregable, columnas, nombreEntregado, porQueEnIngles, refDe, resumenDeEntrega } from "../app/entregable";
+import { ANOMALIAS, type Finding, type Inspection } from "../app/inspection";
 
 const f = (o: Partial<Finding> = {}): Finding => ({
   id: "x", fileName: "DJI_0001_T.JPG", candidates: [], warnings: [], status: "pendiente",
@@ -144,5 +144,168 @@ describe("el informe de entrega", () => {
   it("sin la foto, la ficha sale igual", () => {
     const html = aInformeEntregable(insp([f()]));
     expect(html).toContain("Image not included");
+  });
+});
+
+/**
+ * Que va al informe del cliente y que se queda en el interno.
+ *
+ * "11 modulos se compararon contra un vecindario mas suelto" no es una
+ * limitacion del vuelo: es control de calidad de la medicion, y arriba de todo
+ * pone en duda la lista entera por un dato que ya esta —hallazgo por
+ * hallazgo— en la columna que le corresponde.
+ */
+describe("las limitaciones del entregable", () => {
+  const insp = (cob: unknown): Inspection => ({
+    id: "i", farmId: "p", farmName: "W", name: "F", createdAt: "2026-09-06T00:00:00.000Z",
+    conditions: {}, findings: [f()], cobertura: cob,
+  } as Inspection);
+
+  it("muestra las del cliente y no las internas", () => {
+    const html = aInformeEntregable(insp({
+      umbrales: { leve: 3, moderada: 10, critica: 20 }, gsdCm: 5.3, fotosTermicas: 1,
+      limitaciones: ["11 modules compared against a looser neighbourhood.", "This flight detects modules and strings, not cells."],
+      limitacionesDelCliente: ["This flight detects modules and strings, not cells."],
+    }));
+    expect(html).toContain("not cells");
+    expect(html).not.toContain("looser neighbourhood");
+  });
+
+  /*
+    Los vuelos guardados antes de la separacion no traen la lista corta, y ahi
+    se muestran todas: es preferible decir de mas que borrar sin querer una
+    limitacion real de un informe viejo.
+  */
+  it("un vuelo guardado antes usa la lista completa", () => {
+    const html = aInformeEntregable(insp({
+      umbrales: { leve: 3, moderada: 10, critica: 20 }, gsdCm: 5.3, fotosTermicas: 1,
+      limitaciones: ["Something the flight cannot state."],
+    }));
+    expect(html).toContain("Something the flight cannot state.");
+  });
+
+  it("la fila del hallazgo sigue diciendo contra que se comparo", () => {
+    const cols = columnas({});
+    const flojo = f({ medicion: { ...f().medicion!, ambito: "fila" } });
+    expect(cols.find((c) => c.clave === "compared")!.valor(flojo, 0)).toBe("Row (weak neighbourhood)");
+  });
+});
+
+/*
+  Una misma foto del dron puede traer dos hallazgos, y cada uno se entrega con
+  el recuadro sobre SU modulo. Si el informe buscara la imagen por el nombre
+  del archivo, los dos mostrarian el mismo dibujo y uno señalaria el panel
+  equivocado.
+*/
+describe("la imagen de cada hallazgo en el informe", () => {
+  const dos: Inspection = {
+    ...({ id: "i", name: "Vuelo", createdAt: "2026-09-06T00:00:00Z", conditions: {}, findings: [] } as unknown as Inspection),
+    findings: [
+      f({ id: "a", status: "confirmado" }),
+      f({ id: "b", status: "confirmado", address: { ...f().address!, stringNumber: 8, module: 3 } }),
+    ],
+  };
+
+  it("usa la dibujada para ese hallazgo, no la del archivo", () => {
+    const html = aInformeEntregable(dos, [
+      { id: "a", fileName: "DJI_0001_T.JPG", dataUrl: "data:image/jpeg;base64,AAA" },
+      { id: "b", fileName: "DJI_0001_T.JPG", dataUrl: "data:image/jpeg;base64,BBB" },
+    ]);
+    expect(html).toContain("base64,AAA");
+    expect(html).toContain("base64,BBB");
+  });
+
+  it("un informe viejo, con las imagenes por nombre, sigue saliendo con fotos", () => {
+    const html = aInformeEntregable(dos, [
+      { fileName: "DJI_0001_T.JPG", dataUrl: "data:image/jpeg;base64,CCC" },
+    ]);
+    expect(html.match(/base64,CCC/g)?.length).toBe(2);
+  });
+});
+
+/*
+  El CSV es el formato que sobrevive: se abre en Sheets, en Numbers y en un
+  script del cliente. Sale de las mismas columnas que el Excel porque dos
+  entregables del mismo vuelo que no coinciden fila por fila es lo primero que
+  rompe la confianza.
+*/
+describe("el CSV de entrega", () => {
+  const uno: Inspection = {
+    ...({ id: "i", name: "Vuelo", createdAt: "2026-09-06T00:00:00Z", conditions: {}, findings: [] } as unknown as Inspection),
+    findings: [f({ status: "confirmado", note: 'glass, "south" corner' })],
+  };
+
+  it("va en ingles y con las mismas columnas que el Excel", () => {
+    const csv = aCsvEntregable(uno);
+    const cabecera = csv.replace(/^﻿/, "").split("\r\n")[0]!;
+    expect(cabecera.split(",")[0]).toBe("Ref");
+    expect(cabecera).toContain("IEC class");
+    expect(cabecera).toContain("Hotspot ΔT vs module (°C)");
+    expect(cabecera).not.toMatch(/bloque|anomalia|severidad/);
+  });
+
+  it("arranca con BOM, si no Excel en Windows rompe los grados", () => {
+    expect(aCsvEntregable(uno).startsWith("﻿")).toBe(true);
+  });
+
+  it("una nota con comas y comillas no corre las columnas", () => {
+    const fila = aCsvEntregable(uno).trimEnd().split("\r\n").at(-1)!;
+    expect(fila).toContain('"glass, ""south"" corner"');
+    expect(fila.split(",")[0]).toBe("001");
+  });
+
+  it("no lleva la columna de link online: en CSV no es un link", () => {
+    const cabecera = aCsvEntregable(uno, { driveUrl: "https://x" }).split("\r\n")[0]!;
+    expect(cabecera).not.toContain("Photo (online)");
+  });
+});
+
+/*
+  Los once patrones tienen que estar traducidos. El motor clasifica cinco; los
+  otros seis los pone Mateo a mano en el revisor, y si falta uno la celda sale
+  en castellano en medio de una planilla en ingles — que es exactamente lo que
+  el cliente no tiene que ver.
+*/
+describe("el vocabulario en ingles", () => {
+  it("cubre las once anomalias de la lista", () => {
+    const col = columnas({}).find((c) => c.clave === "anomaly")!;
+    for (const a of ANOMALIAS) {
+      const salida = String(col.valor(f({ anomaly: a }), 0));
+      expect(salida, a).not.toBe(a);
+      expect(salida).not.toMatch(/[áéíóúñ]|Modulo|Celda|Suciedad|Sombra|Vidrio|Caja de/);
+    }
+  });
+});
+
+/*
+  El texto del motor esta en castellano porque es el que se lee en pantalla
+  mientras se revisa. En el informe del cliente salia un parrafo en castellano
+  abajo de una ficha en ingles: se vio en la primera entrega real.
+*/
+describe("el por que del motor, en el informe", () => {
+  const conPatron = (p: Partial<Finding["patron"]> & { patron: string }) =>
+    f({ patron: { confianza: "alta", fraccionCaliente: 0.05, grumos: 1, porQue: "en castellano", ...p } as Finding["patron"] });
+
+  it("se reescribe en ingles y no sale el texto guardado", () => {
+    expect(porQueEnIngles(conPatron({ patron: "diodo", franja: { eje: "largo", desde: 0, hasta: 5, de: 10 } }))).toContain("bypass diode");
+    expect(porQueEnIngles(conPatron({ patron: "celda-multiple", grumos: 3 }))).toContain("3 separate hot patches");
+    expect(porQueEnIngles(conPatron({ patron: "punto-caliente" }))).toContain("5 % of the module");
+    expect(porQueEnIngles(conPatron({ patron: "modulo-completo" }))).toContain("open circuit");
+  });
+
+  it("un string entero se explica como una conexion, no como 28 modulos malos", () => {
+    const s = porQueEnIngles(f({ anomaly: "String completo", patron: { patron: "modulo-completo", confianza: "alta", fraccionCaliente: 1, grumos: 1, porQue: "en castellano" } as Finding["patron"] }))!;
+    expect(s).toContain("one connection");
+    expect(s).toContain("whole string");
+  });
+
+  it("el informe no lleva ni una palabra del texto en castellano", () => {
+    const insp: Inspection = {
+      ...({ id: "i", name: "Vuelo", createdAt: "2026-09-06T00:00:00Z", conditions: {}, findings: [] } as unknown as Inspection),
+      findings: [conPatron({ patron: "punto-caliente" })].map((x) => ({ ...x, status: "confirmado" as const })),
+    };
+    const html = aInformeEntregable(insp);
+    expect(html).not.toContain("en castellano");
+    expect(html).toContain("hot patch");
   });
 });

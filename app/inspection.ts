@@ -215,6 +215,16 @@ export interface Cobertura {
    * modulos tiene cada bloque volado y cuantos se midieron de ese bloque.
    */
   porBloque?: Array<{ block: string; modulos: number; medidos: number }>;
+  /**
+   * Las limitaciones que van al informe del CLIENTE.
+   *
+   * `limitaciones` las tiene todas y es lo que se guarda y se exporta al CSV
+   * de trabajo. Esta es el subconjunto que contesta "que puede y que no puede
+   * afirmar este vuelo", sin el control de calidad de la medicion — que sigue
+   * estando, hallazgo por hallazgo, en la columna que le corresponde. Los
+   * vuelos guardados antes de esto no la traen y usan la lista completa.
+   */
+  limitacionesDelCliente?: string[];
   /** Strings enteros calientes: no son defectos de modulo, se arreglan en otro lado. */
   eventosDeString: EventoDeString[];
   /** Las frases, ya escritas, de lo que este vuelo no permite afirmar. */
