@@ -46,12 +46,32 @@ function percentil(v: Float32Array, p: number): number {
   return o[Math.min(o.length - 1, Math.max(0, Math.round((o.length - 1) * p)))]!;
 }
 
-/** Cuanto se agranda la termica. A 2x una celda de 3 px se ve. */
-const ESCALA = 2;
+/*
+  Cuanto se agranda la termica.
+
+  A 3x un cuadro de 640x512 sale de 1920x1536, que impreso en una hoja A4 son
+  unos 160 puntos por pulgada: se ve la celda y no se ve el pixel. Mateo lo
+  pidio mirando el informe entregado —"que se vean lo mas nitido posible"—, y
+  lo que lo dejaba lechoso no era el tamanio sino el suavizado: la termica se
+  agranda ahora SIN interpolar, asi que el borde de la mancha caliente queda
+  donde esta y no repartido entre cuatro pixeles.
+*/
+const ESCALA = 3;
 /** Ancho de la barra de escala, en pixeles de la imagen final. */
-const BARRA = 86;
+const BARRA = 43 * ESCALA;
 /** Alto de la banda de texto de abajo. */
-const PIE = 46;
+const PIE = 23 * ESCALA;
+/*
+  Cuanta calidad guarda el JPEG.
+
+  La de la carpeta va alta: es la copia de archivo, la que se abre sola y la
+  que se mira con lupa. La del informe va mas comprimida —a simple vista no se
+  distinguen, pero pesa la mitad— porque ahi las fotos viajan adentro del HTML
+  en base64: a calidad de archivo, un vuelo con sesenta hallazgos daria un
+  informe de setenta megas que no se abre ni se manda por mail.
+*/
+export const CALIDAD_ARCHIVO = 0.95;
+export const CALIDAD_INFORME = 0.86;
 
 /**
  * Dibuja la termica de un hallazgo, lista para entregar.
@@ -64,6 +84,7 @@ export async function fotoDelHallazgo(
   file: File,
   f: Finding,
   n: number,
+  calidad: number = CALIDAD_ARCHIVO,
   tipo: "image/jpeg" | "image/png" = "image/jpeg",
 ): Promise<Blob | null> {
   const radio = readRadiometric(await file.arrayBuffer());
@@ -98,8 +119,8 @@ export async function fotoDelHallazgo(
   chico.width = w;
   chico.height = h;
   chico.getContext("2d")?.putImageData(cruda, 0, 0);
-  g.imageSmoothingEnabled = true;
-  g.imageSmoothingQuality = "high";
+  // Sin interpolar: es lo que separa una termica nitida de una lechosa.
+  g.imageSmoothingEnabled = false;
   g.drawImage(chico, 0, 0, w * ESCALA, h * ESCALA);
 
   /*
@@ -117,27 +138,29 @@ export async function fotoDelHallazgo(
     g.translate(caja.cx * ESCALA, caja.cy * ESCALA);
     g.rotate(caja.rotRad);
     g.strokeStyle = "#00e5ff";
-    g.lineWidth = 2.5;
+    g.lineWidth = 1.4 * ESCALA;
     g.strokeRect((-largo / 2) * ESCALA, (-cruzado / 2) * ESCALA, largo * ESCALA, cruzado * ESCALA);
     g.restore();
   }
 
   // La barra de escala: sin ella el color no significa nada.
-  const x0 = w * ESCALA + 22;
-  const alto = h * ESCALA - 44;
+  const margen = 11 * ESCALA;
+  const ancho = 11 * ESCALA;
+  const x0 = w * ESCALA + margen;
+  const alto = h * ESCALA - margen * 2;
   for (let y = 0; y < alto; y++) {
     const [r, gr, b] = color(1 - y / alto);
     g.fillStyle = `rgb(${r},${gr},${b})`;
-    g.fillRect(x0, 22 + y, 22, 1);
+    g.fillRect(x0, margen + y, ancho, 1);
   }
   g.strokeStyle = "rgba(255,255,255,.35)";
   g.lineWidth = 1;
-  g.strokeRect(x0 + 0.5, 22.5, 22, alto);
+  g.strokeRect(x0 + 0.5, margen + 0.5, ancho, alto);
   g.fillStyle = "#e8eef4";
-  g.font = "600 13px -apple-system, system-ui, sans-serif";
+  g.font = `600 ${6.5 * ESCALA}px -apple-system, system-ui, sans-serif`;
   g.textAlign = "left";
-  g.fillText(`${hi.toFixed(1)} °C`, x0 - 2, 16);
-  g.fillText(`${lo.toFixed(1)} °C`, x0 - 2, 22 + alto + 15);
+  g.fillText(`${hi.toFixed(1)} °C`, x0 - 2, margen - 3 * ESCALA);
+  g.fillText(`${lo.toFixed(1)} °C`, x0 - 2, margen + alto + 7 * ESCALA);
 
   // Y el pie, para que la foto suelta siga diciendo de que panel es.
   const a = f.address;
@@ -146,22 +169,22 @@ export async function fotoDelHallazgo(
     ? "module not confirmed"
     : `module ${f.moduleCorregido ?? a?.module ?? "?"}`;
   g.fillStyle = "#e8eef4";
-  g.font = "600 15px -apple-system, system-ui, sans-serif";
+  g.font = `600 ${7.5 * ESCALA}px -apple-system, system-ui, sans-serif`;
   g.fillText(
     `${refDe(n)} · Block ${a?.block ?? "?"} · Tracker ${a?.tracker ?? "?"}${a?.row ? " " + a.row : ""} · String ${a?.stringNumber ?? "?"} · ${modulo}`,
-    14, h * ESCALA + 20,
+    7 * ESCALA, h * ESCALA + 10 * ESCALA,
   );
   g.fillStyle = "#93a3b1";
-  g.font = "13px -apple-system, system-ui, sans-serif";
+  g.font = `${6.5 * ESCALA}px -apple-system, system-ui, sans-serif`;
   const interno = f.medicion?.deltaInterno != null
     ? ` · hotspot +${f.medicion.deltaInterno.toFixed(1)} °C over the module`
     : "";
   // La foto se entrega en ingles como todo el resto: el nombre interno del
   // patron no puede salir en el pie de una imagen que ve el cliente.
   const patron = f.anomaly ? ANOMALIA_EN[f.anomaly] ?? f.anomaly : "Unclassified";
-  g.fillText(`${patron} · ΔT ${dt} vs its string${interno}`, 14, h * ESCALA + 38);
+  g.fillText(`${patron} · ΔT ${dt} vs its string${interno}`, 7 * ESCALA, h * ESCALA + 19 * ESCALA);
 
-  return new Promise((resolve) => lienzo.toBlob((b) => resolve(b), tipo, 0.9));
+  return new Promise((resolve) => lienzo.toBlob((b) => resolve(b), tipo, calidad));
 }
 
 /** El nombre con el que viaja esa foto. Es el mismo que apunta el Excel. */

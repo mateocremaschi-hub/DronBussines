@@ -44,6 +44,29 @@ export const ANOMALIA_EN: Record<string, string> = {
   "Vidrio roto": "Broken glass",
   Otro: "Other",
 };
+/*
+  Que es cada patron, en una linea.
+
+  Va al principio del informe y del Excel: el que lo recibe no tiene por que
+  saber que quiere decir "bypass diode", y una lista de defectos sin decir que
+  es cada uno obliga a preguntar por mail. Se listan solo los que aparecieron
+  en ESTE vuelo — un glosario de once patrones cuando se encontraron dos es
+  relleno.
+*/
+export const QUE_ES: Record<string, string> = {
+  "Punto caliente": "A single small hot area inside the module. Can be a cracked cell, but also dirt or something resting on the glass.",
+  "Celda multiple": "Two or more separate hot areas inside the module, not forming a band. Usually cracked cells.",
+  "Diodo de bypass": "A hot band crossing the module from side to side: a whole substring shorted out by its bypass diode.",
+  "Modulo completo": "The module is warm all over with no hot patch inside it — it is delivering no current (open circuit).",
+  "String completo": "Every module of the string is equally warm above its neighbours. It is one connection, a fuse or an open connector, not a row of bad modules.",
+  PID: "Potential-induced degradation: cells run warmer towards the frame, usually worst at one end of the string.",
+  Suciedad: "Dirt, dust or droppings sitting on the glass. Warm where it sits; no electrical fault.",
+  Sombra: "Something casting a shadow on the module — vegetation, structure or the neighbouring row.",
+  "Caja de conexion": "The junction box on the back of the module runs hot. Fire risk.",
+  "Vidrio roto": "Cracked or shattered laminate, warm across the broken area.",
+  Otro: "Does not match any of the patterns above; see the note on that row.",
+};
+
 const SEVERIDAD_EN: Record<Severidad, string> = {
   normal: "None", leve: "Minor", moderada: "Moderate", critica: "Critical",
 };
@@ -129,8 +152,6 @@ export function columnas(o: OpcionesDeEntrega): Columna[] {
     },
     { clave: "dc_box", titulo: "DC box", ancho: 12, valor: (f) => f.address?.dcBoxLabel ?? "" },
     { clave: "anomaly", titulo: "Anomaly", ancho: 24, valor: (f) => (f.anomaly ? ANOMALIA_EN[f.anomaly] ?? f.anomaly : "") },
-    { clave: "class", titulo: "IEC class", ancho: 10, valor: (f) => f.klass ?? "" },
-    { clave: "action", titulo: "Action", ancho: 26, valor: (f) => (f.klass ? ACCION_DE_CLASE[f.klass] ?? "" : "") },
     { clave: "severity", titulo: "Severity", ancho: 11, valor: (f) => (f.medicion ? SEVERIDAD_EN[f.medicion.peor] : "") },
     { clave: "module_c", titulo: "Module temp (°C)", ancho: 16, valor: (f) => (f.medicion ? +f.medicion.celsius.toFixed(1) : "") },
     { clave: "delta_string", titulo: "ΔT vs string (°C)", ancho: 17, valor: (f) => (f.medicion ? +f.medicion.deltaT.toFixed(1) : "") },
@@ -230,19 +251,45 @@ export function porQueEnIngles(f: Finding): string | null {
   return null;
 }
 
-/** El conteo por tipo y por clase, que es lo que se mira primero. */
+/**
+ * La severidad de un hallazgo, que es lo que se entrega.
+ *
+ * Es la PEOR de las dos comparaciones —el modulo contra sus hermanos de string
+ * y el punto mas caliente contra el propio modulo—, no la del ΔT solo: un
+ * modulo que no se despega del string pero tiene una celda a +25 °C adentro es
+ * grave, y mirando un solo numero salia "normal".
+ */
+export const severidadDe = (f: Finding): Severidad | null => f.medicion?.peor ?? null;
+
+/** De la mas urgente a la mas leve: es el orden en que se lee la lista. */
+export const ORDEN_SEVERIDAD: Severidad[] = ["critica", "moderada", "leve", "normal"];
+
+/** El conteo por tipo y por severidad, que es lo que se mira primero. */
 export function resumenDeEntrega(lista: Finding[]) {
-  const porTipo = new Map<string, { n: number; c1: number; c2: number; c3: number }>();
+  const porTipo = new Map<string, { n: number; critica: number; moderada: number; leve: number; anomalia: string }>();
   for (const f of lista) {
-    const t = f.anomaly ? ANOMALIA_EN[f.anomaly] ?? f.anomaly : "Unclassified";
-    const e = porTipo.get(t) ?? { n: 0, c1: 0, c2: 0, c3: 0 };
+    const clave = f.anomaly ?? "";
+    const t = clave ? ANOMALIA_EN[clave] ?? clave : "Unclassified";
+    const e = porTipo.get(t) ?? { n: 0, critica: 0, moderada: 0, leve: 0, anomalia: clave };
     e.n++;
-    if (f.klass === 1) e.c1++; else if (f.klass === 3) e.c3++; else e.c2++;
+    const sev = severidadDe(f);
+    if (sev === "critica") e.critica++;
+    else if (sev === "moderada") e.moderada++;
+    else e.leve++;
     porTipo.set(t, e);
   }
   return [...porTipo.entries()]
     .map(([tipo, v]) => ({ tipo, ...v }))
-    .sort((a, b) => b.c3 - a.c3 || b.n - a.n);
+    .sort((a, b) => b.critica - a.critica || b.moderada - a.moderada || b.n - a.n);
+}
+
+/** Cuantos hallazgos hay de cada severidad, de la mas urgente a la mas leve. */
+export function porSeveridad(lista: Finding[]) {
+  return ORDEN_SEVERIDAD.filter((s) => s !== "normal").map((s) => ({
+    severidad: s,
+    nombre: SEVERIDAD_EN[s],
+    n: lista.filter((f) => severidadDe(f) === s).length,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -251,8 +298,16 @@ export function resumenDeEntrega(lista: Finding[]) {
 
 const TINTA = "FF1F3A4D";
 const CLARO = "FFF4F7F9";
-const CLASE_FONDO: Record<number, string> = { 1: "FFE8F5E9", 2: "FFFFF3CD", 3: "FFF8D7DA" };
-const CLASE_TINTA: Record<number, string> = { 1: "FF1B5E20", 2: "FF7A5B00", 3: "FF8B1A1A" };
+/*
+  El color de cada severidad. Es lo unico que se colorea de la lista: pintar
+  filas enteras por otra cosa compite con esto y deja de leerse de un vistazo.
+*/
+const SEV_FONDO: Record<string, string> = {
+  critica: "FFF8D7DA", moderada: "FFFFF3CD", leve: "FFE8F5E9", normal: "FFF4F7F9",
+};
+const SEV_TINTA: Record<string, string> = {
+  critica: "FF8B1A1A", moderada: "FF7A5B00", leve: "FF1B5E20", normal: "FF5A6B78",
+};
 const BORDE = { style: "thin" as const, color: { argb: "FFD5DCE3" } };
 
 /**
@@ -372,19 +427,17 @@ export async function aExcelEntregable(
     s.addRow([]);
   }
 
+  const resumen = resumenDeEntrega(lista);
+
   titulo("Findings");
-  cabecera(["Anomaly", "Total", "Class 1", "Class 2", "Class 3"]);
-  for (const t of resumenDeEntrega(lista)) {
-    const r = s.addRow([t.tipo, t.n, t.c1, t.c2, t.c3]);
+  cabecera(["Anomaly", "Total", "Critical", "Moderate", "Minor"]);
+  for (const t of resumen) {
+    const r = s.addRow([t.tipo, t.n, t.critica, t.moderada, t.leve]);
     r.eachCell((c) => { c.border = { top: BORDE, left: BORDE, bottom: BORDE, right: BORDE }; });
-    if (t.c3) r.getCell(5).font = { bold: true, color: { argb: CLASE_TINTA[3] } };
+    if (t.critica) r.getCell(3).font = { bold: true, color: { argb: SEV_TINTA.critica } };
   }
-  const tot = s.addRow([
-    "Total", lista.length,
-    lista.filter((f) => f.klass === 1).length,
-    lista.filter((f) => f.klass === 2 || f.klass == null).length,
-    lista.filter((f) => f.klass === 3).length,
-  ]);
+  const cuentas = porSeveridad(lista);
+  const tot = s.addRow(["Total", lista.length, ...cuentas.map((c) => c.n)]);
   tot.eachCell((c) => {
     c.font = { bold: true };
     c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CLARO } };
@@ -392,40 +445,34 @@ export async function aExcelEntregable(
   });
   s.addRow([]);
 
-  titulo("What each class means");
-  cabecera(["Class", "Action", "Meaning"]);
-  ([
-    [1, ACCION_DE_CLASE[1]!, "No defect found. Kept as a baseline for the next survey."],
-    [2, ACCION_DE_CLASE[2]!, "Real loss of output, no acute risk. Plan the repair."],
-    [3, ACCION_DE_CLASE[3]!, "Hotspot ≥ 25 °C over its own module, or module ≥ 20 °C over its string siblings. Degrades the laminate and is a fire risk."],
-  ] as Array<[number, string, string]>).forEach(([k, a, m]) => {
-    const r = s.addRow([k, a, m]);
-    r.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: CLASE_FONDO[k]! } };
-    r.getCell(1).font = { bold: true, color: { argb: CLASE_TINTA[k]! } };
-    r.getCell(1).alignment = { horizontal: "center" };
-    // El significado ocupa de la C a la F: en una sola columna entraban tres
-    // palabras por linea y la fila salia de cinco renglones.
-    s.mergeCells(r.number, 3, r.number, 6);
-    r.getCell(3).alignment = { wrapText: true, vertical: "middle" };
-    r.height = Math.max(18, Math.ceil(m.length / 92) * 14 + 4);
-    r.eachCell((c) => { c.border = { top: BORDE, left: BORDE, bottom: BORDE, right: BORDE }; });
-  });
-  s.addRow([]);
+  /*
+    Que es cada patron que aparecio, en una linea.
 
-  // Las del cliente, no las del control de calidad: ver `limitacionesDelCliente`.
-  const limites = cob?.limitacionesDelCliente ?? cob?.limitaciones ?? [];
-  if (limites.length) {
-    titulo("What this survey does not cover");
-    for (const l of limites) parrafo(l, true);
+    Solo los que aparecieron: un glosario de once cuando se encontraron dos es
+    relleno, y el que recibe el archivo lo lee para entender SU lista.
+  */
+  const tipos = resumen.filter((t) => QUE_ES[t.anomalia]);
+  if (tipos.length) {
+    titulo("What each anomaly is");
+    cabecera(["Anomaly", "What it is"]);
+    for (const t of tipos) {
+      const m = QUE_ES[t.anomalia]!;
+      const r = s.addRow([t.tipo, m]);
+      // De la B a la F: en una sola columna entraban tres palabras por linea.
+      s.mergeCells(r.number, 2, r.number, 6);
+      r.getCell(2).alignment = { wrapText: true, vertical: "middle" };
+      r.height = Math.max(18, Math.ceil(m.length / 100) * 14 + 4);
+      r.eachCell((c) => { c.border = { top: BORDE, left: BORDE, bottom: BORDE, right: BORDE }; });
+    }
     s.addRow([]);
   }
 
   titulo("Method");
   for (const l of [
     "Every module is measured on the median of the central 60 % of the laminate, with the aluminium frame left out.",
-    "ΔT is measured against the sibling modules OF THE SAME STRING photographed in the same pass — not against the whole row or the neighbouring rows, which may sit at a different tracker angle.",
-    "Classification follows the pattern-and-context approach of IEC TS 62446-3. The ΔT thresholds above are a declared working convention, not a literal quotation of the standard.",
-    "Boxes that do not fall on a panel are discarded before measuring, so no finding comes from ground or shadow.",
+    "ΔT is measured against the sibling modules OF THE SAME STRING photographed in the same pass.",
+    "Severity is the worse of the two comparisons: the module against its string siblings, and the hottest point against its own module.",
+    "Pattern recognition follows the pattern-and-context approach of IEC TS 62446-3. The ΔT thresholds above are a declared working convention, not a literal quotation of the standard.",
   ]) parrafo(l);
 
   // --- Hoja 2: los hallazgos ------------------------------------------------
@@ -455,13 +502,19 @@ export async function aExcelEntregable(
       c.alignment = { horizontal: "right", vertical: "middle" };
     }
     for (const clave of ["latitude", "longitude"]) fila.getCell(clave).numFmt = "0.0000000";
-    if (f.klass) {
-      for (const clave of ["class", "action"]) {
-        const c = fila.getCell(clave);
-        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CLASE_FONDO[f.klass]! } };
-        c.font = { bold: f.klass === 3, color: { argb: CLASE_TINTA[f.klass]! } };
-      }
-      fila.getCell("class").alignment = { horizontal: "center", vertical: "middle" };
+    /*
+      La severidad es la unica celda de color de la fila.
+
+      Es lo que se ordena y lo que se busca: pintada, la lista se puede leer de
+      un vistazo sin filtrar. Pintar mas columnas por otra cosa compite con
+      esto y las dos dejan de leerse.
+    */
+    const sev = severidadDe(f);
+    if (sev) {
+      const c = fila.getCell("severity");
+      c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: SEV_FONDO[sev]! } };
+      c.font = { bold: sev === "critica", color: { argb: SEV_TINTA[sev]! } };
+      c.alignment = { horizontal: "center", vertical: "middle" };
     }
     /*
       Los dos links a la misma foto.
@@ -588,8 +641,8 @@ export function aInformeEntregable(
     const a = f.address;
     const m = f.medicion;
     const img = porId.get(f.id) ?? porNombre.get(f.fileName);
-    const k = clase(f);
-    return `<article class="f k${k}">
+    const sev = severidadDe(f) ?? "normal";
+    return `<article class="f ${sev}">
   <header>
     <span class="ref">${esc(refDe(n))}</span>
     <h3>Block ${esc(a?.block ?? "?")} · Tracker ${esc(a?.tracker ?? "?")}${a?.row ? " " + esc(a.row) : ""} · String ${esc(a?.stringNumber ?? "?")} · ${
@@ -597,7 +650,7 @@ export function aInformeEntregable(
         ? `Module not confirmed <em>(count from the row end; nearest is ${esc(a?.module ?? "?")})</em>`
         : `Module ${esc(f.moduleCorregido ?? a?.module ?? "?")}`
     }</h3>
-    <span class="badge b${k}">Class ${k} · ${esc(ACCION_DE_CLASE[k] ?? "")}</span>
+    <span class="badge ${sev}">${esc(SEVERIDAD_EN[sev])}</span>
   </header>
   <dl>
     <dt>Anomaly</dt><dd><strong>${esc(f.anomaly ? ANOMALIA_EN[f.anomaly] ?? f.anomaly : "Unclassified")}</strong></dd>
@@ -640,9 +693,9 @@ export function aInformeEntregable(
   .t { border: 1px solid var(--linea); border-radius: 8px; padding: .9rem 1rem; }
   .t b { display: block; font-size: 2rem; line-height: 1.1; }
   .t span { color: var(--suave); font-size: .88rem; }
-  .t.k3 { background: #fdf1f2; border-color: #f0c8cc; } .t.k3 b { color: #8b1a1a; }
-  .t.k2 { background: #fffaf0; border-color: #f0e0bd; } .t.k2 b { color: #7a5b00; }
-  .t.k1 { background: #f2f9f3; border-color: #cfe6d4; } .t.k1 b { color: #1b5e20; }
+  .t.critica { background: #fdf1f2; border-color: #f0c8cc; } .t.critica b { color: #8b1a1a; }
+  .t.moderada { background: #fffaf0; border-color: #f0e0bd; } .t.moderada b { color: #7a5b00; }
+  .t.leve { background: #f2f9f3; border-color: #cfe6d4; } .t.leve b { color: #1b5e20; }
   table { border-collapse: collapse; width: 100%; margin-bottom: 1.2rem; font-size: .95rem; }
   th { text-align: left; background: var(--tinta); color: #fff; font-weight: 600; padding: .45rem .7rem; }
   td { padding: .4rem .7rem; border-bottom: 1px solid var(--linea); }
@@ -655,36 +708,67 @@ export function aInformeEntregable(
   .metodo p { color: var(--suave); font-size: .93rem; margin: .4rem 0; }
   .f { border: 1px solid var(--linea); border-left: 5px solid #c4ccd3; border-radius: 8px;
        padding: 1rem 1.2rem; margin-bottom: 1rem; break-inside: avoid; page-break-inside: avoid; }
-  .f.k3 { border-left-color: #c0392b; } .f.k2 { border-left-color: #d9a441; } .f.k1 { border-left-color: #7bb681; }
+  .f.critica { border-left-color: #c0392b; } .f.moderada { border-left-color: #d9a441; }
+  .f.leve { border-left-color: #7bb681; } .f.normal { border-left-color: #c4ccd3; }
   .f header { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; margin-bottom: .6rem; }
   .f h3 { margin: 0; font-size: 1.02rem; flex: 1 1 20rem; }
   .f h3 em { color: var(--suave); font-style: normal; font-weight: 400; }
   .ref { font-variant-numeric: tabular-nums; background: var(--tinta); color: #fff;
          border-radius: 4px; padding: .1rem .45rem; font-size: .82rem; font-weight: 600; }
   .badge { font-size: .78rem; border-radius: 4px; padding: .12rem .5rem; white-space: nowrap; }
-  .badge.b3 { background: #f8d7da; color: #8b1a1a; } .badge.b2 { background: #fff3cd; color: #7a5b00; }
-  .badge.b1 { background: #e8f5e9; color: #1b5e20; }
+  .badge.critica { background: #f8d7da; color: #8b1a1a; }
+  .badge.moderada { background: #fff3cd; color: #7a5b00; }
+  .badge.leve { background: #e8f5e9; color: #1b5e20; }
+  .badge.normal { background: #eef2f5; color: #5a6672; }
   dl { display: grid; grid-template-columns: max-content 1fr; gap: .12rem 1.1rem; margin: 0 0 .6rem; font-size: .95rem; }
   dt { color: var(--suave); } dd { margin: 0; }
   .por-que { margin: 0 0 .6rem; font-size: .93rem; }
   .nota { background: #f4f7f9; padding: .5rem .7rem; border-radius: 5px; margin: 0 0 .6rem; font-size: .93rem; }
-  .f img { max-width: 100%; border-radius: 5px; display: block; }
+  /*
+    La foto, lo mas grande y lo mas nitida que da el papel.
+
+    Se pide contraste al agrandar y no suavizado: abajo hay una termica de
+    640x512, y el suavizado del navegador la deja lechosa y se come el borde de
+    la mancha, que es justo lo que hay que mirar. Ancho completo de la caja y,
+    al imprimir, del renglon entero.
+  */
+  .f img { width: 100%; border-radius: 5px; display: block; image-rendering: -webkit-optimize-contrast; }
   .sinfoto { color: #98a2ab; font-style: italic; margin: 0; }
   code { font-size: .87em; background: #f2f5f7; padding: .1em .35em; border-radius: 3px; }
-  @media print { body { max-width: none; padding: 0; font-size: 11pt; } h2 { margin-top: 1.4rem; } }
+  @media print {
+    body { max-width: none; padding: 0; font-size: 11pt; }
+    h2 { margin-top: 1.4rem; }
+    /* Que la termica entre entera y grande en la pagina, no a media caja. */
+    .f img { width: 100%; max-height: 15cm; object-fit: contain; }
+  }
 </style></head><body>
 <h1>Thermographic inspection report</h1>
 <p class="sub">${esc(i.farmName)} · ${esc(i.name)} · ${lista.length} finding${lista.length === 1 ? "" : "s"}</p>
 
 <div class="tarjetas">
-  <div class="t k3"><b>${cuenta(3)}</b><span>Class 3 — ${esc(ACCION_DE_CLASE[3])}</span></div>
-  <div class="t k2"><b>${cuenta(2)}</b><span>Class 2 — ${esc(ACCION_DE_CLASE[2])}</span></div>
-  <div class="t k1"><b>${cuenta(1)}</b><span>Class 1 — ${esc(ACCION_DE_CLASE[1])}</span></div>
+  ${porSeveridad(lista).map((c) => `<div class="t ${c.severidad}"><b>${c.n}</b><span>${esc(c.nombre)}</span></div>`).join("")}
 </div>
 
 <h2>Findings by type</h2>
-<table><thead><tr><th>Anomaly</th><th>Total</th><th>Class 1</th><th>Class 2</th><th>Class 3</th></tr></thead>
-<tbody>${conteo.map((t) => `<tr><td>${esc(t.tipo)}</td><td class="n">${t.n}</td><td class="n">${t.c1}</td><td class="n">${t.c2}</td><td class="n">${t.c3}</td></tr>`).join("")}</tbody></table>
+<table><thead><tr><th>Anomaly</th><th>Total</th><th>Critical</th><th>Moderate</th><th>Minor</th></tr></thead>
+<tbody>${conteo.map((t) => `<tr><td>${esc(t.tipo)}</td><td class="n">${t.n}</td><td class="n">${t.critica}</td><td class="n">${t.moderada}</td><td class="n">${t.leve}</td></tr>`).join("")}</tbody></table>
+
+${(() => {
+  /*
+    Que es cada patron que aparecio, arriba de todo.
+
+    Mateo lo pidio mirando el informe entregado: la lista decia "Whole string"
+    y "Hot spot" y no decia que es cada cosa, asi que el que la recibe tiene
+    que preguntar por mail. Solo los que aparecieron: un glosario de once
+    cuando se encontraron dos es relleno.
+  */
+  const tipos = conteo.filter((t) => QUE_ES[t.anomalia]);
+  return tipos.length
+    ? `<h2>What each anomaly is</h2>
+<table><thead><tr><th>Anomaly</th><th>What it is</th></tr></thead>
+<tbody>${tipos.map((t) => `<tr><td><strong>${esc(t.tipo)}</strong></td><td>${esc(QUE_ES[t.anomalia]!)}</td></tr>`).join("")}</tbody></table>`
+    : "";
+})()}
 
 ${cob?.porBloque?.length ? `<h2>Coverage by block</h2>
 <table><thead><tr><th>Block</th><th>Modules in block</th><th>Modules measured</th><th>Coverage</th></tr></thead>
@@ -706,14 +790,21 @@ ${cob ? `<tr><td>Thermal images</td><td>${cob.fotosTermicas}</td></tr>
 <tr><td>ΔT thresholds</td><td>minor ${cob.umbrales.leve} · moderate ${cob.umbrales.moderada} · critical ${cob.umbrales.critica} °C</td></tr>` : ""}
 </tbody></table>
 
-${(cob?.limitacionesDelCliente ?? cob?.limitaciones ?? []).length ? `<section class="limites"><h2>What this survey does not cover</h2>${
-  (cob!.limitacionesDelCliente ?? cob!.limitaciones).map((l) => `<p>${esc(l)}</p>`).join("")
-}</section>` : ""}
+${/*
+  Lo que el vuelo no permite afirmar NO viaja en el entregable.
+
+  Mateo lo saco despues de la primera entrega real. Leido por el cliente —que
+  abre el informe para saber a que panel caminar— un bloque de matices del
+  metodo arriba de todo se lee como que el que midio no confia en lo que
+  midio. El dato no se borra: sigue entero en la pantalla de revision, que es
+  donde hay que mirarlo antes de firmar, y donde una cobertura pobre tiene que
+  frenar la entrega.
+*/ ""}
 
 <h2>Method</h2>
 <div class="metodo">
-<p>Every module is measured on the median of the central 60 % of the laminate, with the aluminium frame left out. ΔT is measured against the sibling modules <strong>of the same string</strong> photographed in the same pass — not against the whole row or the neighbouring rows, which may sit at a different tracker angle.</p>
-<p>Classification follows the pattern-and-context approach of <strong>IEC TS 62446-3</strong>. The ΔT thresholds above are a declared working convention, not a literal quotation of the standard. Boxes that do not fall on a panel are discarded before measuring, so no finding comes from ground or shadow.</p>
+<p>Every module is measured on the median of the central 60 % of the laminate, with the aluminium frame left out. ΔT is measured against the sibling modules <strong>of the same string</strong> photographed in the same pass.</p>
+<p>Severity is the worse of the two comparisons: the module against its string siblings, and its hottest point against its own module. Pattern recognition follows the pattern-and-context approach of <strong>IEC TS 62446-3</strong>; the ΔT thresholds above are a declared working convention, not a literal quotation of the standard.</p>
 </div>
 
 ${[...porBloque.entries()].sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))

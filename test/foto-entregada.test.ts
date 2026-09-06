@@ -13,7 +13,7 @@
  * corresponde y donde, no como se ve el antialiasing.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { fotoDelHallazgo, nombreDeLaFotoEntregada } from "../app/fotoEntregada";
+import { CALIDAD_ARCHIVO, CALIDAD_INFORME, fotoDelHallazgo, nombreDeLaFotoEntregada } from "../app/fotoEntregada";
 import type { Finding } from "../app/inspection";
 
 /** Un JPEG minimo con el crudo termico en APP3, como el de test/thermal. */
@@ -62,6 +62,7 @@ interface Trazo { tipo: string; args: unknown[] }
 let trazos: Trazo[] = [];
 let lienzos: Array<{ width: number; height: number }> = [];
 let blobs = 0;
+let calidadPedida: (q: number) => void = () => {};
 
 function contextoFalso() {
   const anota = (tipo: string) => (...args: unknown[]) => { trazos.push({ tipo, args }); };
@@ -90,7 +91,9 @@ beforeEach(() => {
       const c = {
         width: 0, height: 0,
         getContext: () => ctx,
-        toBlob: (cb: (b: Blob) => void, tipo: string) => { blobs++; cb(new Blob(["x"], { type: tipo })); },
+        toBlob: (cb: (b: Blob) => void, tipo: string, q: number) => {
+          blobs++; calidadPedida(q); cb(new Blob(["x"], { type: tipo }));
+        },
       };
       lienzos.push(c);
       return c;
@@ -121,11 +124,13 @@ describe("la foto entregada", () => {
   */
   it("dibuja el recuadro mas grande que el modulo, no encima", async () => {
     await fotoDelHallazgo(termica(), f(), 0);
-    const caja = trazos.find((t) => t.tipo === "strokeRect" && Number(t.args[2]) === 12 * 1.5 * 2);
-    expect(caja).toBeTruthy();
-    expect(caja!.args[3]).toBe(6 * 1.5 * 2);
-    // Y centrado en el modulo: se traslada al centro de la caja antes de rotar.
-    expect(trazos.find((t) => t.tipo === "translate")!.args).toEqual([60, 40]);
+    // La escala del dibujo sale del traslado al centro de la caja (cx 30, cy 20).
+    const centro = trazos.find((t) => t.tipo === "translate")!.args as number[];
+    const escala = centro[0]! / 30;
+    expect(centro).toEqual([30 * escala, 20 * escala]);
+    const caja = trazos.find((t) => t.tipo === "strokeRect" && Number(t.args[2]) === 12 * 1.5 * escala);
+    expect(caja, "el recuadro va a 1,5 veces el modulo").toBeTruthy();
+    expect(caja!.args[3]).toBe(6 * 1.5 * escala);
   });
 
   it("escribe los dos extremos de la escala en grados", async () => {
@@ -180,5 +185,31 @@ describe("el idioma del pie", () => {
     const pie = textos().join(" | ");
     expect(pie).toContain("Hot spot");
     expect(pie).not.toContain("Punto caliente");
+  });
+});
+
+/*
+  Dos calidades a proposito.
+
+  La de la carpeta es la copia de archivo. La del informe va mas comprimida
+  porque ahi las fotos viajan adentro del HTML en base64: a calidad de archivo,
+  un vuelo de sesenta hallazgos daria un informe de setenta megas que no se
+  abre ni se manda por mail.
+*/
+describe("la calidad del JPEG", () => {
+  it("la del informe pesa menos que la de la carpeta", () => {
+    expect(CALIDAD_INFORME).toBeLessThan(CALIDAD_ARCHIVO);
+    expect(CALIDAD_INFORME).toBeGreaterThan(0.8);
+  });
+
+  it("por defecto sale la de archivo", async () => {
+    let pedida: number | undefined;
+    const antes = calidadPedida;
+    calidadPedida = (q) => { pedida = q; };
+    await fotoDelHallazgo(termica(), f(), 0);
+    expect(pedida).toBe(CALIDAD_ARCHIVO);
+    await fotoDelHallazgo(termica(), f(), 0, CALIDAD_INFORME);
+    expect(pedida).toBe(CALIDAD_INFORME);
+    calidadPedida = antes;
   });
 });

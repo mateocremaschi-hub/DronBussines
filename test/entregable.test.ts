@@ -6,7 +6,8 @@
  * que quedan se llaman por lo que son, y va en ingles.
  */
 import { describe, expect, it } from "vitest";
-import { aCsvEntregable, aInformeEntregable, columnas, nombreEntregado, porQueEnIngles, refDe, resumenDeEntrega } from "../app/entregable";
+import { aCsvEntregable, aInformeEntregable, columnas, nombreEntregado, porQueEnIngles, porSeveridad, refDe, resumenDeEntrega } from "../app/entregable";
+import type { Severidad } from "../app/detect";
 import { ANOMALIAS, type Finding, type Inspection } from "../app/inspection";
 
 const f = (o: Partial<Finding> = {}): Finding => ({
@@ -17,6 +18,12 @@ const f = (o: Partial<Finding> = {}): Finding => ({
     severidad: "normal", peor: "leve", origen: "celda", pixeles: 40, deltaInterno: 10.5 } as Finding["medicion"],
   ...o,
 });
+
+const insp = (findings: Finding[], cobertura?: unknown): Inspection => ({
+  id: "i", farmId: "p", farmName: "Wellington", name: "Flight 1",
+  createdAt: "2026-09-06T00:00:00.000Z", conditions: {}, findings,
+  ...(cobertura ? { cobertura } : {}),
+} as Inspection);
 
 describe("las columnas del entregable", () => {
   const claves = columnas({}).map((c) => c.clave);
@@ -31,8 +38,8 @@ describe("las columnas del entregable", () => {
     const titulos = columnas({}).map((c) => c.titulo);
     expect(titulos).toContain("ΔT vs string (°C)");
     expect(titulos).toContain("Hotspot ΔT vs module (°C)");
-    expect(titulos).toContain("IEC class");
-    expect(titulos).toContain("Action");
+    expect(titulos).toContain("Severity");
+    expect(titulos).toContain("Module temp (°C)");
   });
 
   it("la columna online solo aparece si hay carpeta de Drive", () => {
@@ -71,17 +78,94 @@ describe("el nombre de la foto entregada", () => {
   });
 });
 
+/*
+  La clase IEC salio del entregable: Mateo la clasifica por SEVERIDAD, que es
+  lo que decide si se va a mirar hoy o en el proximo mantenimiento, y una
+  segunda escala al lado de la primera solo obliga a explicar cual manda.
+*/
+const conSev = (a: string, peor: Severidad) =>
+  f({ anomaly: a, medicion: { ...f().medicion!, peor } as Finding["medicion"] });
+
 describe("el resumen por tipo", () => {
-  it("cuenta por anomalia y clase, con las clase 3 primero", () => {
+  it("cuenta por anomalia y severidad, con las criticas primero", () => {
     const r = resumenDeEntrega([
-      f({ anomaly: "Punto caliente", klass: 2 }),
-      f({ anomaly: "Punto caliente", klass: 2 }),
-      f({ anomaly: "Diodo de bypass", klass: 3 }),
+      conSev("Punto caliente", "leve"),
+      conSev("Punto caliente", "leve"),
+      conSev("Diodo de bypass", "critica"),
     ]);
     expect(r[0]!.tipo).toBe("Bypass diode");
-    expect(r[0]!.c3).toBe(1);
+    expect(r[0]!.critica).toBe(1);
     expect(r[1]!.tipo).toBe("Hot spot");
     expect(r[1]!.n).toBe(2);
+    expect(r[1]!.leve).toBe(2);
+  });
+
+  it("las tarjetas del informe van de la mas urgente a la mas leve", () => {
+    const c = porSeveridad([conSev("Punto caliente", "critica"), conSev("Punto caliente", "leve")]);
+    expect(c.map((x) => x.nombre)).toEqual(["Critical", "Moderate", "Minor"]);
+    expect(c.map((x) => x.n)).toEqual([1, 0, 1]);
+  });
+});
+
+describe("el entregable no habla de clases", () => {
+  const claves = columnas({}).map((c) => c.clave);
+
+  it("no lleva la columna de clase IEC ni la de accion", () => {
+    expect(claves).not.toContain("class");
+    expect(claves).not.toContain("action");
+    expect(claves).toContain("severity");
+  });
+
+  it("el informe no nombra ninguna clase", () => {
+    const html = aInformeEntregable(insp([conSev("Punto caliente", "critica")]));
+    expect(html).not.toMatch(/Class \d|IEC class/);
+    expect(html).toContain("Critical");
+  });
+});
+
+/*
+  Que es cada patron, arriba de todo: la lista decia "Whole string" y no decia
+  que es un string entero, asi que el que la recibe pregunta por mail.
+*/
+describe("el glosario de anomalias", () => {
+  it("explica los patrones que aparecieron y ninguno mas", () => {
+    const html = aInformeEntregable(insp([conSev("Diodo de bypass", "moderada")]));
+    expect(html).toContain("What each anomaly is");
+    expect(html).toContain("bypass diode");
+    expect(html).not.toContain("Potential-induced degradation");
+  });
+
+  it("sin anomalia clasificada no se pone una tabla vacia", () => {
+    const html = aInformeEntregable(insp([f({ anomaly: undefined })]));
+    expect(html).not.toContain("What each anomaly is");
+  });
+});
+
+/*
+  Lo que el vuelo no permite afirmar se queda en la app y no viaja: leido por
+  el cliente, arriba de todo, se lee como que el que midio no confia en lo que
+  midio.
+*/
+describe("lo que no viaja en el entregable", () => {
+  const cob = {
+    umbrales: { leve: 3, moderada: 10, critica: 20 }, gsdCm: 5.3, fotosTermicas: 1,
+    limitaciones: ["17 modulos quedaron cortados por el borde"],
+    limitacionesDelCliente: ["17 modulos quedaron cortados por el borde"],
+  };
+
+  it("no lleva la seccion de limitaciones", () => {
+    const html = aInformeEntregable(insp([f()], cob));
+    expect(html).not.toContain("What this survey does not cover");
+    expect(html).not.toContain("cortados por el borde");
+  });
+
+  it("el metodo no habla del suelo ni de las filas vecinas", () => {
+    const html = aInformeEntregable(insp([f()]));
+    expect(html).not.toContain("no finding comes from ground or shadow");
+    expect(html).not.toContain("neighbouring rows");
+    // Lo que si tiene que decir: contra que se compara y como sale la severidad.
+    expect(html).toContain("of the same string");
+    expect(html).toContain("Severity is the worse of the two comparisons");
   });
 });
 
@@ -92,27 +176,12 @@ describe("el resumen por tipo", () => {
  * permite afirmar arriba y no en una nota al pie.
  */
 describe("el informe de entrega", () => {
-  const insp = (findings: Finding[], cobertura?: unknown): Inspection => ({
-    id: "i", farmId: "p", farmName: "Wellington", name: "Flight 1",
-    createdAt: "2026-09-06T00:00:00.000Z", conditions: {}, findings,
-    ...(cobertura ? { cobertura } : {}),
-  } as Inspection);
-
   it("sale en ingles y con la norma citada", () => {
     const html = aInformeEntregable(insp([f({ anomaly: "Punto caliente", klass: 2 })]));
     expect(html).toContain('<html lang="en">');
     expect(html).toContain("Thermographic inspection report");
     expect(html).toContain("Hot spot");
     expect(html).toContain("IEC TS 62446-3");
-  });
-
-  it("dice lo que el vuelo no permite afirmar", () => {
-    const html = aInformeEntregable(insp([f()], {
-      limitaciones: ["363,137 modules were not covered by any image."],
-      umbrales: { leve: 3, moderada: 10, critica: 20 }, gsdCm: 5.3, fotosTermicas: 566,
-    }));
-    expect(html).toContain("What this survey does not cover");
-    expect(html).toContain("363,137 modules were not covered");
   });
 
   it("cuenta la cobertura por bloque, no contra el parque entero", () => {
@@ -155,48 +224,20 @@ describe("el informe de entrega", () => {
  * pone en duda la lista entera por un dato que ya esta —hallazgo por
  * hallazgo— en la columna que le corresponde.
  */
-describe("las limitaciones del entregable", () => {
-  const insp = (cob: unknown): Inspection => ({
-    id: "i", farmId: "p", farmName: "W", name: "F", createdAt: "2026-09-06T00:00:00.000Z",
-    conditions: {}, findings: [f()], cobertura: cob,
-  } as Inspection);
-
-  it("muestra las del cliente y no las internas", () => {
-    const html = aInformeEntregable(insp({
-      umbrales: { leve: 3, moderada: 10, critica: 20 }, gsdCm: 5.3, fotosTermicas: 1,
-      limitaciones: ["11 modules compared against a looser neighbourhood.", "This flight detects modules and strings, not cells."],
-      limitacionesDelCliente: ["This flight detects modules and strings, not cells."],
-    }));
-    expect(html).toContain("not cells");
-    expect(html).not.toContain("looser neighbourhood");
-  });
-
-  /*
-    Los vuelos guardados antes de la separacion no traen la lista corta, y ahi
-    se muestran todas: es preferible decir de mas que borrar sin querer una
-    limitacion real de un informe viejo.
-  */
-  it("un vuelo guardado antes usa la lista completa", () => {
-    const html = aInformeEntregable(insp({
-      umbrales: { leve: 3, moderada: 10, critica: 20 }, gsdCm: 5.3, fotosTermicas: 1,
-      limitaciones: ["Something the flight cannot state."],
-    }));
-    expect(html).toContain("Something the flight cannot state.");
-  });
-
-  it("la fila del hallazgo sigue diciendo contra que se comparo", () => {
-    const cols = columnas({});
-    const flojo = f({ medicion: { ...f().medicion!, ambito: "fila" } });
-    expect(cols.find((c) => c.clave === "compared")!.valor(flojo, 0)).toBe("Row (weak neighbourhood)");
+/*
+  Lo que el vuelo no permite afirmar salio del entregable, pero el dato que SI
+  es accionable —contra que vecindario se comparo ESE modulo— se queda en su
+  fila: ahi cambia lo que el que camina el parque va a mirar.
+*/
+describe("contra que se comparo cada hallazgo", () => {
+  it("la fila lo sigue diciendo aunque el informe no tenga limitaciones", () => {
+    const col = columnas({}).find((c) => c.clave === "compared")!;
+    const flojo = f({ medicion: { ...f().medicion!, ambito: "fila" } as Finding["medicion"] });
+    expect(col.valor(flojo, 0)).toBe("Row (weak neighbourhood)");
+    expect(col.valor(f(), 0)).toBe("Its own string");
   });
 });
 
-/*
-  Una misma foto del dron puede traer dos hallazgos, y cada uno se entrega con
-  el recuadro sobre SU modulo. Si el informe buscara la imagen por el nombre
-  del archivo, los dos mostrarian el mismo dibujo y uno señalaria el panel
-  equivocado.
-*/
 describe("la imagen de cada hallazgo en el informe", () => {
   const dos: Inspection = {
     ...({ id: "i", name: "Vuelo", createdAt: "2026-09-06T00:00:00Z", conditions: {}, findings: [] } as unknown as Inspection),
@@ -239,7 +280,7 @@ describe("el CSV de entrega", () => {
     const csv = aCsvEntregable(uno);
     const cabecera = csv.replace(/^﻿/, "").split("\r\n")[0]!;
     expect(cabecera.split(",")[0]).toBe("Ref");
-    expect(cabecera).toContain("IEC class");
+    expect(cabecera).toContain("Severity");
     expect(cabecera).toContain("Hotspot ΔT vs module (°C)");
     expect(cabecera).not.toMatch(/bloque|anomalia|severidad/);
   });

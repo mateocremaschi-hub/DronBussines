@@ -38,7 +38,7 @@ import { deleteAnalysis, loadAnalysis, type StoredFarm } from "../storage";
 import { entregables } from "../informe";
 import { fusionarRevision, reclasificarFindings, vueloDesdeAnalisis } from "../vuelo";
 import { aCsvEntregable, aExcelEntregable, aInformeEntregable, nombreEntregado } from "../entregable";
-import { fotoDelHallazgo } from "../fotoEntregada";
+import { CALIDAD_INFORME, fotoDelHallazgo } from "../fotoEntregada";
 import { bloquesDelParque, puntosDeHallazgos } from "../mapa";
 import { acuerdoDeLaMuestra, muestraARevisar } from "../muestreo";
 import { MapaDelParque } from "../components/MapaDelParque";
@@ -382,7 +382,7 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
       for (const [n, f] of lista.entries()) {
         const file = encontradas.get(f.fileName);
         if (!file) continue;
-        const dibujada = await fotoDelHallazgo(file, f, n).catch(() => null);
+        const dibujada = await fotoDelHallazgo(file, f, n, CALIDAD_INFORME).catch(() => null);
         fotos.push({
           id: f.id,
           fileName: f.fileName,
