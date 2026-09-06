@@ -35,9 +35,10 @@ import {
 } from "../inspection";
 import { UMBRALES, type Severidad, type Umbrales } from "../detect";
 import { deleteAnalysis, loadAnalysis, type StoredFarm } from "../storage";
-import { entregables, toCsv } from "../informe";
+import { entregables } from "../informe";
 import { fusionarRevision, reclasificarFindings, vueloDesdeAnalisis } from "../vuelo";
-import { aExcelEntregable, aInformeEntregable, nombreEntregado } from "../entregable";
+import { aCsvEntregable, aExcelEntregable, aInformeEntregable, nombreEntregado } from "../entregable";
+import { fotoDelHallazgo } from "../fotoEntregada";
 import { bloquesDelParque, puntosDeHallazgos } from "../mapa";
 import { acuerdoDeLaMuestra, muestraARevisar } from "../muestreo";
 import { MapaDelParque } from "../components/MapaDelParque";
@@ -52,6 +53,16 @@ function comoDataUrl(file: File): Promise<string> {
     r.onload = () => resolve(String(r.result));
     r.onerror = () => reject(new Error(`No pude leer ${file.name}`));
     r.readAsDataURL(file);
+  });
+}
+
+/** Lo mismo para la imagen que dibujamos nosotros, que no es un File. */
+function comoDataUrlDeBlob(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(new Error("No pude leer la imagen dibujada"));
+    r.readAsDataURL(blob);
   });
 }
 
@@ -327,7 +338,19 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
           ruta = `${ruta.slice(0, ruta.length - ext.length)}__${f.id.replace(/[^\w.-]+/g, "-")}${ext}`;
         }
         usados.add(ruta);
-        entradas.push({ ruta, contenido: new Uint8Array(await file.arrayBuffer()) });
+        /*
+          Se entrega la termica dibujada —modulo remarcado, barra de escala y
+          pie con la direccion—, no el JPG crudo del dron. Una foto reenviada
+          sola tiene que decir de que panel habla sin el Excel al lado.
+
+          Si la camara guardo la foto sin datos de temperatura adentro
+          (la visible del par, por ejemplo) `fotoDelHallazgo` devuelve null y
+          va el original, que es mejor que nada.
+        */
+        const dibujada = await fotoDelHallazgo(file, f, n).catch(() => null);
+        const bytes = new Uint8Array(await (dibujada ?? file).arrayBuffer());
+        entradas.push({ ruta, contenido: bytes });
+        setExportando(`Dibujando las fotos… ${entradas.length} de ${lista.length}`);
       }
       if (!entradas.length) {
         setExportando(
@@ -349,13 +372,27 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
     setExportando("Armando el informe…");
     try {
       const encontradas = fotosDeLosHallazgos(archivos);
+      const lista = entregables(current);
+      /*
+        Una imagen por hallazgo, no una por archivo: dos hallazgos de la misma
+        foto llevan el recuadro sobre SU modulo. Se dibuja igual que en la
+        carpeta de fotos, asi el informe y el ZIP muestran lo mismo.
+      */
       const fotos = [];
-      for (const [nombre, file] of encontradas) {
-        fotos.push({ fileName: nombre, dataUrl: await comoDataUrl(file) });
+      for (const [n, f] of lista.entries()) {
+        const file = encontradas.get(f.fileName);
+        if (!file) continue;
+        const dibujada = await fotoDelHallazgo(file, f, n).catch(() => null);
+        fotos.push({
+          id: f.id,
+          fileName: f.fileName,
+          dataUrl: dibujada ? await comoDataUrlDeBlob(dibujada) : await comoDataUrl(file),
+        });
+        setExportando(`Armando el informe… ${fotos.length} de ${lista.length} fotos`);
       }
       // Un hallazgo sin su foto sale igual, con la ficha y sin imagen. Decir
       // cuantos son evita entregar un informe con huecos sin haberlo mirado.
-      const sinFoto = entregables(current).filter((f) => !encontradas.has(f.fileName)).length;
+      const sinFoto = lista.filter((f) => !encontradas.has(f.fileName)).length;
       const html = aInformeEntregable(current, fotos, {
         ...(driveUrl.trim() ? { driveUrl: driveUrl.trim() } : {}),
         addressing: stored.profile.addressing,
@@ -429,7 +466,7 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
                     </span>
                   </button>
                   <div className="farm-actions">
-                    <button className="link" onClick={() => download(`${i.name}.csv`, toCsv(i), "text/csv")}>
+                    <button className="link" onClick={() => download(`${i.name}.csv`, aCsvEntregable(i), "text/csv;charset=utf-8")}>
                       Exportar CSV
                     </button>
                     <button
@@ -701,8 +738,12 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
             <button onClick={() => void exportarExcel()}>Excel (English)</button>
             <button onClick={() => void exportarFotos()}>Carpeta de fotos (renombradas)</button>
             <button onClick={() => void exportarInforme()}>Report (English, HTML / PDF)</button>
-            <button className="ghost" onClick={() => download(`${current.name}.csv`, toCsv(current), "text/csv")}>
-              CSV
+            <button className="ghost" onClick={() => download(
+                `${current.name}.csv`,
+                aCsvEntregable(current, { addressing: stored.profile.addressing }),
+                "text/csv;charset=utf-8",
+              )}>
+              CSV (English)
             </button>
           </div>
           {/*
