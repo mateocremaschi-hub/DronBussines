@@ -78,3 +78,60 @@ describe("juntar dos cargas del mismo vuelo", () => {
     expect(unirVuelos(null, b)).toBe(b);
   });
 });
+
+/*
+  El anclaje de una fila vale para las dos tandas.
+
+  Los bloques se pisan en los bordes, asi que muchas filas salen en las dos
+  cargas. A Mateo le paso con la 2-25-esclava: once fotos la anclaron y el
+  hallazgo salio igual como "modulo sin confirmar", solo porque cargo el vuelo
+  en dos partes. El mismo vuelo daba dos respuestas distintas segun como se
+  hubiera cargado.
+*/
+describe("el anclaje de una fila al fusionar", () => {
+  const con = (pares: Array<[string, boolean]>): ResultadoDeVuelo =>
+    vuelo([], {
+      corregidoPorFila: new Map(pares.map(([k, conFinal]) => [k, { modulos: 0.9, conFinal }])),
+    });
+
+  it("una fila anclada en la segunda tanda queda anclada en la primera", () => {
+    const r = unirVuelos(
+      con([["A.JPG|2-25-esclava", false]]),
+      con([["B.JPG|2-25-esclava", true]]),
+    );
+    expect(r.corregidoPorFila.get("A.JPG|2-25-esclava")?.conFinal).toBe(true);
+    expect(r.corregidoPorFila.get("B.JPG|2-25-esclava")?.conFinal).toBe(true);
+  });
+
+  it("y al reves: la primera ancla, la segunda hereda", () => {
+    const r = unirVuelos(
+      con([["A.JPG|2-25-esclava", true]]),
+      con([["B.JPG|2-25-esclava", false]]),
+    );
+    expect(r.corregidoPorFila.get("B.JPG|2-25-esclava")?.conFinal).toBe(true);
+  });
+
+  it("una fila que nadie anclo sigue sin anclar", () => {
+    const r = unirVuelos(
+      con([["A.JPG|1-9-esclava", false]]),
+      con([["B.JPG|1-9-esclava", false]]),
+    );
+    expect(r.corregidoPorFila.get("A.JPG|1-9-esclava")?.conFinal).toBe(false);
+  });
+
+  it("el anclaje no se contagia entre filas distintas", () => {
+    const r = unirVuelos(
+      con([["A.JPG|2-25-esclava", true]]),
+      con([["B.JPG|2-85-motorizada", false]]),
+    );
+    expect(r.corregidoPorFila.get("B.JPG|2-85-motorizada")?.conFinal).toBe(false);
+  });
+
+  it("no toca el corrimiento medido de cada foto", () => {
+    const r = unirVuelos(
+      con([["A.JPG|2-25-esclava", false]]),
+      con([["B.JPG|2-25-esclava", true]]),
+    );
+    expect(r.corregidoPorFila.get("A.JPG|2-25-esclava")?.modulos).toBe(0.9);
+  });
+});

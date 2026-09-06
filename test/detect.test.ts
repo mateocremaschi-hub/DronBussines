@@ -854,3 +854,64 @@ describe("una fila que el parque dice y en el campo no esta", () => {
     expect(caliente.muestras()[0]!.celsius).toBeGreaterThan(55);
   });
 });
+
+/*
+  Una fila esta corrida UN numero de modulos, no uno por foto.
+
+  La rejilla de juntas mide ese numero con un cuarto de modulo de ruido en cada
+  foto, y la decision de renumerar se tomaba foto por foto: sobre el parque de
+  Mateo, 312 de 339 filas tenian dos fotos que llamaban distinto al MISMO
+  panel. Despues ganaba la que lo habia visto mas centrado, asi que el numero
+  entregado dependia de cual foto habia quedado mejor encuadrada.
+*/
+describe("el consenso de la fila", () => {
+  const acc = (alineaciones: Array<{ fileName: string; rowId: string; modulos: number }>) => {
+    const a = Object.create(Acumulador.prototype) as Acumulador;
+    (a as unknown as { alineaciones: unknown[] }).alineaciones = alineaciones;
+    return a;
+  };
+
+  it("con las fotos de acuerdo, da un solo corrimiento por fila", () => {
+    const c = acc([
+      { fileName: "a", rowId: "2-25", modulos: -0.30 },
+      { fileName: "b", rowId: "2-25", modulos: -0.42 },
+      { fileName: "c", rowId: "2-25", modulos: -0.36 },
+    ]).consensoDeLaFila();
+    expect(c.get("2-25")).toBeCloseTo(-0.36, 2);
+  });
+
+  /*
+    Una fila partida entre dos pasadas separadas en el tiempo, o un tracker que
+    giro a mitad de vuelo: ahi las fotos no ven lo mismo y seguir decidiendo
+    foto por foto es lo unico honesto.
+  */
+  it("con las fotos peleadas no propone nada", () => {
+    const c = acc([
+      { fileName: "a", rowId: "2-25", modulos: -0.9 },
+      { fileName: "b", rowId: "2-25", modulos: 0.0 },
+      { fileName: "c", rowId: "2-25", modulos: 0.9 },
+    ]).consensoDeLaFila();
+    expect(c.has("2-25")).toBe(false);
+  });
+
+  it("con menos de tres fotos tampoco: una mediana de dos es una de las dos", () => {
+    const c = acc([
+      { fileName: "a", rowId: "2-25", modulos: -0.30 },
+      { fileName: "b", rowId: "2-25", modulos: -0.32 },
+    ]).consensoDeLaFila();
+    expect(c.has("2-25")).toBe(false);
+  });
+
+  it("una fila peleada no arrastra a la de al lado", () => {
+    const c = acc([
+      { fileName: "a", rowId: "2-25", modulos: -0.9 },
+      { fileName: "b", rowId: "2-25", modulos: 0.9 },
+      { fileName: "c", rowId: "2-25", modulos: 0.0 },
+      { fileName: "a", rowId: "2-26", modulos: -0.40 },
+      { fileName: "b", rowId: "2-26", modulos: -0.44 },
+      { fileName: "c", rowId: "2-26", modulos: -0.38 },
+    ]).consensoDeLaFila();
+    expect(c.has("2-25")).toBe(false);
+    expect(c.get("2-26")).toBeCloseTo(-0.40, 2);
+  });
+});

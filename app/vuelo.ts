@@ -1644,6 +1644,7 @@ export function coberturaDe(d: DatosDeCobertura): Cobertura {
     posesSupuestas: d.resultado.posesSupuestas,
     eventosDeString: eventos,
     limitaciones: resumen.limitaciones,
+    limitacionesDelCliente: resumen.limitacionesDelCliente,
     ...(d.modulosPorBloque ? { porBloque: coberturaPorBloque(d) } : {}),
   };
 }
@@ -1896,7 +1897,36 @@ export function unirVuelos(a: ResultadoDeVuelo | null, b: ResultadoDeVuelo): Res
     problemas,
     alineaciones: [...a.alineaciones, ...b.alineaciones],
     auditoria,
-    corregidoPorFila: new Map([...a.corregidoPorFila, ...b.corregidoPorFila]),
+    /*
+      El anclaje de una fila vale para las dos tandas, no para la que lo vio.
+
+      `conFinal` dice si en ALGUNA foto se vio una referencia —la punta de la
+      fila o el hueco entre strings— con la que contar el numero. Se calcula
+      dentro de cada tanda, y al fusionar se juntaba tal cual venia: la tanda
+      que vio la fila sin referencia se quedaba con "sin confirmar" para
+      siempre, aunque la otra si la hubiera anclado.
+
+      Los bloques se pisan en los bordes, asi que muchas filas salen en las dos
+      cargas. A Mateo le paso con la 2-25-esclava: once fotos la anclaron, y el
+      hallazgo salio igual como "modulo sin confirmar" solo porque cargo el
+      vuelo en dos partes. Cargando todo junto no pasaba — el mismo vuelo daba
+      dos respuestas distintas segun como se hubiera cargado, que es lo peor
+      que puede hacer una herramienta de medicion.
+
+      La fila es la misma en las dos tandas: si en alguna se la anclo, esta
+      anclada.
+    */
+    corregidoPorFila: (() => {
+      const junto = new Map([...a.corregidoPorFila, ...b.corregidoPorFila]);
+      const anclada = new Set<string>();
+      for (const [k, v] of junto) if (v.conFinal) anclada.add(k.split("|")[1]!);
+      if (!anclada.size) return junto;
+      const out = new Map(junto);
+      for (const [k, v] of junto) {
+        if (!v.conFinal && anclada.has(k.split("|")[1]!)) out.set(k, { ...v, conFinal: true });
+      }
+      return out;
+    })(),
     fixes: new Map([...a.fixes, ...b.fixes]),
   };
 }

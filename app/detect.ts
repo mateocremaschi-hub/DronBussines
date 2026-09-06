@@ -350,6 +350,58 @@ export interface AlineacionDeFila {
 const ANCLAS_QUE_NO_SE_PONEN_DE_ACUERDO = 0.33;
 
 /**
+ * Cuanto pueden discrepar las fotos de una misma fila sobre cuanto esta corrida.
+ *
+ * Una fila es RIGIDA: esta corrida un solo numero de modulos, no uno por foto.
+ * Pero la rejilla de juntas mide ese numero con un cuarto de modulo de ruido en
+ * cada foto, y la decision de renumerar se tomaba foto por foto: sobre el
+ * parque de Mateo, 312 de 339 filas —el 92 %— tenian dos fotos que llamaban
+ * distinto al MISMO panel, y despues se quedaba con la que lo habia visto mas
+ * centrado. De ahi salia el "modulo 27 en una foto y 28 en la otra".
+ *
+ * Cuando las fotos de una fila se ponen de acuerdo dentro de esto, se decide
+ * UNA vez para toda la fila con la mediana. Cuando no —una fila partida entre
+ * dos pasadas, un tracker girado a mitad de vuelo— se sigue decidiendo foto por
+ * foto, que es lo unico honesto si las fotos no ven lo mismo.
+ *
+ * Un cuarto de modulo: con ese corte entran 248 de las 339 filas, las filas
+ * que se contradicen bajan de 312 a 91 y las muestras ambiguas un 39 %.
+ */
+const FOTOS_QUE_NO_SE_PONEN_DE_ACUERDO = 0.25;
+const FOTOS_MINIMAS_PARA_EL_CONSENSO = 3;
+
+/**
+ * Cuantas filas vecinas se miran para saber cuanto esta corrido el parque ahi.
+ *
+ * El corrimiento de una fila tiene dos partes: una que comparte con sus
+ * vecinas —el error de replanteo del bloque— y una propia. Solo la propia
+ * decide el numero de modulo; la compartida hay que sacarla antes de
+ * redondear, o el redondeo termina decidiendo por un error que no es de esa
+ * fila.
+ *
+ * Medido sobre el parque de Mateo, con los dos bloques cargados: el
+ * corrimiento compartido es de -0,33 modulo en el bloque 1, -0,43 en el 2 y
+ * -0,26 en el 3, igual en filas motorizadas y esclavas, y en el bloque 2
+ * deriva suave de -0,51 en el tracker 1 a -0,35 en el 99. Es un error de
+ * replanteo que se abre a lo ancho del bloque, no ruido.
+ *
+ * Nueve vecinas y no el bloque entero justamente por esa deriva: la mediana
+ * del bloque deja 23 de 416 filas al filo del redondeo, la de las nueve mas
+ * cercanas deja 13. Con menos de nueve la mediana la mueve el ruido de cada
+ * medicion, que es de un tercio de modulo.
+ */
+const VECINAS_PARA_EL_SESGO = 9;
+
+/**
+ * Cuantas filas ancladas hacen falta para animarse a estimar el sesgo.
+ *
+ * Con dos o tres filas la "mediana del vecindario" es una fila sola con
+ * ruido, y restarsela a si misma anula justo lo que habia que medir. Sin ese
+ * minimo se deja el parque como esta, que es el comportamiento de antes.
+ */
+const FILAS_MINIMAS_PARA_EL_SESGO = 5;
+
+/**
  * Con cuanta caja sobre panel se mide, y cuantas cajas hacen una fila.
  *
  * Nueve decimos por fila: las filas del bloque que se vuela dan 0,97 a 0,98
@@ -1573,6 +1625,7 @@ export class Acumulador {
     const verdadero = this.corrimientoVerdaderoPorFila();
     const aplicado = new Map<string, number>();
     for (const a of this.alineaciones) aplicado.set(`${a.fileName}|${a.rowId}`, a.modulos);
+    const consenso = this.consensoDeLaFila();
     const refs = new Map<string, ModuleRef[]>();
     const refsDe = (rowId: string): ModuleRef[] => {
       let r = refs.get(rowId);
@@ -1602,7 +1655,18 @@ export class Acumulador {
           modulos de donde el parque pone al k. El panel que de verdad esta ahi
           es el k + (aplicado - verdadero), que es entero salvo por el ruido.
         */
-        const lam = aplicado.get(`${m.fileName}|${m.modulo.rowId}`) ?? 0;
+        /*
+          Una fila esta corrida UN numero de modulos, no uno por foto.
+
+          Si las fotos de la fila se ponen de acuerdo, la decision se toma una
+          vez para toda la fila. Antes se tomaba foto por foto con un cuarto de
+          modulo de ruido cada una, y el mismo panel salia 27 en una foto y 28
+          en la otra: despues ganaba la que lo habia visto mas centrado, asi
+          que el numero entregado dependia de cual foto habia quedado mejor
+          encuadrada. Eso es lo que Mateo veia como "el numero corrido".
+        */
+        const lam = consenso.get(m.modulo.rowId)
+          ?? aplicado.get(`${m.fileName}|${m.modulo.rowId}`) ?? 0;
         const n = Math.round(lam - s);
         if (n !== 0) {
           const nuevo = refsDe(m.modulo.rowId)[m.modulo.positionInRow + n - 1];
@@ -1622,6 +1686,33 @@ export class Acumulador {
       salida.push(otras.length ? { ...mejor, otrasC: otras } : mejor);
     }
     return salida;
+  }
+
+  /**
+   * El corrimiento con el que se numera la fila entera, cuando sus fotos coinciden.
+   *
+   * La fila es rigida: esta corrida un solo numero de modulos. Cada foto lo
+   * mide con un cuarto de modulo de ruido, asi que la mediana de todas sus
+   * fotos es mejor dato que cualquiera de ellas — y sobre todo, es UNO, con lo
+   * que dos fotos dejan de poder llamar distinto al mismo panel.
+   *
+   * Una fila cuyas fotos no se ponen de acuerdo no entra: puede ser una fila
+   * partida entre dos pasadas separadas en el tiempo, o un tracker que giro a
+   * mitad del vuelo. Ahi seguir decidiendo foto por foto es lo unico honesto.
+   */
+  consensoDeLaFila(): Map<string, number> {
+    const porFila = new Map<string, number[]>();
+    for (const a of this.alineaciones) push2(porFila, a.rowId, a.modulos);
+    const out = new Map<string, number>();
+    for (const [rowId, v] of porFila) {
+      if (v.length < FOTOS_MINIMAS_PARA_EL_CONSENSO) continue;
+      v.sort((x, y) => x - y);
+      const med = v[v.length >> 1]!;
+      const mad = v.map((x) => Math.abs(x - med)).sort((x, y) => x - y)[v.length >> 1]!;
+      if (mad > FOTOS_QUE_NO_SE_PONEN_DE_ACUERDO) continue;
+      out.set(rowId, med);
+    }
+    return out;
   }
 
   /**
