@@ -626,7 +626,25 @@ export async function analizarFotos(
         });
       }
 
-      const agl = fix.relativeAltitudeM;
+      /*
+        Cuanto mide un pixel: manda el LASER, no el barometro.
+
+        La altura relativa del EXIF se mide contra el punto de despegue, y lo
+        que decide el tamaño del pixel es la distancia al PANEL. Entre las dos
+        hay dos cosas: el desnivel del terreno y el propio panel, que a 41
+        grados levanta un par de metros. En el vuelo del 4/9 el barometro decia
+        51,96 m y el laser 46,91 — un 10 % —, y con el barometro la app
+        informaba 5,3 cm por pixel cuando en realidad eran 4,8.
+
+        No es solo el numero del informe: con ese numero se decide si el vuelo
+        daba para ver una celda, y un 10 % optimista ahi es prometer una
+        resolucion que no hubo. La medicion nunca uso este valor —la escala
+        sale de contar el paso entre filas sobre la propia imagen— asi que
+        esto corrige lo que se DICE, no lo que se midio.
+
+        Sin laser queda el barometro, que es lo que habia.
+      */
+      const agl = fix.laserM ?? fix.relativeAltitudeM;
       if (agl == null) { fallos.push(`${file.name}: no trae altura sobre el terreno`); continue; }
 
       sumaGsd += ((2 * agl * Math.tan((cam.hfovDeg * Math.PI) / 360)) / cam.imageW) * 100;

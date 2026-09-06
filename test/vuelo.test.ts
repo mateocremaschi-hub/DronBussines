@@ -733,3 +733,41 @@ describe("las fotos se miran en orden de vuelo, vengan como vengan", () => {
     expect(sueltas[0]!.name).toContain("0498");
   });
 });
+
+/*
+  Cuanto mide un pixel: manda el laser, no el barometro.
+
+  La altura relativa del EXIF se mide contra el punto de despegue, y lo que
+  decide el tamaño del pixel es la distancia al PANEL. En el vuelo del 4/9 el
+  barometro decia 51,96 m y el laser 46,91 — un 10 % — y con el barometro la
+  app informaba 5,3 cm por pixel cuando eran 4,8. Con ese numero se decide si
+  el vuelo daba para ver una celda: un 10 % optimista ahi es prometer una
+  resolucion que no hubo.
+*/
+describe("la resolucion que se informa", () => {
+  const conDistancia = (laserM?: number) => {
+    const hfov = 36.0, ancho = 640;
+    const d = laserM ?? 51.961;
+    return ((2 * d * Math.tan((hfov * Math.PI) / 360)) / ancho) * 100;
+  };
+
+  it("el laser y el barometro no dan lo mismo en el vuelo real", () => {
+    expect(conDistancia(46.911)).toBeCloseTo(4.76, 1);
+    expect(conDistancia()).toBeCloseTo(5.28, 1);
+    // Y la diferencia es la que la app venia informando de mas.
+    expect(conDistancia() / conDistancia(46.911)).toBeGreaterThan(1.09);
+  });
+
+  /*
+    La comprobacion que importa: la escala con la que se MIDE no sale de aca.
+    Sale de contar el paso entre filas sobre la propia imagen, y por eso este
+    arreglo no puede mover ninguna medicion — corrige lo que se dice, no lo
+    que se midio.
+  */
+  it("el paso medido sobre la imagen coincide con el laser, no con el barometro", () => {
+    // 5,29 m de paso entre filas ocupan 110 px de 640 en la foto del hallazgo.
+    const medido = (5.29 / 110) * 100;
+    expect(Math.abs(medido - conDistancia(46.911))).toBeLessThan(0.2);
+    expect(Math.abs(medido - conDistancia())).toBeGreaterThan(0.4);
+  });
+});
