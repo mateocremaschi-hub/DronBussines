@@ -6,8 +6,8 @@
  * que quedan se llaman por lo que son, y va en ingles.
  */
 import { describe, expect, it } from "vitest";
-import { columnas, nombreEntregado, refDe, resumenDeEntrega } from "../app/entregable";
-import type { Finding } from "../app/inspection";
+import { aInformeEntregable, columnas, nombreEntregado, refDe, resumenDeEntrega } from "../app/entregable";
+import type { Finding, Inspection } from "../app/inspection";
 
 const f = (o: Partial<Finding> = {}): Finding => ({
   id: "x", fileName: "DJI_0001_T.JPG", candidates: [], warnings: [], status: "pendiente",
@@ -82,5 +82,67 @@ describe("el resumen por tipo", () => {
     expect(r[0]!.c3).toBe(1);
     expect(r[1]!.tipo).toBe("Hot spot");
     expect(r[1]!.n).toBe(2);
+  });
+});
+
+/**
+ * El informe visual, que es lo que se lee y se firma.
+ *
+ * Un solo archivo con las fotos adentro, en ingles, y con lo que el vuelo NO
+ * permite afirmar arriba y no en una nota al pie.
+ */
+describe("el informe de entrega", () => {
+  const insp = (findings: Finding[], cobertura?: unknown): Inspection => ({
+    id: "i", farmId: "p", farmName: "Wellington", name: "Flight 1",
+    createdAt: "2026-09-06T00:00:00.000Z", conditions: {}, findings,
+    ...(cobertura ? { cobertura } : {}),
+  } as Inspection);
+
+  it("sale en ingles y con la norma citada", () => {
+    const html = aInformeEntregable(insp([f({ anomaly: "Punto caliente", klass: 2 })]));
+    expect(html).toContain('<html lang="en">');
+    expect(html).toContain("Thermographic inspection report");
+    expect(html).toContain("Hot spot");
+    expect(html).toContain("IEC TS 62446-3");
+  });
+
+  it("dice lo que el vuelo no permite afirmar", () => {
+    const html = aInformeEntregable(insp([f()], {
+      limitaciones: ["363,137 modules were not covered by any image."],
+      umbrales: { leve: 3, moderada: 10, critica: 20 }, gsdCm: 5.3, fotosTermicas: 566,
+    }));
+    expect(html).toContain("What this survey does not cover");
+    expect(html).toContain("363,137 modules were not covered");
+  });
+
+  it("cuenta la cobertura por bloque, no contra el parque entero", () => {
+    const html = aInformeEntregable(insp([f()], {
+      limitaciones: [], umbrales: { leve: 3, moderada: 10, critica: 20 }, gsdCm: 5.3, fotosTermicas: 566,
+      porBloque: [{ block: "2", modulos: 10752, medidos: 10520 }],
+    }));
+    expect(html).toContain("Coverage by block");
+    expect(html).toContain("98 %");
+  });
+
+  /*
+    Una nota escrita por una persona puede traer cualquier cosa: si se
+    interpola cruda, el informe se lo come como HTML.
+  */
+  it("escapa lo que escribio una persona", () => {
+    const html = aInformeEntregable(insp([f({ note: "<script>alert(1)</script>" })]));
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("declara desde que punta se numeran los modulos", () => {
+    const html = aInformeEntregable(insp([f()]), [], {
+      addressing: { originStrategy: "fixed-end", fixedEnd: "north", inversionStrategy: "none" } as never,
+    });
+    expect(html).toContain("Modules are numbered from the north end");
+  });
+
+  it("sin la foto, la ficha sale igual", () => {
+    const html = aInformeEntregable(insp([f()]));
+    expect(html).toContain("Image not included");
   });
 });

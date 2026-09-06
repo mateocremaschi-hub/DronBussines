@@ -21,7 +21,7 @@
 import type { FarmProfile } from "@locator";
 import type { Severidad } from "./detect";
 import type { Finding, Inspection } from "./inspection";
-import { entregables, nombreDeFoto } from "./informe";
+import { entregables } from "./informe";
 
 /** Como se dice cada cosa en el entregable. */
 const ANOMALIA_EN: Record<string, string> = {
@@ -248,6 +248,8 @@ export async function aExcelEntregable(
   dato("Sky", i.conditions.sky);
   dato("Pilot", i.conditions.pilot);
   dato("Equipment", i.conditions.equipment);
+  const numeracion = numeracionEnIngles(o.addressing);
+  if (numeracion) dato("Module numbering", numeracion);
   const cob = i.cobertura;
   if (cob) {
     dato("Thermal images", cob.fotosTermicas);
@@ -391,4 +393,226 @@ export async function aExcelEntregable(
 
   const buf = await wb.xlsx.writeBuffer();
   return new Uint8Array(buf as ArrayBuffer) as Uint8Array<ArrayBuffer>;
+}
+
+// ---------------------------------------------------------------------------
+// El informe visual
+// ---------------------------------------------------------------------------
+
+const RUMBOS_EN: Record<string, string> = { north: "north", south: "south", east: "east", west: "west" };
+
+/**
+ * Desde que punta se numeran los modulos, en ingles.
+ *
+ * Es la linea que hace verificable a todo el resto: sin ella, "module 26" es
+ * un numero que el cliente no puede contar contra nada. La version en
+ * castellano vive en `informe.ts`, para el CSV de trabajo; esta es la del
+ * entregable, y las dos salen del mismo perfil del parque.
+ */
+export function numeracionEnIngles(addressing?: FarmProfile["addressing"]): string | null {
+  if (!addressing) return null;
+  let frase: string;
+  switch (addressing.originStrategy) {
+    case "fixed-end": {
+      const rumbo = addressing.fixedEnd ? RUMBOS_EN[addressing.fixedEnd] : null;
+      // Sin rumbo el perfil esta roto y el motor tampoco sabe contar: antes que
+      // declarar una punta inventada en el entregable, no se declara ninguna.
+      if (!rumbo) return null;
+      frase = `Modules are numbered from the ${rumbo} end of each string.`;
+      break;
+    }
+    case "dc-box-end":
+      frase = "Modules are numbered from the end of each string closest to its DC combiner box.";
+      break;
+    default:
+      frase = "Modules are numbered from the end declared for each row in the site survey.";
+      break;
+  }
+  if (addressing.inversionStrategy === "piercing-chain") {
+    frase += " In rows with more than one string, the string furthest from the origin is counted " +
+      "the other way round, from the opposite end: that is where its connection is.";
+  } else if (addressing.inversionStrategy === "per-string-flag") {
+    frase += " Strings flagged in the site survey are counted from the opposite end.";
+  }
+  return frase;
+}
+
+export interface FotoEmbebida {
+  fileName: string;
+  dataUrl: string;
+}
+
+const esc = (v: unknown): string =>
+  String(v ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+
+const grados = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)} °C`;
+
+/**
+ * El informe que se lee, se imprime y se firma.
+ *
+ * Un solo archivo con las fotos adentro: se abre en cualquier navegador, sin
+ * carpeta al lado, y con Cmd+P sale el PDF. Dentro de diez anios, que es
+ * cuando alguien discute una garantia, va a seguir abriendo.
+ *
+ * Arranca por lo que hay que hacer —cuantos hallazgos de clase 3, 2 y 1, y la
+ * cobertura de cada bloque— y recien despues la lista con las fotos. Lo que el
+ * vuelo NO permite afirmar va arriba y no en una nota al pie: es lo que separa
+ * un informe defendible de una lista de defectos.
+ */
+export function aInformeEntregable(
+  i: Inspection,
+  fotos: FotoEmbebida[] = [],
+  o: OpcionesDeEntrega = {},
+): string {
+  const porNombre = new Map(fotos.map((f) => [f.fileName, f.dataUrl]));
+  const lista = entregables(i);
+  const cob = i.cobertura;
+
+  const porBloque = new Map<string, Finding[]>();
+  for (const f of lista) {
+    const b = f.address?.block ?? "—";
+    porBloque.set(b, [...(porBloque.get(b) ?? []), f]);
+  }
+
+  const clase = (f: Finding) => f.klass ?? 2;
+  const cuenta = (k: number) => lista.filter((f) => clase(f) === k).length;
+
+  const ficha = (f: Finding, n: number) => {
+    const a = f.address;
+    const m = f.medicion;
+    const img = porNombre.get(f.fileName);
+    const k = clase(f);
+    return `<article class="f k${k}">
+  <header>
+    <span class="ref">${esc(refDe(n))}</span>
+    <h3>Block ${esc(a?.block ?? "?")} · Tracker ${esc(a?.tracker ?? "?")}${a?.row ? " " + esc(a.row) : ""} · String ${esc(a?.stringNumber ?? "?")} · ${
+      f.moduloSinConfirmar
+        ? `Module not confirmed <em>(count from the row end; nearest is ${esc(a?.module ?? "?")})</em>`
+        : `Module ${esc(f.moduleCorregido ?? a?.module ?? "?")}`
+    }</h3>
+    <span class="badge b${k}">Class ${k} · ${esc(ACCION_DE_CLASE[k] ?? "")}</span>
+  </header>
+  <dl>
+    <dt>Anomaly</dt><dd><strong>${esc(f.anomaly ? ANOMALIA_EN[f.anomaly] ?? f.anomaly : "Unclassified")}</strong></dd>
+    <dt>DC box</dt><dd>${esc(a?.dcBoxLabel ?? "—")}</dd>
+    ${m ? `<dt>Module temperature</dt><dd>${m.celsius.toFixed(1)} °C · <strong>${grados(m.deltaT)}</strong> against ${m.vecinos} ${
+      m.ambito === "string" ? "siblings of its own string" : `neighbours (${esc(AMBITO_EN[m.ambito] ?? m.ambito)})`
+    }</dd>` : ""}
+    ${m?.deltaInterno != null ? `<dt>Hotspot</dt><dd>${grados(m.deltaInterno)} above its own module${
+      m.origen === "celda" ? " — a cell, not the whole module" : ""
+    }</dd>` : ""}
+    <dt>Location</dt><dd>${a?.center ? `${a.center.lat.toFixed(6)}, ${a.center.lon.toFixed(6)}` : "—"}</dd>
+    <dt>Source image</dt><dd><code>${esc(f.fileName)}</code></dd>
+  </dl>
+  ${f.patron?.porQue ? `<p class="por-que">${esc(f.patron.porQue)}</p>` : ""}
+  ${f.note ? `<p class="nota">${esc(f.note)}</p>` : ""}
+  ${img ? `<img src="${img}" alt="${esc(f.fileName)}">` : `<p class="sinfoto">Image not included in this export.</p>`}
+</article>`;
+  };
+
+  const filaCobertura = (b: { block: string; modulos: number; medidos: number }) =>
+    `<tr><td>${esc(b.block)}</td><td class="n">${b.modulos ? b.modulos.toLocaleString("en") : "—"}</td>` +
+    `<td class="n">${b.medidos.toLocaleString("en")}</td>` +
+    `<td class="n">${b.modulos ? `${Math.round((b.medidos / b.modulos) * 100)} %` : "—"}</td></tr>`;
+
+  const conteo = resumenDeEntrega(lista);
+
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>${esc(i.name)} — ${esc(i.farmName)}</title>
+<style>
+  :root { color-scheme: light; --tinta: #1f3a4d; --linea: #dfe5ea; --suave: #5a6672; }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; color: #14202a;
+         background: #fff; max-width: 960px; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }
+  h1 { font-size: 1.75rem; margin: 0 0 .2rem; color: var(--tinta); letter-spacing: -.01em; }
+  .sub { color: var(--suave); margin: 0 0 2rem; font-size: 1.02rem; }
+  h2 { font-size: 1.1rem; text-transform: uppercase; letter-spacing: .06em; color: var(--tinta);
+       margin: 2.4rem 0 .8rem; padding-bottom: .35rem; border-bottom: 2px solid var(--tinta); }
+  .tarjetas { display: grid; grid-template-columns: repeat(3, 1fr); gap: .8rem; margin-bottom: 1.4rem; }
+  .t { border: 1px solid var(--linea); border-radius: 8px; padding: .9rem 1rem; }
+  .t b { display: block; font-size: 2rem; line-height: 1.1; }
+  .t span { color: var(--suave); font-size: .88rem; }
+  .t.k3 { background: #fdf1f2; border-color: #f0c8cc; } .t.k3 b { color: #8b1a1a; }
+  .t.k2 { background: #fffaf0; border-color: #f0e0bd; } .t.k2 b { color: #7a5b00; }
+  .t.k1 { background: #f2f9f3; border-color: #cfe6d4; } .t.k1 b { color: #1b5e20; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 1.2rem; font-size: .95rem; }
+  th { text-align: left; background: var(--tinta); color: #fff; font-weight: 600; padding: .45rem .7rem; }
+  td { padding: .4rem .7rem; border-bottom: 1px solid var(--linea); }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  table.cond td:first-child { color: var(--suave); width: 15rem; }
+  table.cond td { border: 0; padding: .18rem .7rem .18rem 0; }
+  .limites { background: #fffaf0; border: 1px solid #f0e0bd; border-radius: 8px; padding: .9rem 1.2rem; }
+  .limites h2 { margin: 0 0 .5rem; border: 0; font-size: .95rem; }
+  .limites p { margin: .35rem 0; color: #5c4b16; font-size: .93rem; }
+  .metodo p { color: var(--suave); font-size: .93rem; margin: .4rem 0; }
+  .f { border: 1px solid var(--linea); border-left: 5px solid #c4ccd3; border-radius: 8px;
+       padding: 1rem 1.2rem; margin-bottom: 1rem; break-inside: avoid; page-break-inside: avoid; }
+  .f.k3 { border-left-color: #c0392b; } .f.k2 { border-left-color: #d9a441; } .f.k1 { border-left-color: #7bb681; }
+  .f header { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; margin-bottom: .6rem; }
+  .f h3 { margin: 0; font-size: 1.02rem; flex: 1 1 20rem; }
+  .f h3 em { color: var(--suave); font-style: normal; font-weight: 400; }
+  .ref { font-variant-numeric: tabular-nums; background: var(--tinta); color: #fff;
+         border-radius: 4px; padding: .1rem .45rem; font-size: .82rem; font-weight: 600; }
+  .badge { font-size: .78rem; border-radius: 4px; padding: .12rem .5rem; white-space: nowrap; }
+  .badge.b3 { background: #f8d7da; color: #8b1a1a; } .badge.b2 { background: #fff3cd; color: #7a5b00; }
+  .badge.b1 { background: #e8f5e9; color: #1b5e20; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: .12rem 1.1rem; margin: 0 0 .6rem; font-size: .95rem; }
+  dt { color: var(--suave); } dd { margin: 0; }
+  .por-que { margin: 0 0 .6rem; font-size: .93rem; }
+  .nota { background: #f4f7f9; padding: .5rem .7rem; border-radius: 5px; margin: 0 0 .6rem; font-size: .93rem; }
+  .f img { max-width: 100%; border-radius: 5px; display: block; }
+  .sinfoto { color: #98a2ab; font-style: italic; margin: 0; }
+  code { font-size: .87em; background: #f2f5f7; padding: .1em .35em; border-radius: 3px; }
+  @media print { body { max-width: none; padding: 0; font-size: 11pt; } h2 { margin-top: 1.4rem; } }
+</style></head><body>
+<h1>Thermographic inspection report</h1>
+<p class="sub">${esc(i.farmName)} · ${esc(i.name)} · ${lista.length} finding${lista.length === 1 ? "" : "s"}</p>
+
+<div class="tarjetas">
+  <div class="t k3"><b>${cuenta(3)}</b><span>Class 3 — ${esc(ACCION_DE_CLASE[3])}</span></div>
+  <div class="t k2"><b>${cuenta(2)}</b><span>Class 2 — ${esc(ACCION_DE_CLASE[2])}</span></div>
+  <div class="t k1"><b>${cuenta(1)}</b><span>Class 1 — ${esc(ACCION_DE_CLASE[1])}</span></div>
+</div>
+
+<h2>Findings by type</h2>
+<table><thead><tr><th>Anomaly</th><th>Total</th><th>Class 1</th><th>Class 2</th><th>Class 3</th></tr></thead>
+<tbody>${conteo.map((t) => `<tr><td>${esc(t.tipo)}</td><td class="n">${t.n}</td><td class="n">${t.c1}</td><td class="n">${t.c2}</td><td class="n">${t.c3}</td></tr>`).join("")}</tbody></table>
+
+${cob?.porBloque?.length ? `<h2>Coverage by block</h2>
+<table><thead><tr><th>Block</th><th>Modules in block</th><th>Modules measured</th><th>Coverage</th></tr></thead>
+<tbody>${cob.porBloque.map(filaCobertura).join("")}</tbody></table>
+<p class="metodo"><em>Partial coverage means the block was only clipped by the edge of the flight path — it was not surveyed.</em></p>` : ""}
+
+<h2>Flight</h2>
+<table class="cond"><tbody>
+<tr><td>Date</td><td>${esc(i.createdAt.slice(0, 10))}</td></tr>
+<tr><td>Irradiance (W/m²)</td><td>${esc(i.conditions.irradianceWm2 ?? "not recorded")}</td></tr>
+<tr><td>Ambient temperature (°C)</td><td>${esc(i.conditions.ambientC ?? "not recorded")}</td></tr>
+<tr><td>Wind (m/s)</td><td>${esc(i.conditions.windMs ?? "not recorded")}</td></tr>
+<tr><td>Sky</td><td>${esc(i.conditions.sky ?? "not recorded")}</td></tr>
+<tr><td>Pilot</td><td>${esc(i.conditions.pilot ?? "not recorded")}</td></tr>
+<tr><td>Equipment</td><td>${esc(i.conditions.equipment ?? "not recorded")}</td></tr>
+${numeracionEnIngles(o.addressing) ? `<tr><td>Module numbering</td><td>${esc(numeracionEnIngles(o.addressing))}</td></tr>` : ""}
+${cob ? `<tr><td>Thermal images</td><td>${cob.fotosTermicas}</td></tr>
+<tr><td>Ground resolution</td><td>${cob.gsdCm.toFixed(1)} cm/pixel</td></tr>
+<tr><td>ΔT thresholds</td><td>minor ${cob.umbrales.leve} · moderate ${cob.umbrales.moderada} · critical ${cob.umbrales.critica} °C</td></tr>` : ""}
+</tbody></table>
+
+${cob?.limitaciones?.length ? `<section class="limites"><h2>What this survey does not cover</h2>${
+  cob.limitaciones.map((l) => `<p>${esc(l)}</p>`).join("")
+}</section>` : ""}
+
+<h2>Method</h2>
+<div class="metodo">
+<p>Every module is measured on the median of the central 60 % of the laminate, with the aluminium frame left out. ΔT is measured against the sibling modules <strong>of the same string</strong> photographed in the same pass — not against the whole row or the neighbouring rows, which may sit at a different tracker angle.</p>
+<p>Classification follows the pattern-and-context approach of <strong>IEC TS 62446-3</strong>. The ΔT thresholds above are a declared working convention, not a literal quotation of the standard. Boxes that do not fall on a panel are discarded before measuring, so no finding comes from ground or shadow.</p>
+</div>
+
+${[...porBloque.entries()].sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+  .map(([b, fs]) => `<h2>Block ${esc(b)} — ${fs.length} finding${fs.length === 1 ? "" : "s"}</h2>${
+    fs.map((f) => ficha(f, lista.indexOf(f))).join("")
+  }`).join("")}
+</body></html>`;
 }

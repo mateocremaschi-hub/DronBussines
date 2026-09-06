@@ -35,9 +35,9 @@ import {
 } from "../inspection";
 import { UMBRALES, type Severidad, type Umbrales } from "../detect";
 import { deleteAnalysis, loadAnalysis, type StoredFarm } from "../storage";
-import { aExcel, aInformeHtml, entregables, nombreDeFoto, toCsv } from "../informe";
+import { entregables, toCsv } from "../informe";
 import { fusionarRevision, reclasificarFindings, vueloDesdeAnalisis } from "../vuelo";
-import { aExcelEntregable, nombreEntregado } from "../entregable";
+import { aExcelEntregable, aInformeEntregable, nombreEntregado } from "../entregable";
 import { bloquesDelParque, puntosDeHallazgos } from "../mapa";
 import { acuerdoDeLaMuestra, muestraARevisar } from "../muestreo";
 import { MapaDelParque } from "../components/MapaDelParque";
@@ -227,8 +227,20 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
     });
   }
 
-  /** Pide la carpeta de fotos y resuelve cuando el usuario elige. */
+  /**
+   * Las fotos con las que exportar: las del vuelo, y solo si no hay, se piden.
+   *
+   * Pedia la carpeta SIEMPRE, incluso recien terminado el analisis con las
+   * fotos abiertas en la pantalla de al lado: el que acaba de esperar diez
+   * minutos a que se lean 568 termicas tiene que volver a buscarlas en el
+   * disco para bajar el informe. Se piden solo cuando de verdad no estan —al
+   * abrir un vuelo guardado en otra sesion, donde el navegador ya no tiene los
+   * archivos— y ahi el dialogo es la unica forma de recuperarlas.
+   */
   function pedirFotos(): Promise<File[]> {
+    if (fotosDelVuelo.length && fotosDeLosHallazgos(fotosDelVuelo).size) {
+      return Promise.resolve(fotosDelVuelo);
+    }
     return new Promise((resolve) => {
       /*
         La carpeta que se elige para exportar sirve tambien para la revision.
@@ -341,12 +353,20 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
       for (const [nombre, file] of encontradas) {
         fotos.push({ fileName: nombre, dataUrl: await comoDataUrl(file) });
       }
-      const html = aInformeHtml(current, fotos, stored.profile.addressing);
+      // Un hallazgo sin su foto sale igual, con la ficha y sin imagen. Decir
+      // cuantos son evita entregar un informe con huecos sin haberlo mirado.
+      const sinFoto = entregables(current).filter((f) => !encontradas.has(f.fileName)).length;
+      const html = aInformeEntregable(current, fotos, {
+        ...(driveUrl.trim() ? { driveUrl: driveUrl.trim() } : {}),
+        addressing: stored.profile.addressing,
+      });
       descargarBytes(`${current.name}.html`, html, "text/html;charset=utf-8");
       setExportando(
-        fotos.length
-          ? null
-          : "Salio sin fotos: ninguna de las que elegiste coincide con los hallazgos.",
+        !fotos.length
+          ? "Salio sin fotos: ninguna de las cargadas coincide con los hallazgos."
+          : sinFoto
+            ? `Listo, con ${fotos.length} fotos. ${sinFoto} hallazgos salieron sin imagen porque su foto no está cargada en este vuelo.`
+            : null,
       );
     } catch (e) {
       setExportando(e instanceof Error ? e.message : String(e));
@@ -679,12 +699,32 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
           <h3>Entregar</h3>
           <div className="acciones-entrega">
             <button onClick={() => void exportarExcel()}>Excel (English)</button>
-            <button onClick={() => void exportarFotos()}>Carpeta de fotos renombradas</button>
-            <button onClick={() => void exportarInforme()}>Informe visual (HTML / PDF)</button>
+            <button onClick={() => void exportarFotos()}>Carpeta de fotos (renombradas)</button>
+            <button onClick={() => void exportarInforme()}>Report (English, HTML / PDF)</button>
             <button className="ghost" onClick={() => download(`${current.name}.csv`, toCsv(current), "text/csv")}>
               CSV
             </button>
           </div>
+          {/*
+            De donde salen las fotos, dicho antes de apretar.
+
+            Con el vuelo recien analizado ya estan en memoria y no se pide
+            nada; abriendo un vuelo guardado en otra sesion el navegador ya no
+            las tiene y hay que volver a elegir la carpeta. Que se pueda forzar
+            sirve para el caso de en medio: cargaste un bloque y el informe lo
+            querés con la carpeta entera del vuelo.
+          */}
+          <p className="help">
+            {fotosDelVuelo.length
+              ? `Las fotos salen de las ${fotosDelVuelo.length} que ya cargaste en este vuelo — no hace falta volver a elegirlas. `
+              : "Este vuelo se abrió en otra sesión, así que el navegador ya no tiene las fotos: al exportar te las va a pedir una vez. "}
+            <button
+              className="link"
+              onClick={() => { setFotosDelVuelo([]); void pedirFotos(); }}
+            >
+              elegir otra carpeta
+            </button>
+          </p>
           {/*
             La carpeta de Drive, opcional.
 
