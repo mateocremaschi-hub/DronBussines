@@ -80,6 +80,30 @@ export const CALIDAD_INFORME = 0.86;
  * visible del par, o una termica que la camara guardo sin datos crudos—: ahi
  * el que llama entrega el original, que es mejor que nada.
  */
+/**
+ * Dibuja la foto de un hallazgo, lista para entregar.
+ *
+ * Van las DOS imagenes, y no es un adorno: son dos cosas distintas.
+ *
+ * La grande es la del dron, tal cual salio de la tarjeta. Es la que Mateo ve
+ * en el visor, tiene el doble de lado —1280x1024 contra los 640x512 del
+ * sensor, super-resueltos por la camara— y se le ven las celdas. Pero la
+ * camara le mete REALCE LOCAL: medido sobre dos fotos de su vuelo, la misma
+ * temperatura sale con hasta 78 de 255 de diferencia de color segun en que
+ * parte del cuadro este. Sobre esa imagen una barra de grados seria mentira, y
+ * dos paneles a la misma temperatura se ven distintos.
+ *
+ * La chica es el mapa: pintado por nosotros desde los grados crudos, con un
+ * solo mapeo para todo el cuadro. Ahi el color SI significa temperatura, y por
+ * eso lleva la barra. Sale mas plana justamente por eso — el suelo esta ocho o
+ * diez grados por encima de los paneles y se lleva media escala.
+ *
+ * El cliente mira la del dron; el que discute una garantia mide con la chica.
+ *
+ * Devuelve `null` cuando el archivo no trae temperatura adentro —la foto
+ * visible del par, o una termica que la camara guardo sin datos crudos—: ahi
+ * el que llama entrega el original, que es mejor que nada.
+ */
 export async function fotoDelHallazgo(
   file: File,
   f: Finding,
@@ -94,8 +118,26 @@ export async function fotoDelHallazgo(
   const lo = percentil(celsius, 0.01);
   const hi = Math.max(lo + 1, percentil(celsius, 0.99));
 
-  const W = w * ESCALA + BARRA;
-  const H = h * ESCALA + PIE;
+  // La del dron. Si el navegador no la puede abrir se sigue sin ella: el mapa
+  // solo es peor que antes, pero es mejor que no entregar nada.
+  const foto = await abrirImagen(file);
+  const anchoFoto = foto?.width ?? w * ESCALA;
+  const altoFoto = foto?.height ?? h * ESCALA;
+
+  // El mapa va al costado, a un tercio del ancho de la foto.
+  const anchoMapa = Math.round(Math.min(anchoFoto / 3, h * ESCALA));
+  const altoMapa = Math.round((anchoMapa * h) / w);
+  const columna = anchoMapa + BARRA;
+
+  /*
+    El pie va en la columna, abajo del mapa, y no en una banda al pie.
+
+    Con la foto del dron al lado, el mapa ocupa un tercio del alto y el resto
+    de la columna quedaba en negro: medio lienzo desperdiciado, y el JPEG
+    pagando por pintarlo.
+  */
+  const W = anchoFoto + columna;
+  const H = Math.max(altoFoto, altoMapa + PIE);
   const lienzo = document.createElement("canvas");
   lienzo.width = W;
   lienzo.height = H;
@@ -119,35 +161,51 @@ export async function fotoDelHallazgo(
   chico.width = w;
   chico.height = h;
   chico.getContext("2d")?.putImageData(cruda, 0, 0);
-  // Sin interpolar: es lo que separa una termica nitida de una lechosa.
+
+  if (foto) {
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = "high";
+    g.drawImage(foto, 0, 0, anchoFoto, altoFoto);
+  } else {
+    // Sin interpolar: es lo que separa una termica nitida de una lechosa.
+    g.imageSmoothingEnabled = false;
+    g.drawImage(chico, 0, 0, anchoFoto, altoFoto);
+  }
   g.imageSmoothingEnabled = false;
-  g.drawImage(chico, 0, 0, w * ESCALA, h * ESCALA);
+  g.drawImage(chico, anchoFoto, 0, anchoMapa, altoMapa);
 
   /*
-    El modulo, con un cuarto de modulo de aire alrededor.
+    El modulo, en las dos: con un cuarto de modulo de aire alrededor.
 
     Pegado al borde del panel el trazo tapa justo la fila de celdas donde suele
     estar el defecto — Mateo lo pidio mirando un hallazgo real: "el recuadro me
     tapa parte del panel y no puedo ver si tengo un error".
+
+    La caja viene en pixeles del CRUDO, que es donde se midio. La foto del dron
+    esta al doble, asi que se escala por lo que mida cada una en vez de dar por
+    hecho que es el doble.
   */
   const caja = f.medicion?.caja;
-  if (caja) {
+  const recuadro = (k: number, dx: number, grosor: number) => {
+    if (!caja) return;
     const largo = (caja.largoModulo ?? caja.largo) * 1.5;
     const cruzado = (caja.cruzadoModulo ?? caja.cruzado) * 1.5;
     g.save();
-    g.translate(caja.cx * ESCALA, caja.cy * ESCALA);
+    g.translate(dx + caja.cx * k, caja.cy * k);
     g.rotate(caja.rotRad);
     g.strokeStyle = "#00e5ff";
-    g.lineWidth = 1.4 * ESCALA;
-    g.strokeRect((-largo / 2) * ESCALA, (-cruzado / 2) * ESCALA, largo * ESCALA, cruzado * ESCALA);
+    g.lineWidth = grosor;
+    g.strokeRect((-largo / 2) * k, (-cruzado / 2) * k, largo * k, cruzado * k);
     g.restore();
-  }
+  };
+  recuadro(anchoFoto / w, 0, Math.max(2, anchoFoto / 460));
+  recuadro(anchoMapa / w, anchoFoto, Math.max(1.5, anchoMapa / 460));
 
-  // La barra de escala: sin ella el color no significa nada.
-  const margen = 11 * ESCALA;
-  const ancho = 11 * ESCALA;
-  const x0 = w * ESCALA + margen;
-  const alto = h * ESCALA - margen * 2;
+  // La barra de escala, pegada al mapa: sin ella el color no significa nada.
+  const margen = Math.round(altoMapa * 0.06);
+  const ancho = Math.round(BARRA * 0.3);
+  const x0 = anchoFoto + anchoMapa + margen;
+  const alto = altoMapa - margen * 2;
   for (let y = 0; y < alto; y++) {
     const [r, gr, b] = color(1 - y / alto);
     g.fillStyle = `rgb(${r},${gr},${b})`;
@@ -156,35 +214,70 @@ export async function fotoDelHallazgo(
   g.strokeStyle = "rgba(255,255,255,.35)";
   g.lineWidth = 1;
   g.strokeRect(x0 + 0.5, margen + 0.5, ancho, alto);
+  const chica = Math.max(11, Math.round(anchoMapa / 26));
   g.fillStyle = "#e8eef4";
-  g.font = `600 ${6.5 * ESCALA}px -apple-system, system-ui, sans-serif`;
+  g.font = `600 ${chica}px -apple-system, system-ui, sans-serif`;
   g.textAlign = "left";
-  g.fillText(`${hi.toFixed(1)} °C`, x0 - 2, margen - 3 * ESCALA);
-  g.fillText(`${lo.toFixed(1)} °C`, x0 - 2, margen + alto + 7 * ESCALA);
+  g.fillText(`${hi.toFixed(1)} °C`, x0 - 2, margen - Math.round(chica * 0.4));
+  g.fillText(`${lo.toFixed(1)} °C`, x0 - 2, margen + alto + chica);
+  // Y que se sepa cual es cual, si no las dos parecen la misma foto mal hecha.
+  g.fillStyle = "#93a3b1";
+  g.font = `${chica}px -apple-system, system-ui, sans-serif`;
+  g.fillText("colour = temperature", anchoFoto + 4, margen + alto + chica * 2.4);
 
-  // Y el pie, para que la foto suelta siga diciendo de que panel es.
+  /*
+    Y la ficha, para que la foto suelta siga diciendo de que panel es.
+
+    Reenviada sola —que es como viajan— una termica no dice nada: esto es lo
+    que la ata a su fila del Excel y al panel del campo.
+  */
   const a = f.address;
   const dt = f.medicion ? `${f.medicion.deltaT >= 0 ? "+" : ""}${f.medicion.deltaT.toFixed(1)} °C` : "";
   const modulo = f.moduloSinConfirmar
     ? "module not confirmed"
     : `module ${f.moduleCorregido ?? a?.module ?? "?"}`;
-  g.fillStyle = "#e8eef4";
-  g.font = `600 ${7.5 * ESCALA}px -apple-system, system-ui, sans-serif`;
-  g.fillText(
-    `${refDe(n)} · Block ${a?.block ?? "?"} · Tracker ${a?.tracker ?? "?"}${a?.row ? " " + a.row : ""} · String ${a?.stringNumber ?? "?"} · ${modulo}`,
-    7 * ESCALA, h * ESCALA + 10 * ESCALA,
-  );
-  g.fillStyle = "#93a3b1";
-  g.font = `${6.5 * ESCALA}px -apple-system, system-ui, sans-serif`;
-  const interno = f.medicion?.deltaInterno != null
-    ? ` · hotspot +${f.medicion.deltaInterno.toFixed(1)} °C over the module`
-    : "";
   // La foto se entrega en ingles como todo el resto: el nombre interno del
-  // patron no puede salir en el pie de una imagen que ve el cliente.
+  // patron no puede salir en una imagen que ve el cliente.
   const patron = f.anomaly ? ANOMALIA_EN[f.anomaly] ?? f.anomaly : "Unclassified";
-  g.fillText(`${patron} · ΔT ${dt} vs its string${interno}`, 7 * ESCALA, h * ESCALA + 19 * ESCALA);
+  const grande = Math.max(15, Math.round(columna / 22));
+  const x = anchoFoto + Math.round(columna * 0.03);
+  let y = altoMapa + grande * 3.2;
+  const linea = (t: string, fuerte: boolean) => {
+    g.fillStyle = fuerte ? "#e8eef4" : "#93a3b1";
+    g.font = `${fuerte ? "600 " : ""}${fuerte ? grande : Math.round(grande * 0.9)}px -apple-system, system-ui, sans-serif`;
+    g.fillText(t, x, y);
+    y += grande * 1.5;
+  };
+  linea(refDe(n), true);
+  y += grande * 0.3;
+  linea(`Block ${a?.block ?? "?"}`, false);
+  linea(`Tracker ${a?.tracker ?? "?"}${a?.row ? " " + a.row : ""}`, false);
+  linea(`String ${a?.stringNumber ?? "?"}`, false);
+  linea(modulo, false);
+  y += grande * 0.6;
+  linea(patron, true);
+  linea(`ΔT ${dt} vs its string`, false);
+  if (f.medicion?.deltaInterno != null) {
+    linea(`hotspot +${f.medicion.deltaInterno.toFixed(1)} °C`, false);
+    linea("over the module", false);
+  }
 
   return new Promise((resolve) => lienzo.toBlob((b) => resolve(b), tipo, calidad));
+}
+
+/**
+ * La imagen que la camara guardo adentro del JPEG.
+ *
+ * `createImageBitmap` no esta en todos lados y puede fallar con un archivo
+ * raro; si falla se sigue con el mapa solo, que es peor pero no es nada.
+ */
+async function abrirImagen(file: File): Promise<ImageBitmap | null> {
+  if (typeof createImageBitmap !== "function") return null;
+  try {
+    return await createImageBitmap(file);
+  } catch {
+    return null;
+  }
 }
 
 /** El nombre con el que viaja esa foto. Es el mismo que apunta el Excel. */

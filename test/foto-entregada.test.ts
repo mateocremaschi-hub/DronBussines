@@ -82,8 +82,15 @@ function contextoFalso() {
   };
 }
 
+/** La imagen que la camara guardo adentro: 1280x1024, el doble del crudo. */
+let hayFotoDelDron = true;
+
 beforeEach(() => {
   trazos = []; lienzos = []; blobs = 0;
+  (globalThis as { createImageBitmap?: unknown }).createImageBitmap = async () => {
+    if (!hayFotoDelDron) throw new Error("no se pudo abrir");
+    return { width: 1280, height: 1024, close() {} };
+  };
   (globalThis as { document?: unknown }).document = {
     createElement(tag: string) {
       if (tag !== "canvas") throw new Error(`no esperaba un <${tag}>`);
@@ -101,7 +108,11 @@ beforeEach(() => {
   };
 });
 
-afterEach(() => { delete (globalThis as { document?: unknown }).document; });
+afterEach(() => {
+  delete (globalThis as { document?: unknown }).document;
+  delete (globalThis as { createImageBitmap?: unknown }).createImageBitmap;
+  hayFotoDelDron = true;
+});
 
 const textos = () => trazos.filter((t) => t.tipo === "fillText").map((t) => String(t.args[0]));
 
@@ -135,7 +146,9 @@ describe("la foto entregada", () => {
 
   it("escribe los dos extremos de la escala en grados", async () => {
     await fotoDelHallazgo(termica(), f(), 0);
-    expect(textos().filter((t) => /°C$/.test(t)).length).toBe(2);
+    // Solo las dos puntas de la barra: "46.9 °C" y "27.8 °C". Las lineas de
+    // la ficha tambien terminan en °C y no cuentan.
+    expect(textos().filter((t) => /^-?\d+\.\d+ °C$/.test(t)).length).toBe(2);
   });
 
   it("el pie ata la foto a su fila del Excel y dice el ΔT", async () => {
@@ -211,5 +224,80 @@ describe("la calidad del JPEG", () => {
     await fotoDelHallazgo(termica(), f(), 0, CALIDAD_INFORME);
     expect(pedida).toBe(CALIDAD_INFORME);
     calidadPedida = antes;
+  });
+});
+
+/*
+  Las dos imagenes, y no es un adorno.
+
+  La del dron es la que Mateo ve en el visor y tiene el doble de lado, pero la
+  camara le mete realce local: la misma temperatura sale con hasta 78 de 255 de
+  diferencia de color segun donde este en el cuadro, asi que sobre ESA imagen
+  una barra de grados seria mentira. El mapa que pintamos nosotros tiene un
+  solo mapeo para todo el cuadro, y por eso es el que lleva la barra.
+*/
+describe("la foto del dron al lado del mapa", () => {
+  const imagenes = () => trazos.filter((t) => t.tipo === "drawImage");
+
+  it("dibuja las dos: la del dron y el mapa", async () => {
+    await fotoDelHallazgo(termica(), f(), 0);
+    expect(imagenes()).toHaveLength(2);
+    // La del dron arranca en 0 y ocupa sus 1280; el mapa va a la derecha.
+    const [dron, mapa] = imagenes();
+    expect(dron!.args.slice(1)).toEqual([0, 0, 1280, 1024]);
+    expect(Number(mapa!.args[1])).toBe(1280);
+  });
+
+  it("el lienzo deja lugar para las dos y para la barra", async () => {
+    await fotoDelHallazgo(termica(), f(), 0);
+    const grande = lienzos.find((c) => c.width > 1280)!;
+    // El ancho de la foto del dron mas la columna del mapa; el alto, el de la
+    // foto: la ficha se acomoda en la columna y no agrega una banda al pie.
+    expect(grande.width).toBeGreaterThan(1280);
+    expect(grande.height).toBe(1024);
+  });
+
+  /*
+    La caja se midio en pixeles del CRUDO. La del dron esta al doble, asi que
+    el recuadro tiene que escalarse por lo que mida CADA imagen: dibujarlo con
+    la misma escala en las dos lo dejaria fuera del panel en una.
+  */
+  it("el recuadro va en las dos, cada uno a su escala", async () => {
+    await fotoDelHallazgo(termica(64, 48), f(), 0);
+    const centros = trazos.filter((t) => t.tipo === "translate").map((t) => t.args as number[]);
+    expect(centros).toHaveLength(2);
+    // Crudo 64 de ancho, foto del dron 1280: veinte veces. Caja en cx 30.
+    expect(centros[0]![0]).toBeCloseTo(30 * (1280 / 64), 1);
+    // El mapa es mas chico y su recuadro va corrido a la derecha, donde empieza.
+    expect(centros[1]![0]).toBeGreaterThan(1280);
+  });
+
+  it("la barra de grados va pegada al mapa, no a la del dron", async () => {
+    await fotoDelHallazgo(termica(), f(), 0);
+    const grados = trazos.filter((t) => t.tipo === "fillText" && /^-?\d+\.\d+ °C$/.test(String(t.args[0])));
+    expect(grados).toHaveLength(2);
+    for (const t of grados) expect(Number(t.args[1])).toBeGreaterThan(1280);
+    expect(textos().join(" ")).toContain("colour = temperature");
+  });
+
+  /*
+    Si el navegador no puede abrir la imagen del dron —un archivo raro, un
+    Safari viejo— se entrega el mapa solo. Peor que con las dos, mucho mejor
+    que nada.
+  */
+  it("sin la del dron entrega el mapa solo, y sigue midiendo", async () => {
+    hayFotoDelDron = false;
+    const b = await fotoDelHallazgo(termica(), f(), 0);
+    expect(b).not.toBeNull();
+    expect(imagenes()).toHaveLength(2);
+    expect(textos().join(" | ")).toContain("Block 2");
+  });
+
+  it("el pie sigue diciendo de que panel es", async () => {
+    await fotoDelHallazgo(termica(), f(), 0);
+    const pie = textos().join(" | ");
+    expect(pie).toContain("001");
+    expect(pie).toContain("module 27");
+    expect(pie).toContain("+10.2 °C");
   });
 });
