@@ -331,6 +331,103 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
     return salida;
   }
 
+  /**
+   * Todo el entregable en un solo ZIP.
+   *
+   * Eran cuatro botones y cuatro descargas, y despues el que entrega tenia que
+   * acordarse de juntarlas en Finder con los nombres bien. Un entregable que se
+   * arma a mano se entrega a medias alguna vez: falta el Excel, o van las fotos
+   * de otro vuelo, o el ZIP se llama "Archivo.zip".
+   *
+   * La carpeta de fotos se sigue llamando `photos/` a proposito: el Excel y el
+   * informe escriben esa ruta en cada fila. Renombrarla romperia los enlaces
+   * adentro del propio paquete.
+   */
+  async function exportarPaquete() {
+    if (!current) return;
+    const archivos = await pedirFotos();
+    setExportando("Armando el paquete…");
+    try {
+      const encontradas = fotosDeLosHallazgos(archivos);
+      const lista = entregables(current);
+      const entradas: Array<{ ruta: string; contenido: Uint8Array }> = [];
+      const fotos: Array<{ id: string; fileName: string; dataUrl: string }> = [];
+      const usados = new Set<string>();
+
+      for (const [n, f] of lista.entries()) {
+        const file = encontradas.get(f.fileName);
+        if (!file) continue;
+        setExportando(`Dibujando las fotos… ${fotos.length + 1} de ${lista.length}`);
+        // Una sola pasada: el mismo hallazgo se dibuja para el ZIP y para el
+        // informe, en vez de recorrer las fotos dos veces como los dos botones
+        // por separado.
+        const paraArchivo = await fotoDelHallazgo(file, f, n).catch(() => null);
+        const paraInforme = await fotoDelHallazgo(file, f, n, CALIDAD_INFORME).catch(() => null);
+        let ruta = `photos/${nombreEntregado(f, n)}`;
+        if (usados.has(ruta)) {
+          const ext = /\.[a-z0-9]+$/i.exec(ruta)?.[0] ?? "";
+          ruta = `${ruta.slice(0, ruta.length - ext.length)}__${f.id.replace(/[^\w.-]+/g, "-")}${ext}`;
+        }
+        usados.add(ruta);
+        entradas.push({ ruta, contenido: new Uint8Array(await (paraArchivo ?? file).arrayBuffer()) });
+        fotos.push({
+          id: f.id,
+          fileName: f.fileName,
+          dataUrl: paraInforme ? await comoDataUrlDeBlob(paraInforme) : await comoDataUrl(file),
+        });
+      }
+
+      const opciones = {
+        ...(driveUrl.trim() ? { driveUrl: driveUrl.trim() } : {}),
+        addressing: stored.profile.addressing,
+      };
+      setExportando("Armando el informe y el Excel…");
+      const html = aInformeEntregable(current, fotos, opciones);
+      const xlsx = await aExcelEntregable(current, { carpeta: "photos", ...opciones });
+      const csv = aCsvEntregable(current);
+      const sinFoto = lista.filter((f) => !encontradas.has(f.fileName)).length;
+
+      const texto = (t: string) => new TextEncoder().encode(t);
+      entradas.unshift(
+        { ruta: "01_Informe.html", contenido: texto(html) },
+        { ruta: "02_Hallazgos.xlsx", contenido: xlsx },
+        { ruta: "02_Hallazgos.csv", contenido: texto(csv) },
+        {
+          ruta: "00_LEEME.txt",
+          contenido: texto(
+            [
+              `${current.name} — inspeccion termografica`,
+              `Preparado por niXin Software · ${new Date().toISOString().slice(0, 10)}`,
+              "",
+              "01_Informe.html    El informe. Se abre en cualquier navegador; para PDF, imprimir a PDF.",
+              "02_Hallazgos.xlsx  La misma lista en planilla. 02_Hallazgos.csv es lo mismo en texto plano.",
+              "photos/            Una imagen por hallazgo, con el modulo remarcado y la barra de temperatura.",
+              "                   El nombre arranca por el numero de referencia del Excel, asi que cada fila",
+              "                   de la planilla se puede rastrear hasta su foto.",
+              "",
+              `${lista.length} hallazgos entregados.` +
+                (sinFoto ? ` ${sinFoto} salieron sin imagen porque su foto no estaba cargada.` : ""),
+              "",
+              "El informe incluye que se midio y que NO se pudo mirar. Esa parte no es relleno:",
+              "un entregable que no dice donde no miro no sirve para un reclamo.",
+            ].join("\n"),
+          ),
+        },
+      );
+
+      descargarBytes(`${current.name}-entrega.zip`, zip(entradas, new Date()), "application/zip");
+      setExportando(
+        !fotos.length
+          ? "El paquete salio SIN fotos: ninguna de las que elegiste coincide con los hallazgos de este vuelo."
+          : sinFoto
+            ? `Listo. ${fotos.length} hallazgos con foto, ${sinFoto} sin imagen.`
+            : null,
+      );
+    } catch (e) {
+      setExportando(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function exportarExcel() {
     if (!current) return;
     setExportando("Armando el Excel…");
@@ -789,9 +886,12 @@ export function Inspection({ farm: stored, onBack }: { farm: StoredFarm; onBack:
           */}
           <h3>Entregar</h3>
           <div className="acciones-entrega">
-            <button onClick={() => void exportarExcel()}>Excel (English)</button>
-            <button onClick={() => void exportarFotos()}>Carpeta de fotos (renombradas)</button>
-            <button onClick={() => void exportarInforme()}>Report (English, HTML / PDF)</button>
+            <button onClick={() => void exportarPaquete()}>
+              Paquete de entrega (ZIP: informe + Excel + fotos)
+            </button>
+            <button className="ghost" onClick={() => void exportarExcel()}>Excel (English)</button>
+            <button className="ghost" onClick={() => void exportarFotos()}>Carpeta de fotos (renombradas)</button>
+            <button className="ghost" onClick={() => void exportarInforme()}>Report (English, HTML / PDF)</button>
             <button className="ghost" onClick={() => download(
                 `${current.name}.csv`,
                 aCsvEntregable(current, { addressing: stored.profile.addressing }),
