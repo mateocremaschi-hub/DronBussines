@@ -460,10 +460,41 @@ describe("la camara inclinada segun el tracker", () => {
     largo de la fila, fuera del cuadro. Lo que ensucia las fotos es el
     horizonte, y de eso se escapa mirando de frente al panel.
   */
-  it("mira para el MISMO lado que los paneles: de frente", () => {
-    // A la mañana el panel mira al este (angulo positivo): la camara tambien.
-    expect(vistaParaLaHora(40)?.hacia).toBe(1);
-    expect(vistaParaLaHora(-40)?.hacia).toBe(-1);
+  /*
+    Y el lado, que costo el segundo vuelo.
+
+    Wellington, 7 de septiembre, 10:39. El rumbo llego y las fotos salieron
+    solas —eso quedo arreglado—, pero el dron se paro del lado equivocado: el
+    tracker estaba a +25° (panel al este) y la camara miro al este tambien,
+    rumbo 93°. Quedo a 50° de la normal del panel, el doble que a plomo, y con
+    el rayo reflejado a 14° sobre el horizonte.
+
+    Un espejo inclinado al este se mira parandose al ESTE de el. La camara
+    mira al OESTE cuando el panel mira al este.
+  */
+  it("mira de frente al panel: al reves del signo del tracker", () => {
+    // A la mañana el panel mira al este (angulo positivo): la camara al oeste.
+    expect(vistaParaLaHora(40)?.hacia).toBe(-1);
+    // A la tarde, al reves.
+    expect(vistaParaLaHora(-40)?.hacia).toBe(1);
+  });
+
+  /*
+    La cuenta que decide el lado, hecha con vectores y sin confiar en el
+    signo: la camara tiene que quedar lo mas cerca posible del perpendicular
+    del panel. Un lado da 0 grados y el otro el doble del angulo del tracker.
+  */
+  it("y el lado que elige es el que deja la camara sobre el perpendicular", () => {
+    const RAD = Math.PI / 180;
+    for (const tracker of [-34, -25, -10, 10, 25, 34]) {
+      const v = vistaParaLaHora(tracker)!;
+      // Perpendicular del panel y rayo del panel a la camara, en este-arriba.
+      const n = [Math.sin(tracker * RAD), Math.cos(tracker * RAD)];
+      // `hacia` es adonde MIRA la camara; el rayo hacia ella es el opuesto.
+      const c = [-v.hacia * Math.sin(v.desvioDeg * RAD), Math.cos(v.desvioDeg * RAD)];
+      const fueraDeNormalDeg = Math.acos(n[0]! * c[0]! + n[1]! * c[1]!) / RAD;
+      expect(fueraDeNormalDeg).toBeLessThan(0.001);
+    }
   });
 
   it("corre las lineas al costado, del lado del sol, y lo escribe en la mision", () => {

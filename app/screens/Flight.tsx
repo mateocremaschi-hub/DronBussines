@@ -34,7 +34,7 @@ import {
   type MissionOptions,
 } from "../mission";
 import { avisosDeKmz, PERFILES_DJI, toKmz } from "../wpml";
-import { huella, pasoEntreFilas, velocidades, vistaParaLaHora } from "../mission";
+import { huella, ladoDeLaCamaraDeg, pasoEntreFilas, velocidades, vistaParaLaHora } from "../mission";
 import { reflejoDelVidrio } from "../reflejo";
 import { PIXELES_POR_CELDA_MINIMO, PIXELES_POR_LADO_OBJETIVO, CELDA_M } from "../detect";
 import { LoQueVeElDron } from "../components/LoQueVeElDron";
@@ -229,7 +229,7 @@ export function Flight({ farm: stored, onBack }: { farm: StoredFarm; onBack: () 
     return reflejoDelVidrio(
       c.start.lat, c.start.lon, horaElegida.cuando,
       horaElegida.anguloDeg,
-      vista ? vista.desvioDeg * vista.hacia : 0,
+      ladoDeLaCamaraDeg(vista),
       camara.hfovDeg, camara.vfovDeg,
     );
   }, [horaElegida, vista, camara, stored.rows]);

@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { CIELO_LIMPIO_DEG, reflejoDelVidrio } from "../app/reflejo";
-import { vistaParaLaHora, DESVIO_MAXIMO_DEG, TRACKER_CASI_PLANO_DEG } from "../app/mission";
+import { ladoDeLaCamaraDeg, vistaParaLaHora, DESVIO_MAXIMO_DEG, TRACKER_CASI_PLANO_DEG } from "../app/mission";
 
 // El parque de Mateo, en Queensland.
 const LAT = -26.932, LON = 150.583;
@@ -31,8 +31,35 @@ const mirar = (h: number, m: number, trackerDeg: number, desvioDeg: number) =>
 
 describe("la camara apunta perpendicular al panel", () => {
   it("copia el angulo del tracker, para el mismo lado", () => {
-    expect(vistaParaLaHora(30)).toEqual({ desvioDeg: 30, hacia: 1 });
-    expect(vistaParaLaHora(-30)).toEqual({ desvioDeg: 30, hacia: -1 });
+    // `hacia` es el opuesto del signo del tracker: el panel al este se mira
+    // desde el este, o sea con la camara mirando al oeste.
+    expect(vistaParaLaHora(30)).toEqual({ desvioDeg: 30, hacia: -1 });
+    expect(vistaParaLaHora(-30)).toEqual({ desvioDeg: 30, hacia: 1 });
+  });
+
+  /*
+    El lado, atado con la cuenta del reflejo.
+
+    El 7 de septiembre el dron volo del lado equivocado y quedo a 50 grados de
+    la normal del panel. Esta prueba une las dos piezas —el plan de vuelo y el
+    espejo— para que no se puedan volver a contradecir: con el lado que elige
+    el planificador, el centro del cuadro tiene que devolver el rayo por donde
+    vino, o sea a 90 menos el angulo del tracker de elevacion.
+  */
+  it("con el lado que elige el planificador, el centro devuelve cielo alto", () => {
+    for (const tracker of [-34, -25, -10, 10, 25, 34]) {
+      const v = vistaParaLaHora(tracker)!;
+      const r = mirar(10, 30, tracker, ladoDeLaCamaraDeg(v));
+      expect(Math.abs(r.centroDeg - (90 - Math.abs(tracker)))).toBeLessThan(0.001);
+      expect(r.veredicto).toBe("limpio");
+    }
+  });
+
+  it("y del lado contrario el vidrio devuelve horizonte", () => {
+    // Lo que paso en el campo: tracker a +25 y la camara mirando al este.
+    const r = mirar(10, 39, 25, -25);
+    expect(r.centroDeg).toBeLessThan(CIELO_LIMPIO_DEG);
+    expect(r.veredicto).toBe("sucio");
   });
 
   it("con el tracker casi plano no mueve el gimbal", () => {
@@ -91,7 +118,7 @@ describe("el reflejo del horizonte, que es el que ensucia", () => {
     // 35 lo deja corto, y aun asi el borde del cuadro refleja cielo.
     const v = vistaParaLaHora(42)!;
     expect(v.desvioDeg).toBe(DESVIO_MAXIMO_DEG);
-    const r = mirar(9, 30, 42, v.desvioDeg * v.hacia);
+    const r = mirar(9, 30, 42, ladoDeLaCamaraDeg(v));
     expect(r.veredicto).toBe("limpio");
     expect(r.bordeDeg).toBeGreaterThan(CIELO_LIMPIO_DEG);
   });

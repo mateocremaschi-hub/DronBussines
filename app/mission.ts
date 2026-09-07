@@ -336,6 +336,10 @@ export interface VistaInclinada {
   /**
    * Hacia donde mira la camara, cruzado a las filas. +1 es hacia el este
    * (o hacia el norte, si las filas fueran este-oeste); -1 al reves.
+   *
+   * OJO: es el opuesto del signo del tracker. Con el panel mirando al este
+   * la camara mira al oeste, porque el dron se para del lado al que apunta
+   * el panel. Ver `vistaParaLaHora`.
    */
   hacia: 1 | -1;
 }
@@ -359,9 +363,33 @@ export const DESVIO_MAXIMO_DEG = 35;
  * Como hay que inclinar la camara para un tracker a `anguloTrackerDeg`.
  *
  * Copia el angulo del tracker: la camara queda perpendicular al panel y el
- * vidrio le devuelve el cielo. El signo viene de `anguloDeTracker` —positivo
- * es el panel mirando al este, a la mañana— y la camara se inclina para EL
- * MISMO lado, que es lo que la deja de frente.
+ * vidrio le devuelve el cielo.
+ *
+ * El signo es al REVES del angulo del tracker, y esto costo un vuelo.
+ * =========================================================================
+ * Aca decia que la camara se inclina "para el mismo lado" que el panel, que
+ * es lo que la deja de frente. Es falso, y es un error de pensar el panel
+ * como una tabla en vez de como un espejo.
+ *
+ * A las 10:39 del 7 de septiembre el tracker estaba a +25° —el panel mirando
+ * al ESTE— y el dron salio a volar mirando al este tambien: rumbo 93°, gimbal
+ * a -64.9°. O sea que se paro al OESTE de la fila y miro el panel desde
+ * atras del vuelco. Con el perpendicular del panel a 25° al este de la
+ * vertical y el rayo de la camara a 25° al oeste, la camara quedo a 50° de la
+ * normal — el DOBLE que a plomo, que ahi son los 25° del tracker. Y el rayo
+ * reflejado sale a 14° sobre el horizonte, o sea que el vidrio devolvia
+ * horizonte caliente, que es exactamente de lo que la camara inclinada
+ * venia a escapar.
+ *
+ * Un espejo inclinado al este se mira parandose al ESTE de el. Asi que la
+ * camara mira al OESTE cuando el panel mira al este: `hacia` es el opuesto
+ * del signo del tracker, el dron vuela del lado del sol —al este a la mañana,
+ * al oeste a la tarde— y la camara mira de vuelta hacia la fila.
+ *
+ * Con ese signo el centro del cuadro devuelve cielo a 65° de elevacion y el
+ * reflejo del sol queda a 32° del eje, muy afuera de los 18° de medio cuadro.
+ * `reflejo.ts` ya calculaba con este signo: lo que estaba al reves era el
+ * plan de vuelo, no la cuenta del reflejo.
  *
  * Con el tracker casi plano no hace falta inclinar nada y devuelve `null`, que
  * es "dejalo a plomo": mover el gimbal dos grados no cambia nada y complica el
@@ -371,12 +399,24 @@ export const DESVIO_MAXIMO_DEG = 35;
  */
 export const TRACKER_CASI_PLANO_DEG = 3;
 
+/**
+ * Donde queda la CAMARA, visto desde el panel: positivo al este.
+ *
+ * `hacia` dice adonde MIRA la camara y `reflejo.ts` necesita lo contrario —el
+ * rayo que va del panel a la camara— para espejarlo. Los dos numeros son el
+ * mismo dato con el signo cambiado, y tenerlos sueltos por ahi es como se
+ * cuela un error de lado. Esto es el unico lugar donde se hace la cuenta.
+ */
+export function ladoDeLaCamaraDeg(vista: VistaInclinada | null): number {
+  return vista ? -vista.hacia * vista.desvioDeg : 0;
+}
+
 export function vistaParaLaHora(anguloTrackerDeg: number, _hfovDeg?: number): VistaInclinada | null {
   const theta = Math.abs(anguloTrackerDeg);
   if (theta < TRACKER_CASI_PLANO_DEG) return null;
   return {
     desvioDeg: Math.min(DESVIO_MAXIMO_DEG, theta),
-    hacia: anguloTrackerDeg > 0 ? 1 : -1,
+    hacia: anguloTrackerDeg > 0 ? -1 : 1,
   };
 }
 
