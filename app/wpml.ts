@@ -92,18 +92,75 @@ export interface OpcionesKmz {
  * no es este: fija el rumbo que el dron traiga al llegar al primer punto, que
  * es el que tenga el piloto en ese momento.
  */
+/*
+  El angulo se escribe redondeado a un decimal.
+
+  Antes salia con catorce: `-56.28141514411982`. Ninguna cabeza apunta con esa
+  precision —el gimbal del 4T resuelve decimas— y un numero asi es una invitacion
+  a que el que lee el archivo lo trunque de una manera que no controlamos. La
+  foto del 7 de septiembre volvio con `-56.20`, o sea que se aplico igual, pero
+  no hay ninguna razon para escribirlo asi.
+*/
 function gimbalPitch(m: Mission): number {
-  return m.vista?.pitchDeg ?? -90;
+  return Math.round((m.vista?.pitchDeg ?? -90) * 10) / 10;
 }
 
-function headingParam(m: Mission): string {
+function headingParam(m: Mission, sangria = "          "): string {
   if (!m.vista) return `<wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>`;
   return (
     `<wpml:waypointHeadingMode>smoothTransition</wpml:waypointHeadingMode>\n` +
-    `          <wpml:waypointHeadingAngle>${m.vista.rumboDeg.toFixed(1)}</wpml:waypointHeadingAngle>\n` +
-    `          <wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>\n` +
-    `          <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>`
+    `${sangria}<wpml:waypointHeadingAngle>${rumbo(m)}</wpml:waypointHeadingAngle>\n` +
+    `${sangria}<wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>\n` +
+    `${sangria}<wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>`
   );
+}
+
+/**
+ * El rumbo fijo, en el rango que pide DJI.
+ *
+ * `wpml:waypointHeadingAngle` va de -180 a 180. El planificador da el rumbo de
+ * 0 a 360 —que es como se lee un rumbo— y volando de sur a norte con la nariz
+ * al oeste eso da 271, que esta fuera de rango. Con las filas del bloque 1
+ * salio 91.1 y no llego a molestar, pero un parque con las filas al reves
+ * habria escrito un numero que DJI no acepta.
+ */
+export function rumboDji(rumboDeg: number): number {
+  const r = ((rumboDeg % 360) + 360) % 360;
+  return Math.round((r > 180 ? r - 360 : r) * 10) / 10;
+}
+
+const rumbo = (m: Mission) => rumboDji(m.vista?.rumboDeg ?? 0).toFixed(1);
+
+/**
+ * El bloque de rumbo que va DENTRO de cada waypoint del template.
+ *
+ * Esto es lo que fallo el 7 de septiembre en Wellington.
+ * =========================================================================
+ * El template llevaba el rumbo una sola vez, en `globalWaypointHeadingParam`,
+ * y cada waypoint decia `useGlobalHeadingParam 1`. El dron aplico el gimbal
+ * —las fotos volvieron con pitch -56.2, exactamente el que pedia el archivo—
+ * pero NO el rumbo: el EXIF de las ocho fotos dice `FlightYawDegree` entre
+ * -0.9 y -1.2, o sea la nariz al norte, cuando el archivo pedia 91.1. La
+ * camara quedo inclinada hacia adelante, mirando a lo largo de la fila en vez
+ * de cruzada: ni a plomo ni de costado, que es como lo describio Mateo. Y en
+ * esa misma pasada no salio ninguna foto automatica, con un grupo de acciones
+ * identico al que el 4 de septiembre disparo 568 veces.
+ *
+ * Es el mismo golpe que la altura, en el mismo archivo: lo que el template no
+ * dice waypoint por waypoint, Pilot 2 no lo lleva a la linea de vuelo. Asi que
+ * ahora cada waypoint del template escribe su propio rumbo y `useGlobalHeading
+ * Param` va en 0. No se toca nada del vuelo a plomo —ese sale igual que el
+ * archivo que ya volo dos bloques— porque el que fallo es solo el inclinado.
+ */
+function usaGlobalHeading(m: Mission): 0 | 1 {
+  return m.vista ? 0 : 1;
+}
+
+function headingDelWaypoint(m: Mission): string {
+  if (!m.vista) return "";
+  return `\n        <wpml:waypointHeadingParam>
+          ${headingParam(m)}
+        </wpml:waypointHeadingParam>`;
 }
 
 /** El KMZ listo para copiar al controlador. */
@@ -210,7 +267,7 @@ function templateKml(m: Mission, opts: MissionOptions, k: OpcionesKmz): string {
         <wpml:height>${opts.altitudeM}</wpml:height>
         <wpml:useGlobalHeight>1</wpml:useGlobalHeight>
         <wpml:useGlobalSpeed>1</wpml:useGlobalSpeed>
-        <wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>
+        <wpml:useGlobalHeadingParam>${usaGlobalHeading(m)}</wpml:useGlobalHeadingParam>${headingDelWaypoint(m)}
         <wpml:useGlobalTurnParam>1</wpml:useGlobalTurnParam>
         <wpml:gimbalPitchAngle>${gimbalPitch(m)}</wpml:gimbalPitchAngle>
       </Placemark>`,
@@ -236,7 +293,7 @@ ${missionConfig(opts, k)}
       <wpml:globalHeight>${opts.altitudeM}</wpml:globalHeight>
       <wpml:gimbalPitchMode>usePointSetting</wpml:gimbalPitchMode>
       <wpml:globalWaypointHeadingParam>
-        ${headingParam(m)}
+        ${headingParam(m, "        ")}
       </wpml:globalWaypointHeadingParam>
       <wpml:globalWaypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:globalWaypointTurnMode>
       <wpml:globalUseStraightLine>1</wpml:globalUseStraightLine>
@@ -405,6 +462,38 @@ export function loQueFaltaEnElKmz(templateKmlTexto: string, waylinesTexto: strin
   };
   revisar(templateKmlTexto, "template.kml", OBLIGATORIOS_DEL_TEMPLATE);
   revisar(waylinesTexto, "waylines.wpml", OBLIGATORIOS_DE_LA_LINEA);
+
+  /*
+    Y el rumbo, waypoint por waypoint.
+
+    Con la camara inclinada el rumbo es la mision: si el dron no cruza la nariz,
+    la camara no mira el panel de frente sino a lo largo de la fila, y las fotos
+    no sirven. El 7 de septiembre el rumbo estaba escrito una sola vez, en el
+    parametro global del template, y no llego al vuelo. Asi que se revisa igual
+    que la altura: si el archivo pide rumbo fijo, TODOS los waypoints de los dos
+    archivos tienen que llevarlo escrito.
+  */
+  for (const [texto, archivo] of [
+    [templateKmlTexto, "template.kml"] as const,
+    [waylinesTexto, "waylines.wpml"] as const,
+  ]) {
+    if (!texto.includes("smoothTransition")) continue;
+    const bloques = texto.split("<Placemark>").slice(1);
+    const conAngulo = bloques.filter((b) => b.includes("<wpml:waypointHeadingAngle>")).length;
+    if (conAngulo < bloques.length) {
+      faltan.push(
+        `${archivo}: ${bloques.length - conAngulo} de ${bloques.length} waypoints no llevan ` +
+        "<wpml:waypointHeadingAngle> y la camara va inclinada: el dron va a volar con la nariz " +
+        "en la linea y la camara mirando a lo largo de la fila",
+      );
+    }
+    const fuera = [...texto.matchAll(/<wpml:waypointHeadingAngle>(-?[\d.]+)</g)]
+      .map((m) => Number(m[1]))
+      .filter((n) => !(n >= -180 && n <= 180));
+    if (fuera.length) {
+      faltan.push(`${archivo}: hay rumbos fuera del rango -180..180 de DJI (${fuera.join(", ")})`);
+    }
+  }
   return faltan;
 }
 
@@ -440,6 +529,27 @@ export function avisosDeKmz(m: Mission, opts: MissionOptions, k: OpcionesKmz): s
   }
 
   if (!k.perfil.confirmado) avisos.push(k.perfil.nota ?? `Los numeros de ${k.perfil.nombre} estan sin confirmar.`);
+
+  /*
+    El aviso que faltaba el 7 de septiembre.
+
+    El vuelo a plomo ya volo dos bloques enteros. El inclinado se probo una vez
+    y salio mal: el dron aplico el gimbal pero no el rumbo, y no disparo ninguna
+    foto. El archivo cambio —ahora el rumbo va waypoint por waypoint— pero un
+    archivo corregido no es un archivo probado, y la unica forma de saberlo es
+    una pasada corta mirando la nariz del dron.
+  */
+  if (m.vista) {
+    avisos.push(
+      `Este es un vuelo con la camara inclinada ${m.vista.desvioDeg.toFixed(0)}° y el dron ` +
+      `volando de costado (nariz a ${rumboDji(m.vista.rumboDeg).toFixed(0)}°). ESTE MODO FALLO ` +
+      "una vez en el campo: el 7 de septiembre el dron aplico el gimbal pero volo con la nariz " +
+      "en la linea y no saco ninguna foto automatica. Se corrigio el archivo, pero antes de " +
+      "mandar un bloque entero hace una pasada corta y mira dos cosas: que el dron vaya de " +
+      "costado —la nariz cruzada a la fila, no apuntando adonde va— y que en la primera pasada " +
+      "empiecen a salir fotos solas. Si alguna de las dos no pasa, cortala y volve a plomo.",
+    );
+  }
 
   if (m.waypoints.length < 2) {
     avisos.push("Una mision necesita al menos dos waypoints. Esta tiene menos y Pilot 2 la rechaza.");

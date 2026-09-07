@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32, zip } from "../app/zip";
-import { archivosDelKmz, avisosDeKmz, loQueFaltaEnElKmz, PERFILES_DJI, toKmz, type OpcionesKmz } from "../app/wpml";
+import { archivosDelKmz, avisosDeKmz, loQueFaltaEnElKmz, PERFILES_DJI, rumboDji, toKmz, type OpcionesKmz } from "../app/wpml";
 import { camaraDesdeEquivalente35, planMission, type MissionOptions } from "../app/mission";
 import edenvaleJson from "../farms/edenvale.json" with { type: "json" };
 import type { FarmProfile } from "../src/types.js";
@@ -344,5 +344,93 @@ describe("el KMZ con la camara inclinada", () => {
     const a = abrir(toKmz(mission, opts, kmzOpts));
     expect(a["wpmz/waylines.wpml"]).toContain("followWayline");
     expect(a["wpmz/template.kml"]).toContain("<wpml:gimbalPitchAngle>-90</wpml:gimbalPitchAngle>");
+  });
+});
+
+/**
+ * Wellington, 7 de septiembre, 09:49. El vuelo inclinado que no fue.
+ *
+ * El dron se fue al primer punto, aplico el gimbal —las fotos volvieron con
+ * pitch -56.2, el que pedia el archivo— y despues volo con la nariz al norte:
+ * `FlightYawDegree` entre -0.9 y -1.2 en las ocho fotos, cuando el template
+ * pedia 91.1. La camara quedo inclinada hacia adelante, mirando a lo largo de
+ * la fila. Y no disparo ni una foto automatica, con un grupo de acciones igual
+ * al que tres dias antes habia disparado 568 veces.
+ *
+ * Lo unico que el template no decia waypoint por waypoint era el rumbo: estaba
+ * una sola vez, en `globalWaypointHeadingParam`, con `useGlobalHeadingParam 1`
+ * en cada punto. Es el mismo golpe que la altura del bloque 1. Estas pruebas
+ * son para que no vuelva a salir un archivo asi.
+ */
+describe("el rumbo tiene que estar en cada waypoint del template", () => {
+  const inclinada = planMission(filas, profile, { ...opts, vista: { desvioDeg: 20, hacia: 1 } })!;
+  const archivos = abrir(toKmz(inclinada, opts, kmzOpts));
+  const t = archivos["wpmz/template.kml"]!;
+  const puntos = t.split("<Placemark>").slice(1);
+
+  it("cada waypoint del template escribe su propio rumbo", () => {
+    expect(puntos.length).toBeGreaterThan(1);
+    for (const p of puntos) {
+      expect(p).toContain("<wpml:waypointHeadingMode>smoothTransition</wpml:waypointHeadingMode>");
+      expect(p).toContain("<wpml:waypointHeadingAngle>90.0</wpml:waypointHeadingAngle>");
+    }
+  });
+
+  it("y ninguno se cuelga del parametro global", () => {
+    for (const p of puntos) expect(p).toContain("<wpml:useGlobalHeadingParam>0</wpml:useGlobalHeadingParam>");
+  });
+
+  it("a plomo el template sigue usando el global, como el archivo que ya volo", () => {
+    const a = abrir(toKmz(mission, opts, kmzOpts))["wpmz/template.kml"]!;
+    for (const p of a.split("<Placemark>").slice(1)) {
+      expect(p).toContain("<wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>");
+      expect(p).not.toContain("waypointHeadingAngle");
+    }
+  });
+
+  it("la revision del archivo canta un template sin rumbo en los waypoints", () => {
+    const sinRumbo = t.replace(/\n        <wpml:waypointHeadingParam>[\s\S]*?<\/wpml:waypointHeadingParam>/g, "");
+    const faltan = loQueFaltaEnElKmz(sinRumbo, archivos["wpmz/waylines.wpml"]!);
+    expect(faltan.some((f) => f.includes("template.kml") && f.includes("waypointHeadingAngle"))).toBe(true);
+  });
+
+  it("y el archivo bueno no le falta nada", () => {
+    expect(loQueFaltaEnElKmz(t, archivos["wpmz/waylines.wpml"]!)).toEqual([]);
+  });
+
+  it("el gimbal se escribe redondeado, no con catorce decimales", () => {
+    const angulos = [...t.matchAll(/<wpml:gimbalPitchAngle>(-?[\d.]+)</g)].map((m) => m[1]!);
+    expect(angulos.length).toBeGreaterThan(0);
+    for (const a of angulos) expect(a).toMatch(/^-?\d+(\.\d)?$/);
+  });
+});
+
+/**
+ * El rumbo que DJI acepta.
+ *
+ * `wpml:waypointHeadingAngle` va de -180 a 180 y el planificador da el rumbo de
+ * 0 a 360. En el bloque 1 salio 91.1 y no llego a molestar; con las filas al
+ * reves habria escrito 271, que esta fuera de rango.
+ */
+describe("el rumbo se escribe en el rango de DJI", () => {
+  it("pasa 271 a -89", () => {
+    expect(rumboDji(271)).toBe(-89);
+  });
+
+  it("deja 91.1 como esta", () => {
+    expect(rumboDji(91.1)).toBe(91.1);
+  });
+
+  it("180 se queda en 180 y 180.1 pasa al otro lado", () => {
+    expect(rumboDji(180)).toBe(180);
+    expect(rumboDji(180.1)).toBe(-179.9);
+  });
+
+  it("y la revision canta un rumbo fuera de rango", () => {
+    const inclinada = planMission(filas, profile, { ...opts, vista: { desvioDeg: 20, hacia: 1 } })!;
+    const a = abrir(toKmz(inclinada, opts, kmzOpts));
+    const roto = a["wpmz/waylines.wpml"]!.replace(/<wpml:waypointHeadingAngle>[^<]*</g, "<wpml:waypointHeadingAngle>271.0<");
+    const faltan = loQueFaltaEnElKmz(a["wpmz/template.kml"]!, roto);
+    expect(faltan.some((f) => f.includes("fuera del rango"))).toBe(true);
   });
 });
