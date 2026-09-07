@@ -406,6 +406,40 @@ describe("el rumbo tiene que estar en cada waypoint del template", () => {
 });
 
 /**
+ * La foto de control en el primer punto.
+ *
+ * Para poder contestar en el aire, con el dron quieto, si el disparo esta
+ * vivo — en vez de esperar a que recorra media pasada y quedarse dudando.
+ */
+describe("la foto de control del vuelo inclinado", () => {
+  const inclinada = planMission(filas, profile, { ...opts, vista: { desvioDeg: 20, hacia: 1 } })!;
+  const w = abrir(toKmz(inclinada, opts, kmzOpts))["wpmz/waylines.wpml"]!;
+  const arranque = w.slice(w.indexOf("<wpml:startActionGroup>"), w.indexOf("</wpml:startActionGroup>"));
+
+  it("saca una foto apenas llega al primer punto, despues de acomodar el gimbal", () => {
+    expect(arranque).toContain("gimbalRotate");
+    expect(arranque).toContain("takePhoto");
+    expect(arranque.indexOf("gimbalRotate")).toBeLessThan(arranque.indexOf("takePhoto"));
+  });
+
+  it("y las dos acciones del grupo tienen id distinto", () => {
+    const ids = [...arranque.matchAll(/<wpml:actionId>(\d+)</g)].map((m) => m[1]);
+    expect(ids).toEqual(["0", "1"]);
+  });
+
+  it("el vuelo a plomo no la lleva: ese archivo no se toca", () => {
+    const a = abrir(toKmz(mission, opts, kmzOpts))["wpmz/waylines.wpml"]!;
+    const g = a.slice(a.indexOf("<wpml:startActionGroup>"), a.indexOf("</wpml:startActionGroup>"));
+    expect(g).toContain("gimbalRotate");
+    expect(g).not.toContain("takePhoto");
+  });
+
+  it("sigue disparando por distancia en cada pasada", () => {
+    expect((w.match(/multipleDistance/g) ?? []).length).toBeGreaterThan(1);
+  });
+});
+
+/**
  * El rumbo que DJI acepta.
  *
  * `wpml:waypointHeadingAngle` va de -180 a 180 y el planificador da el rumbo de

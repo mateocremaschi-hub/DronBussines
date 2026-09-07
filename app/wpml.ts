@@ -163,6 +163,36 @@ function headingDelWaypoint(m: Mission): string {
         </wpml:waypointHeadingParam>`;
 }
 
+/**
+ * Una foto en el primer punto, para saber en el aire si el disparo esta vivo.
+ *
+ * El 7 de septiembre a las 11 el archivo salio perfecto —lo compare contra el
+ * que media hora antes habia disparado dieciseis veces y el bloque de la foto
+ * es identico byte por byte— y aun asi Mateo no vio salir ninguna. Con el
+ * disparo por distancia no hay forma de contestar esa pregunta rapido: hay
+ * que esperar a que el dron recorra los primeros metros de la pasada, y para
+ * entonces ya estas dudando de todo.
+ *
+ * Con esto, apenas llega al primer punto y acomoda el gimbal, saca una. Si el
+ * contador de la camara no se mueve ahi, el problema no es la mision: es la
+ * tarjeta, el modo de la camara o que quedo grabando video. Y se sabe con el
+ * dron quieto en el primer punto, no a mitad de la pasada.
+ *
+ * Va solo en el vuelo inclinado, que es el que se esta probando. El vuelo a
+ * plomo ya volo dos bloques y no se toca.
+ */
+function fotoDeControl(m: Mission): string {
+  if (!m.vista) return "";
+  return `
+        <wpml:action>
+          <wpml:actionId>1</wpml:actionId>
+          <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
+          <wpml:actionActuatorFuncParam>
+            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+          </wpml:actionActuatorFuncParam>
+        </wpml:action>`;
+}
+
 /** El KMZ listo para copiar al controlador. */
 export function toKmz(mission: Mission, opts: MissionOptions, kmz: OpcionesKmz): Uint8Array<ArrayBuffer> {
   return zip(
@@ -395,7 +425,7 @@ ${missionConfig(opts, k)}
             <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>
             <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>
           </wpml:actionActuatorFuncParam>
-        </wpml:action>
+        </wpml:action>${fotoDeControl(m)}
       </wpml:startActionGroup>
 ${puntos}
     </Folder>
