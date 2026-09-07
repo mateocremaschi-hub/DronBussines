@@ -6,7 +6,7 @@
  * que quedan se llaman por lo que son, y va en ingles.
  */
 import { describe, expect, it } from "vitest";
-import { aCsvEntregable, aInformeEntregable, columnas, nombreEntregado, porQueEnIngles, porSeveridad, refDe, resumenDeEntrega } from "../app/entregable";
+import { aCsvEntregable, aInformeEntregable, columnas, filaEnIngles, nombreEntregado, porQueEnIngles, porSeveridad, refDe, resumenDeEntrega } from "../app/entregable";
 import type { Severidad } from "../app/detect";
 import { ANOMALIAS, type Finding, type Inspection } from "../app/inspection";
 
@@ -387,5 +387,44 @@ describe("la marca en el entregable", () => {
     for (const svg of membrete.match(/<svg[^>]*>/g)!) {
       expect(svg).toContain("width:100%;height:100%");
     }
+  });
+});
+
+/**
+ * Como se nombran las dos filas de un tracker en el entregable.
+ *
+ * El parque de Wellington las trae como "motorizada" y "esclava". En un
+ * informe en ingles eso son dos problemas: estan en español, y "esclava" no es
+ * una palabra que uno le mande a un cliente por mas que la traiga el plano.
+ * Salen como "Motor row" y "Linked row", que ademas se verifican en el campo:
+ * la fila del motor se reconoce a simple vista.
+ */
+describe("el nombre de la fila en el entregable", () => {
+  it("traduce las dos del tracker", () => {
+    expect(filaEnIngles("motorizada")).toBe("Motor row");
+    expect(filaEnIngles("esclava")).toBe("Linked row");
+  });
+
+  it("no le importa como venga escrito", () => {
+    expect(filaEnIngles(" Motorizada ")).toBe("Motor row");
+    expect(filaEnIngles("ESCLAVA")).toBe("Linked row");
+  });
+
+  it("deja pasar el nombre del plano cuando el parque usa otro", () => {
+    // Edenvale numera las filas R1 a R5: ese es el nombre que lee la cuadrilla.
+    expect(filaEnIngles("R3")).toBe("R3");
+  });
+
+  it("sin fila no inventa nada", () => {
+    expect(filaEnIngles(null)).toBe("");
+    expect(filaEnIngles(undefined)).toBe("");
+    expect(filaEnIngles("")).toBe("");
+  });
+
+  it("y la palabra en español no sale en el CSV", () => {
+    const i = insp([f({ address: { ...f().address!, row: "esclava" } as Finding["address"] })]);
+    const csv = aCsvEntregable(i);
+    expect(csv).not.toMatch(/esclava/i);
+    expect(csv).toContain("Linked row");
   });
 });

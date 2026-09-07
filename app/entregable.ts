@@ -103,6 +103,36 @@ export interface OpcionesDeEntrega {
 export const refDe = (n: number) => String(n + 1).padStart(3, "0");
 
 /**
+ * Como se llaman en el entregable las dos filas de un tracker.
+ *
+ * El parque de Wellington las trae como "motorizada" y "esclava" —son la fila
+ * que lleva el motor y la que va enganchada a ella por la barra—. Dos
+ * problemas con eso en un informe: estan en español adentro de un entregable
+ * en ingles, y "esclava" es una palabra que uno no quiere mandarle a un
+ * cliente por mas que sea el termino que traiga el plano.
+ *
+ * "Motor row" y "Linked row" dicen lo mismo y ademas sirven en el campo: la
+ * fila del motor se reconoce a simple vista, asi que el que camina hasta el
+ * panel puede confirmar que esta en la fila correcta sin el plano al lado.
+ *
+ * Lo que NO se toca es el dato guardado: el identificador de cada fila
+ * (`1-98-motorizada`) sigue igual, porque es la llave con la que se cruzan las
+ * mediciones entre vuelos. Esto es solo como se escribe al entregar.
+ *
+ * Cualquier otro nombre pasa tal cual: hay parques —Edenvale— donde las filas
+ * se llaman R1 a R5 y ahi el nombre del plano es el que tiene que salir.
+ */
+const FILA_EN: Record<string, string> = {
+  motorizada: "Motor row",
+  esclava: "Linked row",
+};
+
+export function filaEnIngles(row: string | null | undefined): string {
+  if (!row) return "";
+  return FILA_EN[row.trim().toLowerCase()] ?? row;
+}
+
+/**
  * El nombre del archivo de foto que se entrega.
  *
  * Empieza por el numero de referencia para que la carpeta salga en el mismo
@@ -139,7 +169,7 @@ export function columnas(o: OpcionesDeEntrega): Columna[] {
     { clave: "ref", titulo: "Ref", ancho: 7, valor: (_f, n) => refDe(n) },
     { clave: "block", titulo: "Block", ancho: 8, valor: (f) => f.address?.block ?? "" },
     { clave: "tracker", titulo: "Tracker", ancho: 10, valor: (f) => f.address?.tracker ?? "" },
-    { clave: "row", titulo: "Row", ancho: 12, valor: (f) => f.address?.row ?? "" },
+    { clave: "row", titulo: "Row", ancho: 12, valor: (f) => filaEnIngles(f.address?.row) },
     { clave: "string", titulo: "String", ancho: 8, valor: (f) => f.address?.stringNumber ?? "" },
     {
       clave: "module", titulo: "Module", ancho: 9,
@@ -662,7 +692,7 @@ export function aInformeEntregable(
     return `<article class="f ${sev}">
   <header>
     <span class="ref">${esc(refDe(n))}</span>
-    <h3>Block ${esc(a?.block ?? "?")} · Tracker ${esc(a?.tracker ?? "?")}${a?.row ? " " + esc(a.row) : ""} · String ${esc(a?.stringNumber ?? "?")} · ${
+    <h3>Block ${esc(a?.block ?? "?")} · Tracker ${esc(a?.tracker ?? "?")}${a?.row ? " " + esc(filaEnIngles(a.row)) : ""} · String ${esc(a?.stringNumber ?? "?")} · ${
       f.moduloSinConfirmar
         ? `Module not confirmed <em>(count from the row end; nearest is ${esc(a?.module ?? "?")})</em>`
         : `Module ${esc(f.moduleCorregido ?? a?.module ?? "?")}`

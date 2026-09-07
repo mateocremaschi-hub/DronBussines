@@ -13,7 +13,7 @@
  */
 import type { Finding } from "./inspection";
 import { readRadiometric } from "./thermal";
-import { ANOMALIA_EN, nombreEntregado, refDe } from "./entregable";
+import { ANOMALIA_EN, nombreEntregado, refDe, filaEnIngles } from "./entregable";
 
 /**
  * La paleta, en diecisiete escalones que se interpolan.
@@ -251,7 +251,7 @@ export async function fotoDelHallazgo(
   linea(refDe(n), true);
   y += grande * 0.3;
   linea(`Block ${a?.block ?? "?"}`, false);
-  linea(`Tracker ${a?.tracker ?? "?"}${a?.row ? " " + a.row : ""}`, false);
+  linea(`Tracker ${a?.tracker ?? "?"}${a?.row ? " " + filaEnIngles(a.row) : ""}`, false);
   linea(`String ${a?.stringNumber ?? "?"}`, false);
   linea(modulo, false);
   y += grande * 0.6;
