@@ -97,6 +97,14 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
   const medidasRef = useRef<Set<string>>(new Set());
   const enCola = useRef<Set<string>>(new Set());
   const [esperando, setEsperando] = useState(0);
+  /*
+    El error que corta la carga, dicho en pantalla.
+
+    Antes se perdia: `analizar` no atrapaba nada y la cola hacia `.catch(() => {})`
+    en la vuelta siguiente. O sea que si la carga se caia, la pantalla se quedaba
+    igual que antes, sin decir por que.
+  */
+  const [seCorto, setSeCorto] = useState<string | null>(null);
 
   const anchoM = stored.profile.module.widthMm / 1000;
   const largoM = largoDelModulo(stored);
@@ -199,6 +207,7 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
   async function analizar(files: File[], conAjuste: Ajuste, desdeCero: boolean) {
     setProgreso({ hecho: 0, total: files.length });
     setElegido(null);
+    setSeCorto(null);
     try {
       const r = await analizarFotos(
         farm,
@@ -221,11 +230,26 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
       const unido = unirVuelos(desdeCero ? null : ultimo.current, r);
       ultimo.current = unido;
       setResultado(unido);
-      const nombres = files.map((f) => f.name);
-      medidasRef.current = desdeCero
-        ? new Set(nombres)
-        : new Set([...medidasRef.current, ...nombres]);
-      setMedidas(new Set(medidasRef.current));
+      /*
+        Solo cuentan como medidas si de verdad se midio algo.
+
+        Se marcaban las 569 aunque no se hubiera podido abrir ninguna, y la
+        pantalla decia "569 fotos medidas" arriba de "de 569 archivos no se
+        pudo usar ninguno". Dos numeros que se contradicen, y el que estaba
+        mal era el tranquilizador.
+      */
+      if (r.fotosTermicas > 0) {
+        const nombres = files.map((f) => f.name);
+        medidasRef.current = desdeCero
+          ? new Set(nombres)
+          : new Set([...medidasRef.current, ...nombres]);
+        setMedidas(new Set(medidasRef.current));
+      } else if (desdeCero) {
+        medidasRef.current = new Set();
+        setMedidas(new Set());
+      }
+    } catch (e) {
+      setSeCorto(e instanceof Error ? e.message : String(e));
     } finally {
       // Salgan bien o mal, estas fotos ya no estan esperando su turno.
       for (const f of files) enCola.current.delete(f.name);
@@ -355,6 +379,12 @@ export function Analysis({ stored, farm, umbrales, onDeteccion, onFotos }: Props
           <p className="note ok">
             {progreso.etapa ? `${progreso.etapa}: foto ${progreso.hecho} de ${progreso.total}…` : `Leyendo ${progreso.hecho} de ${progreso.total}…`}
           </p>
+        )}
+        {seCorto && (
+          <div className="warnbox">
+            <h3>La carga se corto</h3>
+            <p>{seCorto}</p>
+          </div>
         )}
         {resultado && resultado.problemas.length > 0 && (
           <div className="warnbox">

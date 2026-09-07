@@ -209,6 +209,57 @@ export function enOrdenDeVuelo(files: File[]): File[] {
  * vuelo del bloque 1, trece de cuarenta pudieron contar el paso y las trece
  * coincidieron dentro del 2 %— y cuestan una pasada corta de lectura.
  */
+/**
+ * Cuantos archivos seguidos pueden fallar AL ABRIRSE antes de cortar.
+ *
+ * Wellington, bloque 2, 569 fotos. Safari devolvio "The I/O read operation
+ * failed" en las 570 —las 569 termicas y el MRK—, o sea que no pudo abrir ni
+ * una. Y la app las intento igual, una por una, con cuatro intentos y espera
+ * creciente cada vez: mil milisegundos de espera por archivo, dos veces —la
+ * pasada de la escala y la del analisis—, mas lo que tarda cada intento
+ * fallido. Veinte minutos para llegar a una conclusion que estaba disponible
+ * en el primer archivo.
+ *
+ * El reintento sirve cuando falla UNA: el sistema esta ocupado y a la segunda
+ * sale. No sirve para nada cuando fallan todas, porque cuando fallan todas la
+ * causa no es pasajera: son los permisos que el navegador tenia sobre esos
+ * archivos y ya no tiene. Pasa al mover la carpeta, al renombrarla o al sacar
+ * la tarjeta DESPUES de elegir las fotos, y tambien cuando Safari se queda sin
+ * memoria.
+ *
+ * Ocho seguidos sin poder abrir ninguno y ninguno abierto antes: se corta y se
+ * dice que hacer. Ocho y no dos porque un archivo suelto ilegible en el medio
+ * de una carpeta no tiene que voltear el vuelo entero.
+ */
+const FALLOS_DE_LECTURA_PARA_CORTAR = 8;
+
+/** Lo que hay que hacer cuando no se puede abrir ningun archivo. */
+export const QUE_HACER_SI_NO_ABRE =
+  "No se pudo abrir ninguno de los primeros archivos. Las fotos siguen enteras en el disco: " +
+  "lo que se perdio es el permiso del navegador para leerlas. Pasa cuando la carpeta se movio " +
+  "o se renombro despues de elegir las fotos, cuando se expulso la tarjeta, o cuando el " +
+  "navegador se quedo sin memoria. Cerra la pestana entera —no alcanza con recargar—, abri la " +
+  "app de nuevo y volve a elegir las fotos desde la carpeta donde estan AHORA. Si son muchas, " +
+  "carga la mitad y despues la otra mitad con \"Agregar mas fotos\".";
+
+export class ArchivosQueNoSeAbren extends Error {
+  constructor(readonly primerError: string) {
+    super(`${QUE_HACER_SI_NO_ABRE} (el navegador dijo: ${primerError})`);
+    this.name = "ArchivosQueNoSeAbren";
+  }
+}
+
+/**
+ * Corta la carga cuando el navegador no pudo abrir ninguno de los primeros.
+ *
+ * `abiertos` es cuantos archivos SI se pudieron abrir. Con uno solo que haya
+ * abierto no se corta nunca: ahi el problema es del archivo, no del permiso.
+ */
+function cortarSiNoAbreNinguno(abiertos: number, fallos: number, primerError: string): void {
+  if (abiertos > 0 || fallos < FALLOS_DE_LECTURA_PARA_CORTAR) return;
+  throw new ArchivosQueNoSeAbren(primerError);
+}
+
 const FOTOS_PARA_LA_ESCALA = 40;
 
 /**
@@ -286,6 +337,9 @@ async function medirElVuelo(
     tiene que dar lo mismo de las dos maneras.
   */
   let proximo = 0;
+  let abiertos = 0;
+  let sinAbrir = 0;
+  let primerErrorDeLectura = "";
   for (let i = 0; i < files.length; i++) {
     if (i < proximo) continue;
     const file = files[i]!;
@@ -297,6 +351,7 @@ async function medirElVuelo(
     onProgreso?.(i, files.length, "Midiendo la escala y el giro del vuelo");
     try {
       const buf = await leerArchivo(file);
+      abiertos++;
       const radio = readRadiometric(buf, escala ?? undefined);
       // Un archivo sin temperatura adentro no gasta el turno: se sigue
       // buscando la termica en el siguiente.
@@ -349,9 +404,13 @@ async function medirElVuelo(
           ...(fix.gimbalPitchDeg != null ? { gimbalPitchDeg: fix.gimbalPitchDeg } : {}),
         },
       }, angulo?.factorDeAcortamiento ?? 1);
-    } catch {
+    } catch (e) {
       // Una foto que no se puede leer no decide la escala; el bucle de verdad
-      // la va a contar como fallo con su motivo.
+      // la va a contar como fallo con su motivo. Pero si no se abre NINGUNA,
+      // el bucle de verdad va a tardar veinte minutos en decir lo mismo.
+      sinAbrir++;
+      if (!primerErrorDeLectura) primerErrorDeLectura = e instanceof Error ? e.message : String(e);
+      cortarSiNoAbreNinguno(abiertos, sinAbrir, primerErrorDeLectura);
     }
   }
 
@@ -562,10 +621,14 @@ export async function analizarFotos(
   const escalaMedida = medidas.escala;
   const giroDeLaCamara = medidas.giro;
 
+  let abiertos = 0;
+  let sinAbrir = 0;
+  let primerErrorDeLectura = "";
   for (let i = 0; i < files.length; i++) {
     const file = files[i]!;
     try {
       const buf = await leerArchivo(file);
+      abiertos++;
       const radio = readRadiometric(buf, escalaDelVuelo ?? undefined);
       if (!radio) {
         // No es un error: casi siempre es la foto visible del par. Pero si
@@ -691,7 +754,11 @@ export async function analizarFotos(
         },
       }, angulo?.factorDeAcortamiento ?? 1);
     } catch (e) {
-      fallos.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`);
+      const porque = e instanceof Error ? e.message : String(e);
+      fallos.push(`${file.name}: ${porque}`);
+      sinAbrir++;
+      if (!primerErrorDeLectura) primerErrorDeLectura = porque;
+      cortarSiNoAbreNinguno(abiertos, sinAbrir, primerErrorDeLectura);
     }
     onProgreso?.(i + 1, files.length);
   }
